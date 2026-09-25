@@ -1,5 +1,7 @@
 # Security Hardening Test Playbook
 
+For the cross-cutting MCP/QUIC/tunnel/Config/Git regression matrix, hardened-temp fixture rules, persistent MCP Job execution cadence, and final monolithic acceptance gate, use [Security Hardening Regression Acceptance](security-hardening-regression-acceptance.md).
+
 This playbook validates the security-hardening batch that makes direct shared-key auth
 local-only by default, pins GitHub Actions to immutable commits, constrains workflow token
 permissions, and redacts Server secrets from `Config` Debug output.
@@ -121,6 +123,8 @@ cargo test -p webcodex-cli
 Then run the repository's normal monolithic Server suite and, where available, a disposable
 hosted-connect/OAuth smoke. Large/full suites remain external-agent work rather than a
 requirement for the implementation session.
+
+When the change touches the 2026-09 hardening boundaries, the delegated agent must also follow the dedicated regression-acceptance playbook. In particular, preserve the raw `cargo test --lib` monolithic entry point for process-global contamination, keep executable fixtures compatible with a `noexec` system temp mount, and verify reviewed-HEAD root and nested `.gitattributes` isolation.
 
 ## Report format
 

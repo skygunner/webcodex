@@ -54,6 +54,7 @@ ordinary users should not need to learn.
 - [AGENTS.md](../AGENTS.md) — repository instructions for coding/AI agents
 - [Maintenance](MAINTENANCE.md) — maintenance queue, dependency cadence, PR/CI expectations, and bilingual-doc policy
 - [Testing](TESTING.md) — testing strategy
+- [Security hardening regression acceptance](agent/security-hardening-regression-acceptance.md) — MCP/QUIC/tunnel/secret-redaction/noexec/Git committed-review test-agent matrix and monolithic gate
 - [Release checklist](RELEASE_CHECKLIST.md) — release readiness
 - [Architecture decisions](agent/architecture-decisions.md)
 - [Runtime host context](agent/runtime-host-context.md) — Runner-configured planning context and runtime diagnostics

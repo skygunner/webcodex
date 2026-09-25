@@ -2414,6 +2414,9 @@ async fn runtime_status_preserves_allowlisted_effective_config_across_projection
     let runtime = runtime_with_info(RuntimeInfo {
         auth_enabled: true,
         configured_public_url: Some("https://runtime.example.com".to_string()),
+        shared_key_configured: true,
+        shared_key_enabled: true,
+        shared_key_remote_enabled: false,
         oauth2_enabled: true,
         oauth2_shared_key_bridge_enabled: true,
         ..RuntimeInfo::default()
@@ -2437,8 +2440,10 @@ async fn runtime_status_preserves_allowlisted_effective_config_across_projection
     );
     assert_eq!(config["tool_request_trace_mode"], "full");
     let auth = config["auth"].as_object().expect("effective auth object");
-    assert_eq!(auth.len(), 4, "effective auth facts must stay allowlisted");
+    assert_eq!(auth.len(), 6, "effective auth facts must stay allowlisted");
+    assert_eq!(auth["shared_key_configured"], true);
     assert_eq!(auth["shared_key_enabled"], true);
+    assert_eq!(auth["shared_key_remote_enabled"], false);
     assert_eq!(auth["anonymous_enabled"], true);
     assert_eq!(auth["oauth2_enabled"], true);
     assert_eq!(auth["oauth2_shared_key_bridge_enabled"], true);
@@ -2623,6 +2628,9 @@ async fn runtime_status_does_not_expose_tokens_or_secrets() {
     let info = RuntimeInfo {
         auth_enabled: true,
         configured_public_url: Some("https://example.com".to_string()),
+        shared_key_configured: false,
+        shared_key_enabled: false,
+        shared_key_remote_enabled: false,
         oauth2_enabled: true,
         oauth2_shared_key_bridge_enabled: true,
         quic: Some(Arc::new(std::sync::Mutex::new(
@@ -2690,6 +2698,9 @@ async fn runtime_status_quic_enabled_error_is_sanitized() {
     let runtime = runtime_with_info(RuntimeInfo {
         auth_enabled: false,
         configured_public_url: None,
+        shared_key_configured: false,
+        shared_key_enabled: false,
+        shared_key_remote_enabled: false,
         quic: Some(status),
         oauth2_enabled: false,
         oauth2_shared_key_bridge_enabled: false,
@@ -2721,6 +2732,9 @@ async fn runtime_status_quic_started_reports_listen_and_alpn() {
     let runtime = runtime_with_info(RuntimeInfo {
         auth_enabled: false,
         configured_public_url: None,
+        shared_key_configured: false,
+        shared_key_enabled: false,
+        shared_key_remote_enabled: false,
         quic: Some(status),
         oauth2_enabled: false,
         oauth2_shared_key_bridge_enabled: false,
@@ -2741,6 +2755,9 @@ async fn runtime_status_auth_enabled_reflects_runtime_info() {
     let runtime = runtime_with_info(RuntimeInfo {
         auth_enabled: false,
         configured_public_url: None,
+        shared_key_configured: false,
+        shared_key_enabled: false,
+        shared_key_remote_enabled: false,
         oauth2_enabled: false,
         oauth2_shared_key_bridge_enabled: false,
         quic: Some(Arc::new(std::sync::Mutex::new(
@@ -2755,6 +2772,9 @@ async fn runtime_status_auth_enabled_reflects_runtime_info() {
     let runtime = runtime_with_info(RuntimeInfo {
         auth_enabled: true,
         configured_public_url: Some("https://webcodex.example.com".to_string()),
+        shared_key_configured: false,
+        shared_key_enabled: false,
+        shared_key_remote_enabled: false,
         oauth2_enabled: true,
         oauth2_shared_key_bridge_enabled: true,
         quic: Some(Arc::new(std::sync::Mutex::new(
@@ -2775,17 +2795,28 @@ fn runtime_info_from_env_reads_effective_server_config() {
     let mut env = crate::test_support::TestEnvGuard::new();
     env.set("WEBCODEX_TOKEN", "token");
     env.set("WEBCODEX_PUBLIC_URL", "https://new.example.com");
+    env.set("WEBCODEX_SHARED_KEY_ENABLED", "true");
+    env.remove("WEBCODEX_SHARED_KEY_REMOTE_ENABLED");
     env.set("WEBCODEX_OAUTH2_ENABLED", "true");
     env.set("WEBCODEX_OAUTH2_SHARED_KEY_BRIDGE", "true");
 
     let info = RuntimeInfo::from_env();
     assert!(info.auth_enabled);
+    assert!(info.shared_key_configured);
+    assert!(!info.shared_key_enabled);
+    assert!(!info.shared_key_remote_enabled);
     assert_eq!(
         info.configured_public_url.as_deref(),
         Some("https://new.example.com")
     );
     assert!(info.oauth2_enabled);
     assert!(info.oauth2_shared_key_bridge_enabled);
+
+    env.set("WEBCODEX_SHARED_KEY_REMOTE_ENABLED", "true");
+    let info = RuntimeInfo::from_env();
+    assert!(info.shared_key_configured);
+    assert!(info.shared_key_enabled);
+    assert!(info.shared_key_remote_enabled);
 
     env.set("WEBCODEX_OAUTH2_ENABLED", "false");
     let info = RuntimeInfo::from_env();

@@ -6,10 +6,10 @@ WebCodex is a remote tool execution system for private code. Deploy it as a perm
 
 | Version | Supported |
 | --- | --- |
-| 0.3.x | Yes |
-| 0.2.x and earlier | No |
+| 0.4.x | Yes |
+| 0.3.x and earlier | No |
 
-Security fixes are expected to target the latest v0.3.x release unless stated otherwise.
+Security fixes are expected to target the latest v0.4.x release unless stated otherwise.
 
 ## Security Model Summary
 
@@ -77,7 +77,7 @@ Use them only when:
 - The resulting output will not expose secrets.
 - A human can review the command, output summary, and workspace state.
 
-Prefer structured tools first: `read_file`, `search_project_text`, structured edits, `apply_unified_diff`, `cargo_fmt`, `cargo_check`, `cargo_test`, `show_changes`, and `workspace_hygiene_check`.
+Prefer structured tools first: `read_files`, `search_and_read`, guarded structured edits, `apply_patch`, `cargo_fmt`, `cargo_check`, `cargo_test`, `show_changes`, and `workspace_hygiene_check`.
 
 ## Token Handling
 
@@ -102,7 +102,7 @@ Use the right credential for the right surface:
 - Server bootstrap/admin credentials stay server-side.
 - Account credentials are for local token creation, not for model-facing clients.
 
-Shared-key quick-start is a lightweight grouping mechanism, not production IAM.
+Shared-key quick-start is a lightweight grouping mechanism, not production IAM. Direct shared-key fallback is local-only by default. A non-loopback/public deployment must explicitly acknowledge the risk with `WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true` (or `webcodex server init --allow-remote-shared-key`); prefer managed PAT/OAuth/Runner credentials for Internet-facing Servers.
 
 Detailed PAT, shared-key, and OAuth behavior belongs in [docs/AUTH_MODEL.md](docs/AUTH_MODEL.md), not in prompts or README examples.
 

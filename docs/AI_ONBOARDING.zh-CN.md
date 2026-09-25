@@ -49,8 +49,7 @@ webcodex share
 
 ## 已有 shared-key Server：`connect`
 
-只有 hosted Server 已明确配置 shared-key client，并且 operator 已提供该 client credential
-（或本机已有受保护 profile）时才走这条路径：
+只有 hosted Server 已显式开启 remote shared-key client（`WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true` / `server init --allow-remote-shared-key`），并且 operator 已提供该 client credential（或本机已有受保护 profile）时才走这条路径：
 
 ```bash
 cd /path/to/your/repository

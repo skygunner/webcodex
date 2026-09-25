@@ -114,6 +114,8 @@ detached-process 行为。
 
 Windows 支持 `server init`、前台 `server run` 与显式 `share`。受管 service 生命周期（`install`、`start`、`stop`、`restart`、`logs`、`uninstall`）仍只支持 Linux。
 
+`webcodex server init` 默认只在 local/loopback 场景启用 direct shared-key quick-start。传入 `--public-url` 会启用公网 OAuth issuer，但不会自动启用 direct/bridge shared-key。只有 legacy/受信 hosted shared-key 部署才应显式增加 `--allow-remote-shared-key`；Internet-facing Server 优先使用 managed pairing/PAT/OAuth。
+
 使用 `webcodex server install --service-file /path/name.service` 时，会派生同目录的
 `/path/name.socket`。后续 `start`、`stop`、`restart`、`status`、`logs` 和 `uninstall`
 应传入相同的 `--service-file` 来管理或检查该自定义 pair；省略时仍操作默认的

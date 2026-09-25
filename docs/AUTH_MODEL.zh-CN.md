@@ -71,9 +71,9 @@ Runner token 用于认证 `webcodex-runner`，并绑定到配置的 Runner `clie
 
 ## Shared key（`wck_...`）
 
-Shared key 是 `webcodex connect` 使用的简单 hosted connection credential。同一把 key 可以认证 MCP/runtime client 与对应 Runner group；不同 key 彼此隔离。
+Shared key 是 `webcodex connect` 使用的简单 connection credential。Direct shared-key fallback 默认只允许 local/loopback Server：只有 `WEBCODEX_SHARED_KEY_ENABLED=true` 时，公网或 non-loopback Server 不会接受任意未知 bearer 作为 shared key。若 operator 确实需要 legacy/hosted direct shared-key，必须额外设置 `WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true`，或使用 `webcodex server init --allow-remote-shared-key` 显式确认风险。同一把 key 随后可以认证 MCP/runtime client 与对应 Runner group；不同 key 彼此隔离。
 
-创建后 protected profile 会保存这把 key，重复 `connect` 会复用它而不是再次打印。Shared-key 模式适合简单、受信的部署，不应被理解成 managed multi-user IAM 的替代品。
+创建后 protected profile 会保存这把 key，重复 `connect` 会复用它而不是再次打印。Remote direct shared-key 只适合简单、受信或 legacy hosted 部署，不应被理解成 managed multi-user IAM 的替代品。Internet-facing Server 通常应使用 pairing + managed PAT/Runner credential，或 managed OAuth。
 
 ## Project Credential
 
@@ -97,7 +97,7 @@ OAuth 允许 MCP/GPT client 使用 authorization-code flow，而不是在 client
 
 WebCodex 新增 scope 时不会静默扩大已有 OAuth client 的权限上限。修改 allow-list 是显式管理操作，并会让旧 grant 失效，要求 client 重新授权。
 
-普通 hosted shared-key OAuth 使用 `webcodex connect ... --auth oauth`：Runner 继续使用 shared key，而 MCP client 获得独立 OAuth credential。`--oauth-computer-permissions` 显式开放该流程中的额外 Computer 权限；`--oauth-local-mcp` 显式开放 Runner-owned local MCP provider。Managed-user OAuth 仍是另一条高级流程（`--auth managed-oauth`）。
+只有显式启用 remote shared-key 的 hosted 部署才能使用 ordinary shared-key OAuth：`webcodex connect ... --auth oauth` 让 Runner 继续使用 shared key，而 MCP client 获得独立 OAuth credential。仅执行 `webcodex server init --public-url ...` 不再自动开放这条 bridge。`--oauth-computer-permissions` 显式开放该流程中的额外 Computer 权限；`--oauth-local-mcp` 显式开放 Runner-owned local MCP provider。公网多用户部署优先使用 managed-user OAuth（`--auth managed-oauth`）。
 
 Server 侧配置见[部署指南](DEPLOYMENT.zh-CN.md#oauth2)；MCP client 设置见 [MCP](MCP.zh-CN.md#oauth2)。
 

@@ -412,11 +412,13 @@ Options:\n\
   --data-dir PATH        Data directory\n\
   --env-file PATH        Server env file\n\
   --public-url URL       Optional public URL\n\
+  --allow-remote-shared-key\n\
+                         Explicitly allow direct shared-key auth on non-loopback/public deployments\n\
   --open                 Allow anonymous access for trusted demos\n\
   --overwrite            Update an existing env file while preserving its token\n\
   --json                 Print a summary without the full token\n\
   -h, --help             Print help and exit\n\n\
-Shared-key mode is enabled. The full bootstrap token is saved only in the env file.\n"
+Shared-key quick-start is local-only by default. Remote shared-key exposure requires --allow-remote-shared-key. The full bootstrap token is saved only in the env file.\n"
 }
 
 pub(crate) fn server_install_service_usage() -> &'static str {

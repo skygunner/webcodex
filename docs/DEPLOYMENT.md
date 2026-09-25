@@ -93,6 +93,8 @@ keep the bootstrap administrator token on the Server and follow the pairing /
 `webcodex login` flow below. For automation of a shared-key deployment, prefer
 `--key-file <path>` over `--key`. Do not pass both.
 
+A public/non-loopback Server accepts direct shared-key credentials only after explicit operator opt-in. Initialize that legacy/trusted mode with `webcodex server init --public-url https://your-server.example --allow-remote-shared-key`, or set both `WEBCODEX_SHARED_KEY_ENABLED=true` and `WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true` in a hand-managed environment. Without the remote opt-in, unknown non-`wc_*` bearer values are rejected on public/non-loopback exposure. Prefer pairing plus managed PAT/Runner credentials for new Internet-facing deployments.
+
 ## First production deployment
 
 A first-time operator does not need OAuth, QUIC, or account credentials. The
@@ -412,14 +414,21 @@ manual config generation uses `webcodex runner init`.
 
 ## OAuth2
 
-OAuth2 remains disabled by default when a Server has no public origin. `webcodex server init --public-url https://your-domain.example` writes the public URL, enables OAuth with that exact issuer, and enables the shared-key OAuth bridge for ordinary hosted connect. For a hand-managed env file, the equivalent settings are:
+OAuth2 remains disabled by default when a Server has no public origin. `webcodex server init --public-url https://your-domain.example` writes the public URL and enables OAuth with that exact issuer, but does **not** enable direct shared-key auth or the shared-key OAuth bridge. For the managed/default public path, the equivalent settings are:
 
 ```text
 WEBCODEX_PUBLIC_URL=https://your-domain.example
 WEBCODEX_OAUTH2_ENABLED=true
 WEBCODEX_OAUTH2_ISSUER=https://your-domain.example
-WEBCODEX_OAUTH2_SHARED_KEY_BRIDGE=true
 ```
+
+Legacy/trusted hosted shared-key OAuth requires explicit acknowledgement:
+
+```bash
+webcodex server init --public-url https://your-domain.example --allow-remote-shared-key
+```
+
+The hand-managed equivalent additionally sets `WEBCODEX_SHARED_KEY_ENABLED=true`, `WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true`, and `WEBCODEX_OAUTH2_SHARED_KEY_BRIDGE=true`.
 
 For ordinary repository machines, no managed login is required. Connect with the MCP client's exact callback:
 

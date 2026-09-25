@@ -80,6 +80,8 @@ Server 同时看到 Runner 与项目。把输出的 `/mcp` URL 与 credential �
 administrator token 留在 Server，并按下文 pairing / `webcodex login` 流程接入仓库机器。
 shared-key 自动化场景优先使用 `--key-file <path>`，不要与 `--key` 同时传入。
 
+公网/non-loopback Server 只有在 operator 显式 opt-in 后才接受 direct shared-key credential。legacy/受信 hosted 模式应使用 `webcodex server init --public-url https://your-server.example --allow-remote-shared-key`，或在手工 env 中同时设置 `WEBCODEX_SHARED_KEY_ENABLED=true` 与 `WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true`。没有 remote opt-in 时，公网/non-loopback 暴露上的未知非 `wc_*` bearer 会被拒绝。新的 Internet-facing 部署优先使用 pairing + managed PAT/Runner credential。
+
 ## 首次生产部署
 
 初次运维者不需要 OAuth、QUIC 或 account credential。最小生产路径：
@@ -359,14 +361,21 @@ Plugin discovery 重启 Runner。
 
 ## OAuth2
 
-Server 没有公网 origin 时 OAuth2 仍默认关闭。使用 `webcodex server init --public-url https://your-domain.example` 时，初始化会写入 public URL、以该 URL 作为 issuer 启用 OAuth，并为普通 hosted connect 启用 shared-key OAuth bridge。手工维护 env 时等价配置为：
+Server 没有公网 origin 时 OAuth2 仍默认关闭。使用 `webcodex server init --public-url https://your-domain.example` 时，初始化会写入 public URL，并以该 URL 作为 issuer 启用 OAuth，但**不会**自动启用 direct shared-key 或 shared-key OAuth bridge。managed/default 公网路径的手工 env 等价配置为：
 
 ```text
 WEBCODEX_PUBLIC_URL=https://your-domain.example
 WEBCODEX_OAUTH2_ENABLED=true
 WEBCODEX_OAUTH2_ISSUER=https://your-domain.example
-WEBCODEX_OAUTH2_SHARED_KEY_BRIDGE=true
 ```
+
+legacy/受信 hosted shared-key OAuth 必须显式确认：
+
+```bash
+webcodex server init --public-url https://your-domain.example --allow-remote-shared-key
+```
+
+手工 env 的等价配置还需要 `WEBCODEX_SHARED_KEY_ENABLED=true`、`WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true` 与 `WEBCODEX_OAUTH2_SHARED_KEY_BRIDGE=true`。
 
 普通仓库机器不需要 managed login，直接使用 MCP 客户端要求的精确 callback：
 

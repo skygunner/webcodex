@@ -65,7 +65,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -188,7 +188,7 @@ jobs:
       CARGO_CACHE_DIR: /tmp/webcodex-release-cargo-${{ matrix.platform }}
       RUSTUP_CACHE_DIR: /tmp/webcodex-release-rustup-${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -196,7 +196,7 @@ jobs:
           ref: refs/tags/${{ inputs.tag }}
 
       - name: Restore Rust build cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ${{ env.CARGO_CACHE_DIR }}
@@ -321,7 +321,7 @@ jobs:
             '
 
       - name: Upload Linux candidate
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ needs.prepare.outputs.archive_stem }}-${{ matrix.platform }}
           path: |
@@ -362,17 +362,17 @@ jobs:
       EXPECTED_RUST_HOST: ${{ matrix.rust_host }}
       EXPECTED_FILE_ARCH: ${{ matrix.file_arch }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
           ref: refs/tags/${{ inputs.tag }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           shared-key: release-${{ matrix.platform }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
@@ -510,7 +510,7 @@ jobs:
             --evidence "$GITHUB_WORKSPACE/dist/${{ steps.desktop_bundle.outputs.desktop_name }}.evidence.json"
 
       - name: Upload macOS candidate
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ needs.prepare.outputs.archive_stem }}-${{ matrix.platform }}
           path: |
@@ -555,20 +555,20 @@ jobs:
       EXPECTED_PROCESSOR_ARCHITECTURE: ${{ matrix.processor_architecture }}
       EXPECTED_PE_MACHINE: ${{ matrix.pe_machine }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
           ref: refs/tags/${{ inputs.tag }}
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: ${{ matrix.rust_target }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           architecture: ${{ matrix.node_architecture }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           shared-key: release-${{ matrix.platform }}
 
@@ -718,7 +718,7 @@ jobs:
             -Platform $env:WEBCODEX_RELEASE_PLATFORM
 
       - name: Upload Windows candidate
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ needs.prepare.outputs.archive_stem }}-${{ matrix.platform }}
           path: |
@@ -729,7 +729,7 @@ jobs:
           compression-level: 0
 
       - name: Upload native Windows Desktop candidate
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ needs.prepare.outputs.archive_stem }}-desktop-${{ matrix.platform }}
           path: |
@@ -751,7 +751,7 @@ jobs:
       ARCHIVE_STEM: ${{ needs.prepare.outputs.archive_stem }}
       INPUT_TAG: ${{ inputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -759,7 +759,7 @@ jobs:
           ref: refs/tags/${{ inputs.tag }}
 
       - name: Download same-run native candidates
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: ${{ needs.prepare.outputs.archive_stem }}-*
           path: candidate-input
@@ -952,7 +952,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload assembled candidate set
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ needs.prepare.outputs.archive_stem }}-bundle
           path: release-bundle/*

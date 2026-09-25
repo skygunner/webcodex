@@ -7,8 +7,8 @@ use salvo::prelude::*;
 
 use super::context::{AuthContext, AuthError};
 use super::shared_key::{
-    allow_anonymous_enabled, is_managed_token_prefix, open_anonymous_context, shared_key_context,
-    shared_key_enabled,
+    allow_anonymous_enabled, direct_shared_key_enabled, is_managed_token_prefix,
+    open_anonymous_context, shared_key_context, shared_key_remote_enabled,
 };
 use super::tokens::{authenticate, is_oauth2_access_token};
 use super::{bootstrap_context, scopes};
@@ -423,7 +423,7 @@ impl Handler for AuthMiddleware {
                 // verification are always rejected.
                 let trimmed = token.trim();
                 if config.is_auth_enabled()
-                    && shared_key_enabled()
+                    && direct_shared_key_http_enabled(&config, req)
                     && !trimmed.is_empty()
                     && !is_managed_token_prefix(trimmed)
                 {
@@ -596,6 +596,21 @@ fn is_loopback_host(host: &str) -> bool {
 fn is_unspecified_host(host: &str) -> bool {
     host.parse::<std::net::IpAddr>()
         .is_ok_and(|address| address.is_unspecified())
+}
+
+fn request_authority_is_loopback(req: &Request) -> bool {
+    let authority = req
+        .headers()
+        .get("host")
+        .and_then(|value| value.to_str().ok())
+        .or_else(|| req.uri().authority().map(|authority| authority.as_str()))
+        .and_then(parse_http_authority);
+    authority.is_some_and(|authority| is_loopback_host(&authority.host))
+}
+
+fn direct_shared_key_http_enabled(config: &Config, req: &Request) -> bool {
+    direct_shared_key_enabled(config)
+        && (shared_key_remote_enabled() || request_authority_is_loopback(req))
 }
 
 fn configured_public_origin() -> Option<HttpOrigin> {

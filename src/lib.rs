@@ -210,6 +210,18 @@ pub async fn run_server_with_parent_liveness(
         );
     }
     let config = Config::from_env();
+    if crate::auth::shared_key_enabled() {
+        let remote_boundary = crate::auth::shared_key_requires_remote_opt_in(&config);
+        if remote_boundary && crate::auth::shared_key_remote_enabled() {
+            tracing::warn!(
+                "Direct shared-key fallback is remotely exposed by explicit WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true; any unknown non-wc_* Bearer becomes a shared-key principal. Prefer managed PAT/OAuth/Runner credentials for Internet-facing deployments."
+            );
+        } else if remote_boundary {
+            tracing::warn!(
+                "Direct shared-key fallback is configured but disabled because the Server is not local-only. Use managed PAT/OAuth/Runner credentials, or explicitly set WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true to acknowledge remote shared-key exposure."
+            );
+        }
+    }
     let (acceptor, listener_mode, listener_addr) = server_listener::server_acceptor(&config.addr)
         .await
         .map_err(std::io::Error::other)?;

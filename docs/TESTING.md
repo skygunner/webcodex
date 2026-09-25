@@ -40,6 +40,8 @@ of a Job/transport regression.
 | real-process job reconciliation harness | Boot a real server plus a WebSocket runner that advertises `job_state_reconciliation`. Scenario A keeps a raw async Job running across a SERVER-only restart and asserts the SAME runner instance, original `job_id`, preserved ownership/project/session, non-regressing sequence/log cursors, `recovered_after_server_restart`, original-process stop, and one side-effect set. Scenario B lets a Job complete while the Server is offline and reconciles the terminal result without duplicate logs or execution. Scenario C forces `run_process` past its synchronous grace window, then proves the handed-off structured Job survives a Server restart and an old Server-epoch observation token refreshes immediately for the same `job_id`. Scenario D uses a delayed Cargo fixture to force a real `cargo_check` validation handoff past its sync window, then proves the same restart/token-refresh/stop contract with the validation command started exactly once. Ordinary Runner-owned Jobs keep the Runner process alive for these scenarios; `run_detached_process` restart survival is a separate supervisor-ownership contract covered by its focused Runner suites and production dogfood. | Local processes, temp dirs/ports/tokens, and a temp project; no production services or QUIC certs. Scenario D intentionally takes roughly the validation sync window plus restart time. | `bash scripts/e2e_job_reconciliation_ws.sh` |
 | real-process job recovery failure/non-reconciliation harness | Cover the failure and non-reconciliation paths the happy-path reconciliation harness omits, using `WEBCODEX_JOB_RECOVERY_GRACE_SECS=10` (clamped, above the 5s floor) so the deadline is bounded without waiting the 120s default. Scenario C: kill the runner only (server stays up), let the job enter `recovering`, and assert the non-request-triggered recovery-timeout sweep transitions it to `lost` with `runner_recovery_deadline_exceeded`, `ended_at` set once, one list record, stop-on-lost stable, and the command never re-executes. Scenario D: instance B replaces instance A (same client_id, new `agent_instance_id`); A's job becomes `lost` with `runner_instance_replaced`, B starts its own new job, A's late update is rejected, first `ended_at`/reason preserved. Scenario E: a generation-2 Runner registered with `WEBCODEX_RUNNER_DISABLE_JOB_STATE_RECONCILIATION=1` (no capability, no inventory) dispatches a job and, on disconnect, deterministically fences it to `lost` with `runner_disconnected_without_reconciliation` (never `recovering`); after a server restart its public lost receipt remains observable within retention, and a same-client new no-reconciliation instance cannot revive execution. Scenario E deliberately does **not** assert a healthy live update stream: the current JobManager emits authoritative `log_snapshot` updates and the Server rejects those without reconciliation capability. Scenario F: a long job across three server restarts keeps the same `job_id`, runs the command once, keeps `last_update_seq`/log cursors non-regressing and markers non-duplicating, and reaches a terminal `stopped` that survives a third restart with `ended_at` unchanged by terminal inventory replay. | Local processes, temp dirs/ports/tokens, and a temp project; no production services or QUIC certs. | `bash scripts/e2e_job_recovery_failures_ws.sh` |
 | security auth matrix | Cover OAuth, scope policy, shared-key behavior, token classes, read-only session guards, and denied mutations. | No external identity provider by default; use local fixtures and synthetic tokens. | `cargo test -p webcodex --lib oauth -- --nocapture`; `cargo test -p webcodex --lib scope -- --nocapture`; `cargo test -p webcodex --lib metadata -- --nocapture` |
+
+Security-boundary changes to shared-key exposure, Config secret handling, workflow permissions, or GitHub Action pinning must also follow [`agent/security-hardening-testing.md`](agent/security-hardening-testing.md). Its fast supply-chain guard is `python3 scripts/tests/test_workflow_security.py`; run the listed focused auth/CLI tests before delegating broad security and monolithic regression.
 | MCP conformance baseline | Exercise the real Salvo `/mcp` handlers through a disposable loopback fixture against a pinned upstream referee, then gate on check-level coverage/classification rather than process exit alone. | Loopback product fixture; immutable external referee source/dependencies fetched only by the explicit script/CI lane; no production credentials. | `bash scripts/mcp_conformance.sh`; see [`MCP_CONFORMANCE.md`](MCP_CONFORMANCE.md). |
 
 The MCP Apps' DOM/message-order regression tests run without browser or npm
@@ -202,15 +204,18 @@ The lanes above define test semantics; workflows decide when to run them.
   while diagnosing these tests.
 - Tests that touch HTTP/auth behavior must use `AuthEnvGuard` or an equivalent
   `TEST_ENV_LOCK` guard for auth mode env, especially
-  `WEBCODEX_SHARED_KEY_ENABLED`, `WEBCODEX_ALLOW_ANONYMOUS`,
-  and `WEBCODEX_OAUTH2_SHARED_KEY_BRIDGE`. Managed-token rejection tests should
+  `WEBCODEX_SHARED_KEY_ENABLED`, `WEBCODEX_SHARED_KEY_REMOTE_ENABLED`,
+  `WEBCODEX_PUBLIC_URL`, `WEBCODEX_ALLOW_ANONYMOUS`, and
+  `WEBCODEX_OAUTH2_SHARED_KEY_BRIDGE`. Managed-token rejection tests should
   explicitly disable direct shared-key fallback and open anonymous mode before
   asserting that an unknown or wrong bearer returns 401.
 - Keep the auth-mode semantics separate in tests:
-  `WEBCODEX_SHARED_KEY_ENABLED` is direct Bearer shared-key fallback, while
-  `WEBCODEX_OAUTH2_SHARED_KEY_BRIDGE` is only the OAuth authorize bridge.
-  Quick-start shared-key mode intentionally accepts an unknown non-`wc_` Bearer
-  as a lightweight shared-key principal, but invalid `wc_` managed-token
+  `WEBCODEX_SHARED_KEY_ENABLED` configures direct Bearer shared-key fallback;
+  `WEBCODEX_SHARED_KEY_REMOTE_ENABLED` is the separate acknowledgement required
+  outside local-only exposure, while `WEBCODEX_OAUTH2_SHARED_KEY_BRIDGE` is only
+  the OAuth authorize bridge. Local quick-start shared-key mode intentionally
+  accepts an unknown non-`wc_` Bearer as a lightweight shared-key principal, but
+  invalid `wc_` managed-token
   prefixes and empty or whitespace Bearer values must still be rejected.
 - Sleep, timeout, and polling tests must be bounded. Positive readiness uses one
   absolute deadline created once for the whole wait and never reset after partial

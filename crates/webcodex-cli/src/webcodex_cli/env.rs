@@ -31,6 +31,19 @@ pub(crate) fn is_effective_root() -> bool {
     paths::is_effective_root()
 }
 
+pub(crate) fn server_init_direct_shared_key_enabled(opts: &ServerInitOptions) -> bool {
+    if opts.allow_remote_shared_key {
+        return true;
+    }
+    if opts.public_url.is_some() {
+        return false;
+    }
+    opts.listen
+        .trim()
+        .parse::<std::net::SocketAddr>()
+        .is_ok_and(|address| address.ip().is_loopback())
+}
+
 pub(crate) fn render_server_env(opts: &ServerInitOptions, token: &str) -> String {
     let mut content = String::new();
     content.push_str(&format!("WEBCODEX_ADDR={}\n", opts.listen.trim()));
@@ -41,9 +54,16 @@ pub(crate) fn render_server_env(opts: &ServerInitOptions, token: &str) -> String
         content.push_str(&format!("WEBCODEX_PUBLIC_URL={public_url}\n"));
         content.push_str("WEBCODEX_OAUTH2_ENABLED=true\n");
         content.push_str(&format!("WEBCODEX_OAUTH2_ISSUER={public_url}\n"));
-        content.push_str("WEBCODEX_OAUTH2_SHARED_KEY_BRIDGE=true\n");
+        if opts.allow_remote_shared_key {
+            content.push_str("WEBCODEX_OAUTH2_SHARED_KEY_BRIDGE=true\n");
+        }
     }
-    content.push_str("WEBCODEX_SHARED_KEY_ENABLED=true\n");
+    if server_init_direct_shared_key_enabled(opts) {
+        content.push_str("WEBCODEX_SHARED_KEY_ENABLED=true\n");
+    }
+    if opts.allow_remote_shared_key {
+        content.push_str("WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true\n");
+    }
     if opts.open {
         content.push_str("WEBCODEX_ALLOW_ANONYMOUS=true\n");
     }

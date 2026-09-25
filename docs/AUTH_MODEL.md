@@ -71,9 +71,9 @@ The `wc_agent_*` prefix is a compatibility-facing historical name. In current pr
 
 ## Shared key (`wck_...`)
 
-A shared key is the simple hosted connection credential used by `webcodex connect`. The same key can authenticate the MCP/runtime client and the matching Runner group. Different shared keys remain isolated from each other.
+A shared key is the simple connection credential used by `webcodex connect`. Direct shared-key fallback is local-only by default: `WEBCODEX_SHARED_KEY_ENABLED=true` is sufficient only for a loopback/local-only Server. Public or non-loopback direct shared-key deployments require the operator to additionally set `WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true`, or initialize with `webcodex server init --allow-remote-shared-key`. The same key can then authenticate the MCP/runtime client and the matching Runner group; different keys remain isolated from each other.
 
-The protected profile stores the key after creation; repeated `connect` reuses it rather than printing it again. Shared-key mode is intended for simple trusted deployments, not as a replacement for managed multi-user IAM.
+The protected profile stores the key after creation; repeated `connect` reuses it rather than printing it again. Remote direct shared-key mode is intended only for simple trusted/legacy hosted deployments, not as a replacement for managed multi-user IAM. Internet-facing deployments should normally use pairing plus managed PAT/Runner credentials, or managed OAuth.
 
 ## Project Credential
 
@@ -97,7 +97,7 @@ The user-facing OAuth concepts are:
 
 WebCodex never silently expands an existing OAuth client's allowed permissions when new scopes are introduced. Changing the allow-list is an explicit administrative action and invalidates old grants so the client must authorize again.
 
-For ordinary hosted shared-key OAuth, `webcodex connect ... --auth oauth` keeps the Runner on its shared key and gives the MCP client a separate OAuth credential. `--oauth-computer-permissions` explicitly enables the additional Computer permissions offered by that flow; `--oauth-local-mcp` explicitly enables access to configured Runner-owned local MCP providers. Managed-user OAuth remains a separate advanced flow (`--auth managed-oauth`).
+For an explicitly enabled hosted shared-key deployment, `webcodex connect ... --auth oauth` keeps the Runner on its shared key and gives the MCP client a separate OAuth credential. The Server must have remote shared-key mode enabled; `webcodex server init --public-url ...` alone does not enable that bridge. `--oauth-computer-permissions` explicitly enables the additional Computer permissions offered by that flow; `--oauth-local-mcp` explicitly enables access to configured Runner-owned local MCP providers. Managed-user OAuth remains the preferred public multi-user flow (`--auth managed-oauth`).
 
 Server configuration is in [Deployment](DEPLOYMENT.md#oauth2); MCP client setup is in [MCP](MCP.md#oauth2).
 

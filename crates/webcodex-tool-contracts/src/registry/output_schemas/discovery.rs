@@ -46,12 +46,14 @@ pub(super) fn output_schema_for_tool(name: &str) -> Option<Value> {
                             "type": "object",
                             "additionalProperties": false,
                             "properties": {
-                                "shared_key_enabled": {"type": "boolean", "description": "Whether direct shared-key quick-start authentication is effective for the running Server."},
+                                "shared_key_configured": {"type": "boolean", "description": "Whether direct shared-key fallback was configured before local/remote exposure gating."},
+                                "shared_key_enabled": {"type": "boolean", "description": "Whether direct shared-key authentication is currently effective after local/remote exposure gating."},
+                                "shared_key_remote_enabled": {"type": "boolean", "description": "Whether the operator explicitly acknowledged remote direct shared-key exposure."},
                                 "anonymous_enabled": {"type": "boolean", "description": "Whether explicit open-anonymous access is effective for the running Server."},
                                 "oauth2_enabled": {"type": "boolean", "description": "Whether OAuth2 support was enabled in the running Server configuration."},
                                 "oauth2_shared_key_bridge_enabled": {"type": "boolean", "description": "Whether the OAuth2 shared-key bridge is enabled in the running OAuth2 configuration; false whenever OAuth2 itself is disabled. This public OAuth flow is distinct from direct Bearer shared-key authentication."}
                             },
-                            "required": ["shared_key_enabled", "anonymous_enabled", "oauth2_enabled", "oauth2_shared_key_bridge_enabled"]
+                            "required": ["shared_key_configured", "shared_key_enabled", "shared_key_remote_enabled", "anonymous_enabled", "oauth2_enabled", "oauth2_shared_key_bridge_enabled"]
                         },
                         "tool_request_trace_mode": {
                             "type": "string",

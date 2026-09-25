@@ -15,7 +15,7 @@
 //! or a Phase 2/3 API/agent token looked up by SHA-256 hash. TLS certificates
 //! are NOT trusted as authentication — the agent token is always validated.
 
-use crate::auth::authenticate_bearer;
+use crate::auth::{authenticate_bearer, shared_key_remote_enabled};
 use crate::config::{Config, QuicRuntimeStatus, QuicServerConfig};
 use crate::runner_http::{RunnerRegistry, RunnerTransport};
 use crate::runner_protocol::{
@@ -265,7 +265,13 @@ async fn handle_quic_connection(
 
     // 2. Authenticate the agent token exactly like the HTTP/WebSocket paths.
     //    The token is dropped immediately after auth so it is never logged.
-    let auth = authenticate_bearer(&config, db.as_ref(), auth_token.as_deref()).await;
+    let auth = authenticate_bearer(&config, db.as_ref(), auth_token.as_deref())
+        .await
+        .filter(|ctx| {
+            !ctx.is_shared_key()
+                || shared_key_remote_enabled()
+                || conn.local_ip().is_some_and(|address| address.is_loopback())
+        });
     drop(auth_token);
     let auth = match auth {
         Some(ctx) => ctx,

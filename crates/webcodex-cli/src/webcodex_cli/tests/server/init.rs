@@ -192,6 +192,7 @@ fn server_init_parse_defaults() {
         assert!(opts.data_dir.ends_with(".local/share/webcodex"));
         assert!(opts.env_file.ends_with(".config/webcodex/webcodex.env"));
     }
+    assert!(!opts.allow_remote_shared_key);
     assert!(!opts.overwrite);
     assert!(!opts.json);
 }
@@ -210,6 +211,7 @@ fn server_init_writes_env_file_and_0600_permissions() {
         env_file.to_str().unwrap(),
         "--public-url",
         "https://example.test/",
+        "--allow-remote-shared-key",
     ]))
     .unwrap();
     let output = run_server_init(opts).unwrap();
@@ -248,6 +250,7 @@ fn server_init_writes_env_file_and_0600_permissions() {
     assert!(content.contains("WEBCODEX_OAUTH2_ISSUER=https://example.test\n"));
     assert!(content.contains("WEBCODEX_OAUTH2_SHARED_KEY_BRIDGE=true\n"));
     assert!(content.contains("WEBCODEX_SHARED_KEY_ENABLED=true\n"));
+    assert!(content.contains("WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true\n"));
     let token = parse_env_content_value(&content, "WEBCODEX_TOKEN").unwrap();
     assert!(!output.contains(&token));
     assert!(!output.contains("token prefix:"), "{output}");
@@ -258,6 +261,48 @@ fn server_init_writes_env_file_and_0600_permissions() {
         let mode = std::fs::metadata(&env_file).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
     }
+}
+
+#[test]
+fn server_init_non_loopback_listen_does_not_enable_shared_key_by_default() {
+    let tmp = tempfile::tempdir().unwrap();
+    let env_file = tmp.path().join("webcodex.env");
+    let opts = parse_server_init(&args(&[
+        "--listen",
+        "0.0.0.0:8080",
+        "--env-file",
+        env_file.to_str().unwrap(),
+        "--data-dir",
+        tmp.path().to_str().unwrap(),
+    ]))
+    .unwrap();
+    assert!(!opts.allow_remote_shared_key);
+    run_server_init(opts).unwrap();
+    let content = std::fs::read_to_string(&env_file).unwrap();
+    assert!(!content.contains("WEBCODEX_SHARED_KEY_ENABLED=true"));
+    assert!(!content.contains("WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true"));
+}
+
+#[test]
+fn server_init_public_url_does_not_enable_remote_shared_key_by_default() {
+    let tmp = tempfile::tempdir().unwrap();
+    let env_file = tmp.path().join("webcodex.env");
+    let opts = parse_server_init(&args(&[
+        "--env-file",
+        env_file.to_str().unwrap(),
+        "--data-dir",
+        tmp.path().to_str().unwrap(),
+        "--public-url",
+        "https://example.test",
+    ]))
+    .unwrap();
+    assert!(!opts.allow_remote_shared_key);
+    run_server_init(opts).unwrap();
+    let content = std::fs::read_to_string(&env_file).unwrap();
+    assert!(!content.contains("WEBCODEX_SHARED_KEY_ENABLED=true"));
+    assert!(content.contains("WEBCODEX_OAUTH2_ENABLED=true\n"));
+    assert!(!content.contains("WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true"));
+    assert!(!content.contains("WEBCODEX_OAUTH2_SHARED_KEY_BRIDGE=true"));
 }
 
 #[test]
@@ -302,6 +347,8 @@ fn server_init_json_output_does_not_include_full_token() {
     assert!(!output.contains(&token));
     let json: Value = serde_json::from_str(&output).unwrap();
     assert_eq!(json["wrote_env_file"], true);
+    assert_eq!(json["shared_key_enabled"], true);
+    assert_eq!(json["shared_key_remote_enabled"], false);
     assert!(json["token_prefix"]
         .as_str()
         .unwrap()

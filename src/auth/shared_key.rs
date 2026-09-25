@@ -27,6 +27,44 @@ pub(crate) fn shared_key_enabled() -> bool {
     crate::config::env_flag("WEBCODEX_SHARED_KEY_ENABLED").unwrap_or(false)
 }
 
+/// Explicit operator acknowledgement that direct shared-key fallback may be
+/// exposed beyond a loopback-only Server. This is intentionally separate from
+/// WEBCODEX_SHARED_KEY_ENABLED: quick-start remains local-safe by default.
+pub(crate) fn shared_key_remote_enabled() -> bool {
+    crate::config::env_flag("WEBCODEX_SHARED_KEY_REMOTE_ENABLED").unwrap_or(false)
+}
+
+fn configured_public_url_is_non_loopback() -> bool {
+    let Ok(value) = std::env::var("WEBCODEX_PUBLIC_URL") else {
+        return false;
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return false;
+    }
+    let Ok(url) = url::Url::parse(value) else {
+        return true;
+    };
+    let Some(host) = url.host_str() else {
+        return true;
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return false;
+    }
+    !host
+        .parse::<std::net::IpAddr>()
+        .is_ok_and(|address| address.is_loopback())
+}
+
+pub(crate) fn shared_key_requires_remote_opt_in(config: &crate::Config) -> bool {
+    shared_key_enabled() && (!config.is_loopback_bound() || configured_public_url_is_non_loopback())
+}
+
+pub(crate) fn direct_shared_key_enabled(config: &crate::Config) -> bool {
+    shared_key_enabled()
+        && (!shared_key_requires_remote_opt_in(config) || shared_key_remote_enabled())
+}
+
 /// True when `token` uses a WebCodex managed-credential prefix. Tokens with
 /// these prefixes that fail verifier-chain validation are rejected outright
 /// rather than falling back to shared-key mode.

@@ -125,6 +125,8 @@ keep their detached-process behavior when `--scope` is omitted.
 
 On Windows, `server init`, foreground `server run`, and explicit `share` are supported. The managed service lifecycle (`install`, `start`, `stop`, `restart`, `logs`, `uninstall`) remains Linux-only.
 
+`webcodex server init` keeps direct shared-key quick-start local-only by default. Supplying `--public-url` enables the public OAuth issuer but does not enable direct/bridge shared-key authentication. Legacy/trusted hosted shared-key deployments must explicitly add `--allow-remote-shared-key`; prefer managed pairing/PAT/OAuth for Internet-facing Servers.
+
 `webcodex server install --service-file /path/name.service` derives the sibling
 `/path/name.socket`. Use the same `--service-file` on `start`, `stop`, `restart`,
 `status`, `logs`, and `uninstall` to manage or inspect that custom pair; omitting

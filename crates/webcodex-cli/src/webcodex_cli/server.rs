@@ -14,9 +14,9 @@ use super::{
     fetch_runtime_status, generate_bootstrap_token, install_server_unit_pair, is_effective_root,
     local_cli_build_metadata, query_systemd_service_status, query_systemd_socket_status,
     read_env_file_value, render_build_metadata_block, render_server_env, run_logs,
-    runtime_build_metadata, server_status_revision_check, service_unit_name, shell_command,
-    system_group_exists, system_user_exists, token_prefix, uninstall_server_unit_pair,
-    validate_systemd_identity, SERVER_SERVICE_UNIT, SERVER_SOCKET_UNIT,
+    runtime_build_metadata, server_init_direct_shared_key_enabled, server_status_revision_check,
+    service_unit_name, shell_command, system_group_exists, system_user_exists, token_prefix,
+    uninstall_server_unit_pair, validate_systemd_identity, SERVER_SERVICE_UNIT, SERVER_SOCKET_UNIT,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,7 +157,8 @@ pub(crate) fn run_server_init(opts: ServerInitOptions) -> Result<String, String>
             "data_dir": opts.data_dir.to_string_lossy(),
             "public_url": opts.public_url,
             "open": opts.open,
-            "shared_key_enabled": true,
+            "shared_key_enabled": server_init_direct_shared_key_enabled(&opts),
+            "shared_key_remote_enabled": opts.allow_remote_shared_key,
             "token_generated": token_generated,
             "token_prefix": token_prefix(&token),
             "wrote_env_file": true,

@@ -33,6 +33,9 @@ pub(crate) struct ListRunnersOptions {
 pub struct RuntimeInfo {
     pub auth_enabled: bool,
     pub configured_public_url: Option<String>,
+    pub shared_key_configured: bool,
+    pub shared_key_enabled: bool,
+    pub shared_key_remote_enabled: bool,
     pub oauth2_enabled: bool,
     pub oauth2_shared_key_bridge_enabled: bool,
     pub quic: Option<std::sync::Arc<std::sync::Mutex<crate::config::QuicRuntimeStatus>>>,
@@ -59,6 +62,9 @@ impl RuntimeInfo {
         Self {
             auth_enabled,
             configured_public_url,
+            shared_key_configured: crate::auth::shared_key_enabled(),
+            shared_key_enabled: crate::auth::direct_shared_key_enabled(config),
+            shared_key_remote_enabled: crate::auth::shared_key_remote_enabled(),
             oauth2_enabled: config.oauth2.enabled,
             oauth2_shared_key_bridge_enabled: config.oauth2.enabled
                 && config.oauth2.shared_key_bridge_enabled,
@@ -73,8 +79,11 @@ impl ToolRuntime {
     fn effective_config_status(&self) -> Value {
         json!({
             "auth": {
+                "shared_key_configured": self.runtime_info.auth_enabled
+                    && self.runtime_info.shared_key_configured,
                 "shared_key_enabled": self.runtime_info.auth_enabled
-                    && crate::auth::shared_key_enabled(),
+                    && self.runtime_info.shared_key_enabled,
+                "shared_key_remote_enabled": self.runtime_info.shared_key_remote_enabled,
                 "anonymous_enabled": self.runtime_info.auth_enabled
                     && crate::auth::allow_anonymous_enabled(),
                 "oauth2_enabled": self.runtime_info.oauth2_enabled,
@@ -1618,6 +1627,9 @@ impl Default for RuntimeInfo {
         Self {
             auth_enabled: false,
             configured_public_url: None,
+            shared_key_configured: false,
+            shared_key_enabled: false,
+            shared_key_remote_enabled: false,
             oauth2_enabled: false,
             oauth2_shared_key_bridge_enabled: false,
             quic: Some(std::sync::Arc::new(std::sync::Mutex::new(

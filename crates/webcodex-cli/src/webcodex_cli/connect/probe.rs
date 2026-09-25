@@ -38,7 +38,7 @@ pub(super) async fn preflight_shared_key(
     .await
     .map_err(|error| {
         format!(
-            "Server did not accept hosted shared-key access: {error}. Confirm shared-key mode is enabled and use a non-wc_ key"
+            "Server did not accept hosted shared-key access: {error}. Confirm remote shared-key mode is explicitly enabled (for example with server init --allow-remote-shared-key) and use a non-wc_ key"
         )
     })
 }

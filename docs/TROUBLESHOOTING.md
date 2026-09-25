@@ -184,6 +184,8 @@ for managed identity.
 register the generated credential with a remote Server, so do not use its
 output as a hosted shared key.
 
+If an existing hosted shared-key deployment starts returning 401 after this security hardening, verify that the Server operator intentionally enabled remote shared-key exposure with `WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true` (or reran `webcodex server init ... --allow-remote-shared-key`). Do not work around the gate by weakening managed-token prefix checks or using the bootstrap administrator token as a shared key.
+
 ### A hosted Runner stopped or its PID is stale
 
 Re-run the same `webcodex connect` command. The profile lock prevents duplicate

@@ -59,7 +59,7 @@ pub(crate) use env::is_effective_root;
 pub(crate) use env::parse_env_content_value;
 pub(crate) use env::{
     default_server_paths, read_env_file_value, read_pairing_server_env_file_value,
-    render_server_env,
+    render_server_env, server_init_direct_shared_key_enabled,
 };
 #[cfg(test)]
 pub(crate) use http::format_error_body;

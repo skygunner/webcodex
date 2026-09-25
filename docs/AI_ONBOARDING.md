@@ -50,9 +50,7 @@ Use `webcodex share --tunnel none` only for a local-only temporary trial, and `w
 
 ## Existing shared-key Server path: `connect`
 
-Use this path only when a hosted Server is already configured for shared-key
-clients and the operator supplied that client credential (or the machine already
-has the protected profile):
+Use this path only when a hosted Server is already explicitly configured for remote shared-key clients (`WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true` / `server init --allow-remote-shared-key`) and the operator supplied that client credential (or the machine already has the protected profile):
 
 ```bash
 cd /path/to/your/repository

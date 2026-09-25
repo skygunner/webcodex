@@ -642,6 +642,7 @@ fn stateless_workflow_recorder_metadata_adds_protocol_projection() {
             );
         }
         assert!(input.get("ack_session_message_ids").is_some());
+        assert!(input.get("ack_ref").is_some());
     }
     assert!(!read_files_output.contains("session_continuity"));
     assert!(!read_files_output.contains("session_recovery"));
@@ -664,6 +665,9 @@ fn stateless_workflow_recorder_metadata_adds_protocol_projection() {
         .contains_key(crate::tool_runtime::sessions::TOOL_CALL_RECORDING_SESSION_ID_FIELD));
     assert!(!generic_properties
         .contains_key(crate::tool_runtime::sessions::TOOL_CALL_ACK_SESSION_MESSAGE_IDS_FIELD));
+    assert!(
+        !generic_properties.contains_key(crate::tool_runtime::sessions::TOOL_CALL_ACK_REF_FIELD)
+    );
     assert!(!generic_properties
         .contains_key(crate::tool_runtime::sessions::TOOL_CALL_SESSION_MESSAGE_RESOLUTION_FIELD));
     assert!(!generic_properties.contains_key("ack_session_context_revision"));
@@ -706,6 +710,31 @@ fn stateless_ack_wrapper_normalizes_and_is_removed_before_concrete_tool_parsing(
                 .collect::<Vec<_>>()
     });
     assert!(strip_stateless_ack_session_message_ids(&mut oversized).is_err());
+}
+
+#[test]
+fn stateless_ack_ref_wrapper_is_bounded_and_removed_before_concrete_parsing() {
+    let mut arguments = json!({
+        crate::tool_runtime::sessions::TOOL_CALL_ACK_REF_FIELD: "  wc_ack1_example  "
+    });
+    let ack_ref = strip_stateless_ack_ref(&mut arguments).unwrap();
+    assert_eq!(ack_ref.as_deref(), Some("wc_ack1_example"));
+    assert!(arguments
+        .get(crate::tool_runtime::sessions::TOOL_CALL_ACK_REF_FIELD)
+        .is_none());
+    crate::tool_runtime::ToolCall::from_tool_name("list_tools", arguments)
+        .expect("ACK ref wrapper metadata must be gone before concrete parsing");
+
+    let mut wrong_type = json!({
+        crate::tool_runtime::sessions::TOOL_CALL_ACK_REF_FIELD: ["wc_ack1_example"]
+    });
+    assert!(strip_stateless_ack_ref(&mut wrong_type).is_err());
+
+    let mut oversized = json!({
+        crate::tool_runtime::sessions::TOOL_CALL_ACK_REF_FIELD:
+            "x".repeat(crate::tool_runtime::sessions::MAX_TOOL_CALL_ACK_REF_CHARS + 1)
+    });
+    assert!(strip_stateless_ack_ref(&mut oversized).is_err());
 }
 
 #[test]
@@ -798,6 +827,7 @@ fn stateless_invocation_metadata_stays_typed_and_business_arguments_stay_clean()
         "items": [{"path": "src/lib.rs"}],
         crate::tool_runtime::sessions::TOOL_CALL_RECORDING_SESSION_ID_FIELD: "wc_sess_adapter",
         crate::tool_runtime::sessions::TOOL_CALL_ACK_SESSION_MESSAGE_IDS_FIELD: ["wc_msg_abcd-efgh_ijklmn"],
+        crate::tool_runtime::sessions::TOOL_CALL_ACK_REF_FIELD: "wc_ack1_fixture",
         crate::tool_runtime::sessions::TOOL_CALL_SESSION_MESSAGE_RESOLUTION_FIELD: {
             "message_id": "wc_msg_abcd-efgh_ijklmn",
             "resolution": "handled"
@@ -806,12 +836,14 @@ fn stateless_invocation_metadata_stays_typed_and_business_arguments_stay_clean()
     });
     let recording_session_id = strip_recording_session_id(&mut arguments).unwrap();
     let ack_session_message_ids = strip_stateless_ack_session_message_ids(&mut arguments).unwrap();
+    let ack_ref = strip_stateless_ack_ref(&mut arguments).unwrap();
     let session_message_resolution =
         strip_stateless_session_message_resolution(&mut arguments).unwrap();
     let context_request = strip_stateless_context_request(&mut arguments).unwrap();
     let metadata = crate::tool_runtime::kernel::ToolInvocationMetadata {
         control: None,
         ack_session_message_ids,
+        ack_ref,
         session_message_resolution,
         context_request,
     };
@@ -821,11 +853,13 @@ fn stateless_invocation_metadata_stays_typed_and_business_arguments_stay_clean()
         metadata.ack_session_message_ids,
         vec!["wc_msg_abcd-efgh_ijklmn"]
     );
+    assert_eq!(metadata.ack_ref.as_deref(), Some("wc_ack1_fixture"));
     assert_eq!(metadata.context_request, vec!["webcodex.workflow"]);
     assert!(metadata.session_message_resolution.is_some());
     for field in [
         crate::tool_runtime::sessions::TOOL_CALL_RECORDING_SESSION_ID_FIELD,
         crate::tool_runtime::sessions::TOOL_CALL_ACK_SESSION_MESSAGE_IDS_FIELD,
+        crate::tool_runtime::sessions::TOOL_CALL_ACK_REF_FIELD,
         crate::tool_runtime::sessions::TOOL_CALL_SESSION_MESSAGE_RESOLUTION_FIELD,
         crate::tool_runtime::context_projection::TOOL_CALL_CONTEXT_REQUEST_FIELD,
     ] {

@@ -2202,6 +2202,10 @@ async fn same_window_recorder_gap_is_visible_without_backfilling_session_ledger(
         unrecorded_result.output["session_attention"]["messages"][0]["message"],
         "same-window attention without recorder"
     );
+    let affinity_ack_ref = unrecorded_result.output["session_attention"]["ack_ref"]
+        .as_str()
+        .expect("Window-affinity Session attention should expose ack_ref")
+        .to_string();
     assert_eq!(
         runtime
             .sessions
@@ -2223,7 +2227,7 @@ async fn same_window_recorder_gap_is_visible_without_backfilling_session_ledger(
         window_id,
         ToolTransport::Mcp,
         ToolInvocationMetadata {
-            ack_session_message_ids: vec![guidance.message_id.clone()],
+            ack_ref: Some(affinity_ack_ref),
             ..Default::default()
         },
     )

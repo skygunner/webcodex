@@ -212,6 +212,7 @@ fn unwrap_adaptive_runtime_gateway_arguments(
         allowed_wrapper_fields.extend([
             crate::tool_runtime::sessions::TOOL_CALL_RECORDING_SESSION_ID_FIELD,
             crate::tool_runtime::sessions::TOOL_CALL_ACK_SESSION_MESSAGE_IDS_FIELD,
+            crate::tool_runtime::sessions::TOOL_CALL_ACK_REF_FIELD,
             crate::tool_runtime::sessions::TOOL_CALL_SESSION_MESSAGE_RESOLUTION_FIELD,
             crate::tool_runtime::context_projection::TOOL_CALL_CONTEXT_REQUEST_FIELD,
             crate::tool_runtime::control_sidecar::CONTROL_FIELD,
@@ -460,6 +461,14 @@ fn stateless_collaboration_ack_schema() -> Value {
     })
 }
 
+fn stateless_session_ack_ref_schema() -> Value {
+    json!({
+        "type": "string",
+        "maxLength": crate::tool_runtime::sessions::MAX_TOOL_CALL_ACK_REF_CHARS,
+        "description": "Compact request-scoped ACK evidence returned as session_attention.ack_ref for the exact retained Session ACK set represented by that exchange. It acknowledges only that Session set, grants no authority, never resolves messages, and does not apply to Peer ACK."
+    })
+}
+
 fn stateless_session_attention_output_schema() -> Value {
     json!({
         "type": "object",
@@ -475,6 +484,11 @@ fn stateless_session_attention_output_schema() -> Value {
                 "enum": ["recording_session", "business_session", "window_affinity"]
             },
             "requires_ack": {"type": "boolean"},
+            "ack_ref": {
+                "type": "string",
+                "maxLength": crate::tool_runtime::sessions::MAX_TOOL_CALL_ACK_REF_CHARS,
+                "description": "Exact compact Session ACK set retained across this exchange; echo on a later request while this context is still retained."
+            },
             "messages": {
                 "type": "array",
                 "maxItems": crate::tool_runtime::SESSION_ATTENTION_MAX_MESSAGES,
@@ -537,6 +551,10 @@ fn insert_stateless_collaboration_ack_property(properties: &mut serde_json::Map<
     properties.insert(
         crate::tool_runtime::sessions::TOOL_CALL_ACK_SESSION_MESSAGE_IDS_FIELD.to_string(),
         stateless_collaboration_ack_schema(),
+    );
+    properties.insert(
+        crate::tool_runtime::sessions::TOOL_CALL_ACK_REF_FIELD.to_string(),
+        stateless_session_ack_ref_schema(),
     );
 }
 
@@ -1474,6 +1492,31 @@ pub(super) fn strip_stateless_ack_session_message_ids(
     Ok(normalized)
 }
 
+pub(super) fn strip_stateless_ack_ref(arguments: &mut Value) -> Result<Option<String>, String> {
+    let Some(object) = arguments.as_object_mut() else {
+        return Ok(None);
+    };
+    match object.remove(crate::tool_runtime::sessions::TOOL_CALL_ACK_REF_FIELD) {
+        None => Ok(None),
+        Some(Value::String(value)) => {
+            let value = value.trim();
+            if value.is_empty()
+                || value.len() > crate::tool_runtime::sessions::MAX_TOOL_CALL_ACK_REF_CHARS
+            {
+                return Err(format!(
+                    "field '{}' must be a non-empty bounded string",
+                    crate::tool_runtime::sessions::TOOL_CALL_ACK_REF_FIELD
+                ));
+            }
+            Ok(Some(value.to_string()))
+        }
+        Some(_) => Err(format!(
+            "field '{}' must be a non-empty bounded string",
+            crate::tool_runtime::sessions::TOOL_CALL_ACK_REF_FIELD
+        )),
+    }
+}
+
 pub(super) fn strip_stateless_session_message_resolution(
     arguments: &mut Value,
 ) -> Result<Option<crate::tool_runtime::sessions::ToolCallSessionMessageResolution>, String> {
@@ -1695,6 +1738,20 @@ pub(super) async fn handle_call(
         }
     } else {
         Vec::new()
+    };
+    let ack_ref = if stateless_2026 {
+        match strip_stateless_ack_ref(&mut params.arguments) {
+            Ok(ack_ref) => ack_ref,
+            Err(message) => {
+                if let Some(lc) = lifecycle.as_deref() {
+                    lc.dispatch_failed("invalid_arguments");
+                    lc.dispatch_finished(false, Some(false), "invalid_arguments");
+                }
+                return McpOutcome::BadRequest(rpc_error(id, -32602, message));
+            }
+        }
+    } else {
+        None
     };
     // Strip private control payloads before tracing, canonical argument parsing,
     // specialized dispatch, and audit. Legacy/hidden adapters reject explicitly.
@@ -2252,6 +2309,7 @@ pub(super) async fn handle_call(
             ToolInvocationMetadata {
                 control,
                 ack_session_message_ids,
+                ack_ref,
                 session_message_resolution,
                 context_request,
             },

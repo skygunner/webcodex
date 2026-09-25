@@ -36,7 +36,7 @@ fn retained_terminal_job(job_id: &str, ended_at: i64) -> RunningJob {
 }
 
 #[test]
-fn heartbeat_batch_advances_only_running_jobs_and_queues_coalescible_update() {
+fn heartbeat_batch_advances_all_runner_active_jobs_and_skips_terminal_jobs() {
     let manager = JobManager::new(1);
     let running_id = "heartbeat-running";
     lock_unpoison(&manager.jobs).insert(
@@ -50,6 +50,35 @@ fn heartbeat_batch_advances_only_running_jobs_and_queues_coalescible_update() {
             slot_reserved: true,
         },
     );
+    let queued_id = "heartbeat-agent-queued";
+    let mut queued = test_job_snapshot(queued_id);
+    queued.status = "agent_queued".to_string();
+    queued.started_at = None;
+    lock_unpoison(&manager.jobs).insert(
+        queued_id.to_string(),
+        RunningJob {
+            client_id: "test-agent".to_string(),
+            runner_instance_id: "test-instance".to_string(),
+            snapshot: queued,
+            child: None,
+            stop_requested: Arc::new(AtomicBool::new(false)),
+            slot_reserved: false,
+        },
+    );
+    let stopping_id = "heartbeat-stop-requested";
+    let mut stopping = test_job_snapshot(stopping_id);
+    stopping.status = "stop_requested".to_string();
+    lock_unpoison(&manager.jobs).insert(
+        stopping_id.to_string(),
+        RunningJob {
+            client_id: "test-agent".to_string(),
+            runner_instance_id: "test-instance".to_string(),
+            snapshot: stopping,
+            child: None,
+            stop_requested: Arc::new(AtomicBool::new(true)),
+            slot_reserved: true,
+        },
+    );
     let terminal_id = "heartbeat-terminal";
     lock_unpoison(&manager.jobs).insert(
         terminal_id.to_string(),
@@ -58,21 +87,91 @@ fn heartbeat_batch_advances_only_running_jobs_and_queues_coalescible_update() {
 
     assert_eq!(
         queue_job_heartbeat_batch(&manager.jobs, &manager.pending_job_updates),
-        1
+        3
     );
     let jobs = lock_unpoison(&manager.jobs);
     assert_eq!(jobs[running_id].snapshot.update_seq, 2);
+    assert_eq!(jobs[queued_id].snapshot.update_seq, 2);
+    assert_eq!(jobs[stopping_id].snapshot.update_seq, 2);
     assert_eq!(jobs[terminal_id].snapshot.update_seq, 1);
     drop(jobs);
 
     let pending = lock_unpoison(&manager.pending_job_updates);
-    let queued = pending
-        .get(running_id)
-        .and_then(JobUpdateDeliveryQueue::next)
-        .expect("heartbeat update queued");
-    assert_eq!(queued.update_seq, 2);
-    assert!(!queued.finished);
+    for job_id in [running_id, queued_id, stopping_id] {
+        let update = pending
+            .get(job_id)
+            .and_then(JobUpdateDeliveryQueue::next)
+            .expect("heartbeat update queued");
+        assert_eq!(update.update_seq, 2);
+        assert!(!update.finished);
+    }
     assert!(pending.get(terminal_id).is_none());
+}
+
+#[test]
+fn delivery_queue_orders_semantic_truth_and_drops_stale_output_only_updates() {
+    let mut queue = JobUpdateDeliveryQueue::default();
+    let mut semantic = RunnerJobUpdateRequest {
+        client_id: "test-agent".into(),
+        runner_instance_id: "test-instance".into(),
+        update_seq: Some(3),
+        job_id: "ordered-delivery".into(),
+        request_id: Some("request-ordered-delivery".into()),
+        status: "stop_requested".into(),
+        stdout_chunk: None,
+        stderr_chunk: None,
+        log_snapshot: None,
+        exit_code: None,
+        duration_ms: None,
+        error: Some("stop requested".into()),
+        command_execution_state: None,
+        validation_progress: None,
+        test_count_evidence: None,
+        activity: None,
+        finished: false,
+    };
+    assert!(queue.enqueue(PendingJobUpdateDelivery::from_update(&semantic), true));
+
+    let mut stale_heartbeat = semantic.clone();
+    stale_heartbeat.update_seq = Some(2);
+    stale_heartbeat.status = "running".into();
+    stale_heartbeat.error = None;
+    assert!(queue.enqueue(
+        PendingJobUpdateDelivery::from_update(&stale_heartbeat),
+        false
+    ));
+    assert_eq!(queue.required.len(), 1);
+    assert_eq!(queue.required.front().unwrap().update_seq, 3);
+    assert!(queue.output_only.is_none());
+
+    semantic.update_seq = Some(5);
+    assert!(queue.enqueue(PendingJobUpdateDelivery::from_update(&semantic), true));
+    semantic.update_seq = Some(4);
+    assert!(queue.enqueue(PendingJobUpdateDelivery::from_update(&semantic), true));
+    assert_eq!(
+        queue
+            .required
+            .iter()
+            .map(|pending| pending.update_seq)
+            .collect::<Vec<_>>(),
+        vec![3, 4, 5]
+    );
+
+    semantic.update_seq = Some(6);
+    assert!(queue.enqueue(PendingJobUpdateDelivery::from_update(&semantic), false));
+    assert_eq!(queue.output_only.as_ref().unwrap().update_seq, 6);
+
+    semantic.update_seq = Some(7);
+    assert!(queue.enqueue(PendingJobUpdateDelivery::from_update(&semantic), true));
+    assert!(queue.output_only.is_none());
+    assert_eq!(
+        queue
+            .required
+            .iter()
+            .map(|pending| pending.update_seq)
+            .collect::<Vec<_>>(),
+        vec![3, 4, 5, 7]
+    );
 }
 
 #[test]

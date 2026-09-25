@@ -182,7 +182,9 @@ async fn update_sequenced_observed_job(
     client_id: &str,
     request: &RunnerRequest,
     sequence: u64,
+    status: &str,
     stdout_chunk: Option<&str>,
+    finished: bool,
 ) {
     runtime
         .runner_registry
@@ -192,18 +194,18 @@ async fn update_sequenced_observed_job(
             update_seq: Some(sequence),
             job_id: request.job_id.clone().expect("Job request id"),
             request_id: Some(request.request_id.clone()),
-            status: "running".to_string(),
+            status: status.to_string(),
             stdout_chunk: stdout_chunk.map(str::to_string),
             stderr_chunk: None,
             log_snapshot: None,
-            exit_code: None,
-            duration_ms: None,
+            exit_code: finished.then_some(0),
+            duration_ms: finished.then_some(25),
             error: None,
             command_execution_state: None,
             validation_progress: None,
             test_count_evidence: None,
             activity: None,
-            finished: false,
+            finished,
         })
         .await
         .unwrap();
@@ -1604,7 +1606,16 @@ async fn observe_jobs_meaningful_change_suppresses_heartbeat_then_change_reports
     let runtime = test_runtime();
     let client_id = "observe-meaningful-heartbeat";
     let (job_id, request, auth) = register_and_start_sequenced_agent_job(&runtime, client_id).await;
-    update_sequenced_observed_job(&runtime, client_id, &request, 1, Some("baseline\n")).await;
+    update_sequenced_observed_job(
+        &runtime,
+        client_id,
+        &request,
+        1,
+        "running",
+        Some("baseline\n"),
+        false,
+    )
+    .await;
     let token = observation_token(&runtime, &job_id, &auth).await;
 
     let waiting_runtime = runtime.clone();
@@ -1620,14 +1631,23 @@ async fn observe_jobs_meaningful_change_suppresses_heartbeat_then_change_reports
     tokio::pin!(meaningful);
     assert!(futures_util::poll!(&mut meaningful).is_pending());
 
-    update_sequenced_observed_job(&runtime, client_id, &request, 2, None).await;
+    update_sequenced_observed_job(&runtime, client_id, &request, 2, "running", None, false).await;
     tokio::time::sleep(Duration::from_millis(75)).await;
     assert!(
         futures_util::poll!(&mut meaningful).is_pending(),
         "heartbeat-only revision must not satisfy meaningful_change"
     );
 
-    update_sequenced_observed_job(&runtime, client_id, &request, 3, Some("meaningful\n")).await;
+    update_sequenced_observed_job(
+        &runtime,
+        client_id,
+        &request,
+        3,
+        "running",
+        Some("meaningful\n"),
+        false,
+    )
+    .await;
     let result = tokio::time::timeout(Duration::from_secs(1), meaningful)
         .await
         .expect("meaningful output must wake promptly");
@@ -1652,7 +1672,7 @@ async fn observe_jobs_meaningful_change_suppresses_heartbeat_then_change_reports
     );
     tokio::pin!(change);
     assert!(futures_util::poll!(&mut change).is_pending());
-    update_sequenced_observed_job(&runtime, client_id, &request, 4, None).await;
+    update_sequenced_observed_job(&runtime, client_id, &request, 4, "running", None, false).await;
     let result = tokio::time::timeout(Duration::from_secs(1), change)
         .await
         .expect("compatible change policy must expose heartbeat liveness");
@@ -1665,6 +1685,81 @@ async fn observe_jobs_meaningful_change_suppresses_heartbeat_then_change_reports
     assert_eq!(output["meaningful_changed"], false);
     assert_eq!(output["heartbeat_changed"], true);
     assert_eq!(output["stdout_tail"], "");
+}
+
+#[tokio::test]
+async fn observe_jobs_terminal_policies_ignore_heartbeat_only_revisions() {
+    for policy in [ObserveJobsWakeOn::Terminal, ObserveJobsWakeOn::AllTerminal] {
+        let runtime = test_runtime();
+        let client_id = "observe-terminal-heartbeat";
+        let (job_id, request, auth) =
+            register_and_start_sequenced_agent_job(&runtime, client_id).await;
+        update_sequenced_observed_job(
+            &runtime,
+            client_id,
+            &request,
+            1,
+            "running",
+            Some("baseline\n"),
+            false,
+        )
+        .await;
+        let token = observation_token(&runtime, &job_id, &auth).await;
+        let observation = runtime.observe_jobs_for_auth(
+            vec![item(&job_id, Some(token))],
+            40,
+            Some(5),
+            policy,
+            Some(&auth),
+        );
+        tokio::pin!(observation);
+        assert!(futures_util::poll!(&mut observation).is_pending());
+
+        update_sequenced_observed_job(&runtime, client_id, &request, 2, "running", None, false)
+            .await;
+        tokio::time::sleep(Duration::from_millis(75)).await;
+        assert!(
+            futures_util::poll!(&mut observation).is_pending(),
+            "{policy:?} must ignore heartbeat-only revisions"
+        );
+
+        update_sequenced_observed_job(
+            &runtime,
+            client_id,
+            &request,
+            3,
+            "running",
+            Some("ordinary output\n"),
+            false,
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(75)).await;
+        assert!(
+            futures_util::poll!(&mut observation).is_pending(),
+            "{policy:?} must also coalesce ordinary non-terminal output"
+        );
+
+        update_sequenced_observed_job(&runtime, client_id, &request, 4, "completed", None, true)
+            .await;
+        let result = tokio::time::timeout(Duration::from_secs(1), observation)
+            .await
+            .expect("terminal transition must wake promptly");
+        assert!(result.success, "{:?}", result.error);
+        assert_eq!(result.output["wait"]["outcome"], "terminal");
+        assert_eq!(result.output["wait"]["reason"], "terminal");
+        assert_eq!(
+            result.output["wait"]["wake_on"],
+            if policy == ObserveJobsWakeOn::Terminal {
+                "terminal"
+            } else {
+                "all_terminal"
+            }
+        );
+        let output = &result.output["items"][0]["output"];
+        assert_eq!(output["terminal"], true);
+        assert_eq!(output["status"], "completed");
+        assert_eq!(output["stdout_tail"], "ordinary output\n");
+    }
 }
 
 #[tokio::test]

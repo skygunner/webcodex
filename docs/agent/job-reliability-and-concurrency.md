@@ -393,11 +393,17 @@ entire predetermined set. Terminal policies never return an `updated` outcome:
 at the deadline `wait.outcome=timeout` can coexist with `changed=true`. Item
 errors take precedence over terminal, then timeout.
 
-Runner-backed active Jobs emit a lightweight liveness heartbeat every 15 seconds
-from the JobManager, independently of subprocess stdout/stderr readers. The
-heartbeat advances the Runner Job update sequence but does not change lifecycle,
-logs, activity, exit state, or command authority. The Server classifies such an
-accepted sequence-only update as `heartbeat_changed=true` and
+Runner-backed active Jobs (`agent_queued`, `running`, and
+`stop_requested`) emit a liveness heartbeat every 15 seconds from the
+JobManager, independently of subprocess stdout/stderr readers. The heartbeat
+advances the Runner Job update sequence but does not change lifecycle, logs,
+activity, exit state, or command authority. Heartbeat scheduling is lightweight,
+but the current reconciliation-safe wire update is not necessarily a tiny packet:
+it reuses the authoritative bounded Job snapshot, including retained stdout/stderr
+tails up to the normal per-stream snapshot bounds. Output-only heartbeat
+deliveries are coalescible and are discarded if an older heartbeat races behind
+newer required semantic truth. The Server classifies such an accepted
+sequence-only update as `heartbeat_changed=true` and
 `meaningful_changed=false`; ordinary output/state updates set
 `meaningful_changed=true`. A heartbeat is evidence that the current Runner still
 owns an active Job record, not evidence that the command has succeeded or that a

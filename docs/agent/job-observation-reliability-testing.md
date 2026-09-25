@@ -18,9 +18,12 @@ The reliability layer distinguishes three kinds of observable progress:
    command state, or terminal outcome changed;
 3. **terminal change**: the Job reached a canonical terminal lifecycle.
 
-Active Runner Jobs emit a lightweight JobManager heartbeat every 15 seconds independently
-of subprocess stdout/stderr. The Server classifies an accepted sequence-only update as
-`changed=true`, `heartbeat_changed=true`, `meaningful_changed=false`. The compatible
+Runner-owned active states (`agent_queued`, `running`, and `stop_requested`) emit a
+JobManager heartbeat every 15 seconds independently of subprocess stdout/stderr. Heartbeat
+scheduling is lightweight, but the current reconciliation-safe wire update reuses the
+bounded authoritative Job snapshot and can therefore include retained log tails. The
+Server classifies an accepted sequence-only update as `changed=true`,
+`heartbeat_changed=true`, `meaningful_changed=false`. The compatible
 `wake_on=change` policy may wake on it; `wake_on=meaningful_change` must suppress it;
 `terminal` and `all_terminal` continue to coalesce non-terminal revisions.
 
@@ -65,11 +68,28 @@ If historical testcase timing is available, balance shards largest-first by runt
 Otherwise keep the deterministic subsystem shards above rather than inventing random
 splits. A shard pass is rapid feedback, not final acceptance.
 
+For the heartbeat edge fixes, these focused filters are useful before starting
+the broader shards:
+
+```bash
+cargo test -p webcodex-runner heartbeat_batch_advances_all_runner_active_jobs_and_skips_terminal_jobs -- --nocapture
+cargo test -p webcodex-runner delivery_queue_orders_semantic_truth_and_drops_stale_output_only_updates -- --nocapture
+cargo test -p webcodex observe_jobs_meaningful_change_suppresses_heartbeat_then_change_reports_it -- --nocapture
+cargo test -p webcodex observe_jobs_terminal_policies_ignore_heartbeat_only_revisions -- --nocapture
+```
+
+Always verify the reported testcase count. A command that exits zero after
+`running 0 tests` is not validation evidence. In particular, do not add
+`--exact` to a short function-name filter unless the fully-qualified libtest
+name is supplied.
+
 ## Required semantic cases
 
 Focused tests must cover all of these:
 
 - sequence-only update advances the ordinary observation revision;
+- all Runner-owned active states (`agent_queued`, `running`, `stop_requested`) receive
+  heartbeat sequence advancement, while terminal states do not;
 - heartbeat-only update does not advance the last meaningful revision;
 - real stdout/stderr/activity/lifecycle change is meaningful;
 - `wake_on=change` wakes on heartbeat-only change;
@@ -85,6 +105,9 @@ Focused tests must cover all of these:
 - wake diagnostics distinguish heartbeat, meaningful change, terminal, timeout, and item
   error without logging credentials or command bodies;
 - Job observation metrics stay fail-open and low-cardinality.
+- a heartbeat/output-only update generated earlier but queued after a newer required
+  semantic update is discarded rather than delivered out of sequence; this protects
+  legacy/no-reconciliation Server mode from state regression as well as sequenced mode.
 
 ## Chaos and reconnect matrix
 

@@ -2393,9 +2393,7 @@ async fn runtime_status_includes_build_metadata() {
     assert!(result.output.get("runtime_exposure").is_none());
     assert_eq!(
         result.output["mcp_compact_schemas"],
-        crate::model_surface::effective_mcp_compact_schemas(
-            crate::config::mcp_compact_schemas_override(),
-        )
+        runtime.runtime_info.mcp_compact_schemas
     );
     let build = &result.output["build"];
     assert!(build.is_object());
@@ -2488,7 +2486,7 @@ async fn runtime_status_preserves_allowlisted_effective_config_across_projection
 async fn runtime_status_reports_effective_mcp_compact_schema_policy() {
     let mut env = crate::test_support::TestEnvGuard::new();
     env.remove("WEBCODEX_MCP_COMPACT_SCHEMAS");
-    let runtime = test_runtime();
+    let runtime = runtime_with_info(RuntimeInfo::from_env());
 
     let default = runtime.dispatch(runtime_status_call()).await;
     assert!(default.success, "{:?}", default.error);
@@ -2496,11 +2494,18 @@ async fn runtime_status_reports_effective_mcp_compact_schema_policy() {
     assert!(default.output.get("runtime_exposure").is_none());
 
     env.set("WEBCODEX_MCP_COMPACT_SCHEMAS", "false");
-    let full = runtime.dispatch(runtime_status_call()).await;
+    let unchanged = runtime.dispatch(runtime_status_call()).await;
+    assert_eq!(
+        unchanged.output["mcp_compact_schemas"], true,
+        "an already-constructed Runtime must not change when process env changes"
+    );
+    let full_runtime = runtime_with_info(RuntimeInfo::from_env());
+    let full = full_runtime.dispatch(runtime_status_call()).await;
     assert_eq!(full.output["mcp_compact_schemas"], false);
 
     env.set("WEBCODEX_MCP_COMPACT_SCHEMAS", "true");
-    let compact = runtime.dispatch(runtime_status_call()).await;
+    let compact_runtime = runtime_with_info(RuntimeInfo::from_env());
+    let compact = compact_runtime.dispatch(runtime_status_call()).await;
     assert_eq!(compact.output["mcp_compact_schemas"], true);
 }
 
@@ -2540,10 +2545,7 @@ async fn runtime_status_compact_and_summary_only_return_sanitized_summary() {
         let summary = &result.output;
         assert_eq!(summary["compact"], true, "arguments: {arguments}");
         assert_eq!(
-            summary["mcp_compact_schemas"],
-            crate::model_surface::effective_mcp_compact_schemas(
-                crate::config::mcp_compact_schemas_override(),
-            ),
+            summary["mcp_compact_schemas"], runtime.runtime_info.mcp_compact_schemas,
             "arguments: {arguments}"
         );
         assert!(summary["effective_config"].is_object());
@@ -2628,6 +2630,8 @@ async fn runtime_status_does_not_expose_tokens_or_secrets() {
     let info = RuntimeInfo {
         auth_enabled: true,
         configured_public_url: Some("https://example.com".to_string()),
+        mcp_compact_schemas: true,
+        mcp_apps_enabled: true,
         shared_key_configured: false,
         shared_key_enabled: false,
         shared_key_remote_enabled: false,
@@ -2698,6 +2702,8 @@ async fn runtime_status_quic_enabled_error_is_sanitized() {
     let runtime = runtime_with_info(RuntimeInfo {
         auth_enabled: false,
         configured_public_url: None,
+        mcp_compact_schemas: true,
+        mcp_apps_enabled: true,
         shared_key_configured: false,
         shared_key_enabled: false,
         shared_key_remote_enabled: false,
@@ -2732,6 +2738,8 @@ async fn runtime_status_quic_started_reports_listen_and_alpn() {
     let runtime = runtime_with_info(RuntimeInfo {
         auth_enabled: false,
         configured_public_url: None,
+        mcp_compact_schemas: true,
+        mcp_apps_enabled: true,
         shared_key_configured: false,
         shared_key_enabled: false,
         shared_key_remote_enabled: false,
@@ -2755,6 +2763,8 @@ async fn runtime_status_auth_enabled_reflects_runtime_info() {
     let runtime = runtime_with_info(RuntimeInfo {
         auth_enabled: false,
         configured_public_url: None,
+        mcp_compact_schemas: true,
+        mcp_apps_enabled: true,
         shared_key_configured: false,
         shared_key_enabled: false,
         shared_key_remote_enabled: false,
@@ -2772,6 +2782,8 @@ async fn runtime_status_auth_enabled_reflects_runtime_info() {
     let runtime = runtime_with_info(RuntimeInfo {
         auth_enabled: true,
         configured_public_url: Some("https://webcodex.example.com".to_string()),
+        mcp_compact_schemas: true,
+        mcp_apps_enabled: true,
         shared_key_configured: false,
         shared_key_enabled: false,
         shared_key_remote_enabled: false,
@@ -2795,6 +2807,8 @@ fn runtime_info_from_env_reads_effective_server_config() {
     let mut env = crate::test_support::TestEnvGuard::new();
     env.set("WEBCODEX_TOKEN", "token");
     env.set("WEBCODEX_PUBLIC_URL", "https://new.example.com");
+    env.set("WEBCODEX_MCP_COMPACT_SCHEMAS", "false");
+    env.set("WEBCODEX_MCP_APPS_ENABLED", "false");
     env.set("WEBCODEX_SHARED_KEY_ENABLED", "true");
     env.remove("WEBCODEX_SHARED_KEY_REMOTE_ENABLED");
     env.set("WEBCODEX_OAUTH2_ENABLED", "true");
@@ -2802,6 +2816,8 @@ fn runtime_info_from_env_reads_effective_server_config() {
 
     let info = RuntimeInfo::from_env();
     assert!(info.auth_enabled);
+    assert!(!info.mcp_compact_schemas);
+    assert!(!info.mcp_apps_enabled);
     assert!(info.shared_key_configured);
     assert!(!info.shared_key_enabled);
     assert!(!info.shared_key_remote_enabled);

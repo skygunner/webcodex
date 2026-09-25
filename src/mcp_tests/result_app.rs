@@ -83,9 +83,7 @@ async fn handle_with_server_apps_enabled(
         None,
         None,
         None,
-        crate::model_surface::effective_mcp_compact_schemas(
-            crate::config::mcp_compact_schemas_override(),
-        ),
+        runtime.runtime_info.mcp_compact_schemas,
         server_mcp_apps_enabled,
         None,
     )

@@ -49,6 +49,16 @@ const ERROR_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 /// Maximum number of peer frames to discard on an error path before closing.
 const ERROR_DRAIN_MAX_FRAMES: usize = 4;
 
+fn quic_auth_context_allowed(
+    auth: &crate::auth::AuthContext,
+    remote_shared_key_enabled: bool,
+    local_ip: Option<std::net::IpAddr>,
+) -> bool {
+    !auth.is_shared_key()
+        || remote_shared_key_enabled
+        || local_ip.is_some_and(|address| address.is_loopback())
+}
+
 /// Load a PEM cert chain from `path` into DER certificates.
 fn load_certs(path: &std::path::Path) -> Result<Vec<CertificateDer<'static>>, String> {
     let file = File::open(path)
@@ -267,11 +277,7 @@ async fn handle_quic_connection(
     //    The token is dropped immediately after auth so it is never logged.
     let auth = authenticate_bearer(&config, db.as_ref(), auth_token.as_deref())
         .await
-        .filter(|ctx| {
-            !ctx.is_shared_key()
-                || shared_key_remote_enabled()
-                || conn.local_ip().is_some_and(|address| address.is_loopback())
-        });
+        .filter(|ctx| quic_auth_context_allowed(ctx, shared_key_remote_enabled(), conn.local_ip()));
     drop(auth_token);
     let auth = match auth {
         Some(ctx) => ctx,
@@ -493,6 +499,20 @@ mod tests {
 
     /// ALPN used by the QUIC integration tests.
     const TEST_ALPN: &str = RUNNER_QUIC_ALPN_V1;
+
+    #[test]
+    fn quic_shared_key_remote_gate_is_fail_closed_without_opt_in() {
+        let shared = crate::auth::shared_key_context("quic-shared-key-gate");
+        let managed = crate::auth::AuthContext::new(crate::auth::AuthKind::AgentToken);
+        let loopback = Some("127.0.0.1".parse().unwrap());
+        let remote = Some("203.0.113.7".parse().unwrap());
+
+        assert!(quic_auth_context_allowed(&shared, false, loopback));
+        assert!(!quic_auth_context_allowed(&shared, false, remote));
+        assert!(!quic_auth_context_allowed(&shared, false, None));
+        assert!(quic_auth_context_allowed(&shared, true, remote));
+        assert!(quic_auth_context_allowed(&managed, false, remote));
+    }
 
     async fn wait_for_quic_client_connected(
         registry: &RunnerRegistry,

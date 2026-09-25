@@ -2015,9 +2015,15 @@ async fn any_plugin_scope_exposes_only_the_stable_gateway() {
     }
 }
 
+#[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn tool_manifest_returns_sparse_static_plugin_tool_contract_without_runner_inventory() {
     let runtime = test_runtime();
+    // Regression for the former monolithic race: a process-global override that
+    // changes after Runtime construction must not change this Runtime's schema
+    // projection.
+    let mut env = crate::test_support::TestEnvGuard::new();
+    env.set("WEBCODEX_MCP_COMPACT_SCHEMAS", "false");
     let auth = plugin_auth_with_scopes(&[
         crate::auth::SCOPE_PLUGIN_INSPECT,
         crate::auth::SCOPE_RUNTIME_READ,

@@ -33,6 +33,11 @@ pub(crate) struct ListRunnersOptions {
 pub struct RuntimeInfo {
     pub auth_enabled: bool,
     pub configured_public_url: Option<String>,
+    /// Effective MCP schema projection captured once when the Runtime is built.
+    /// Environment configuration is startup state, not per-request mutable input.
+    pub mcp_compact_schemas: bool,
+    /// Effective MCP App exposure captured once when the Runtime is built.
+    pub mcp_apps_enabled: bool,
     pub shared_key_configured: bool,
     pub shared_key_enabled: bool,
     pub shared_key_remote_enabled: bool,
@@ -62,6 +67,10 @@ impl RuntimeInfo {
         Self {
             auth_enabled,
             configured_public_url,
+            mcp_compact_schemas: crate::model_surface::effective_mcp_compact_schemas(
+                crate::config::mcp_compact_schemas_override(),
+            ),
+            mcp_apps_enabled: crate::config::mcp_apps_enabled(),
             shared_key_configured: crate::auth::shared_key_enabled(),
             shared_key_enabled: crate::auth::direct_shared_key_enabled(config),
             shared_key_remote_enabled: crate::auth::shared_key_remote_enabled(),
@@ -450,9 +459,7 @@ impl ToolRuntime {
         output.insert("service".to_string(), json!("webcodex"));
         output.insert(
             "mcp_compact_schemas".to_string(),
-            json!(crate::model_surface::effective_mcp_compact_schemas(
-                crate::config::mcp_compact_schemas_override(),
-            )),
+            json!(self.runtime_info.mcp_compact_schemas),
         );
         output.insert(
             "effective_config".to_string(),
@@ -712,9 +719,7 @@ impl ToolRuntime {
         output.insert("service".to_string(), json!("webcodex"));
         output.insert(
             "mcp_compact_schemas".to_string(),
-            json!(crate::model_surface::effective_mcp_compact_schemas(
-                crate::config::mcp_compact_schemas_override(),
-            )),
+            json!(self.runtime_info.mcp_compact_schemas),
         );
         output.insert(
             "effective_config".to_string(),
@@ -1627,6 +1632,8 @@ impl Default for RuntimeInfo {
         Self {
             auth_enabled: false,
             configured_public_url: None,
+            mcp_compact_schemas: true,
+            mcp_apps_enabled: true,
             shared_key_configured: false,
             shared_key_enabled: false,
             shared_key_remote_enabled: false,

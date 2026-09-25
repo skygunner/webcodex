@@ -904,7 +904,10 @@ fn observe_jobs_failure_item_schema_closes_recovery_metadata() {
             }],
             "wait": {
                 "outcome": "item_error",
-                "waited_ms": 0
+                "waited_ms": 0,
+                "reason": "item_error",
+                "wake_on": "change",
+                "requested_secs": null
             },
             "changed_count": 0,
             "terminal_count": 0,

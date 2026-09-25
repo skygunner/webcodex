@@ -49,6 +49,10 @@ Start with static compilation, then run these four independent shards. Keep each
 as one durable MCP Job and retain its `job_id`; do not redispatch because an observation
 call or model turn was interrupted.
 
+All shell snippets in this playbook assume POSIX `sh`/`bash` semantics unless a command
+explicitly says otherwise. When an agent drives them through an interactive environment,
+invoke them under `bash` rather than inheriting a user login shell such as fish/csh.
+
 ```bash
 cargo check -p webcodex -p webcodex-tool-contracts -p webcodex-runner-registry -p webcodex-runner
 
@@ -57,6 +61,16 @@ cargo test -p webcodex-runner-registry job_log_wait -- --nocapture
 cargo test -p webcodex-runner heartbeat -- --nocapture
 cargo test -p webcodex observe_jobs -- --nocapture
 ```
+
+If a change tightens or adds required fields in a tool contract/schema, filtered semantic
+tests are not sufficient final evidence for that crate. Also run the complete affected
+contract package/library, for example:
+
+```bash
+cargo test -p webcodex-tool-contracts --lib
+```
+
+This catches stale fixtures whose test name does not mention the newly changed field.
 
 For MCP-driven execution, use a 1-2 second synchronous grace to obtain the persistent
 `job_id`. During long compilation or tests, observe in roughly 15-20 second bounded
@@ -106,8 +120,9 @@ Focused tests must cover all of these:
   error without logging credentials or command bodies;
 - Job observation metrics stay fail-open and low-cardinality.
 - a heartbeat/output-only update generated earlier but queued after a newer required
-  semantic update is discarded rather than delivered out of sequence; this protects
-  legacy/no-reconciliation Server mode from state regression as well as sequenced mode.
+  semantic update is discarded rather than delivered out of sequence; this protects any
+  consumer that lacks the sequenced Server guard. The current hidden no-reconciliation
+  test mode does not provide a healthy live snapshot-update stream; see the limitation below.
 
 ## Chaos and reconnect matrix
 
@@ -131,6 +146,15 @@ allows them:
 8. **timeout**: Job runtime timeout and observer wait timeout remain distinct;
 9. **queue pressure**: heartbeat/output-only traffic must remain coalescible and never
    displace required semantic/terminal updates.
+
+The hidden `WEBCODEX_RUNNER_DISABLE_JOB_STATE_RECONCILIATION=1` mode currently exists to
+exercise disconnect/recovery fencing. It registers without reconciliation capability or
+inventory, while the current JobManager still emits authoritative `log_snapshot` updates;
+the Server intentionally rejects such snapshots without that capability. Therefore do
+not use this knob as evidence for a healthy live no-reconciliation update stream or for a
+live transport-ordering chaos test. Use deterministic delivery-queue tests for ordering,
+and Scenario E only for the documented disconnect-to-`lost` contract, until a dedicated
+non-reconciliation live-update protocol is designed.
 
 Existing real-process restart coverage lives in:
 

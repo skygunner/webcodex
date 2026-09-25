@@ -471,6 +471,12 @@ ControlMaster 传输；Windows 的每次 one-shot/background 执行都会启动�
 `ssh_persistent_shell` capability 允许同一资源用于 `open_session_shell`：Unix
 可以复用 mux，Windows 则拥有一个直接的长生命周期 `ssh.exe` channel。 这些 SSH resource 语义不意味着 PTY/ConPTY 或额外的终端控制协议。
 
+当前远程命令 framing 在 cwd 设置、quoting 和 transport wrapper 中使用 POSIX
+shell 语法。因此，通过 SSH resource 执行 `run_shell`、`run_job` 或
+PersistentShell 时，远端登录/执行 shell 必须兼容 `sh`/`bash`；fish/csh 一类
+login shell 不属于当前支持契约。把 SSH 回环到本机账号的测试也必须使用兼容的
+远端 shell 环境，不能隐式继承开发者任意的 login shell。
+
 ```toml
 [ssh.resources.tmp]
 host = "tmp"
@@ -499,8 +505,8 @@ Workflow Session。已经与 frozen startup snapshot 一致的幂等操作可以
 client 通过 `webcodex connect ... --oauth-local-ssh` 显式 opt in。
 
 Managed target 最终仍由现有 SSH transport 消费。因此，成功登记 Windows OpenSSH
-destination 不代表一定能建立 PersistentShell：当前 remote persistent-shell contract
-仍要求远端已有 `sh`/`bash`。Remote PowerShell PersistentShell 不属于本能力。
+destination 不代表一定能建立 PersistentShell：当前 remote shell contract 仍要求
+远端已有 `sh`/`bash`。Remote PowerShell PersistentShell 不属于本能力。
 
 ## LSP 导航（只读）
 

@@ -608,6 +608,14 @@ does not use `ControlMaster`, `ControlPersist`, or `-S`. The separate
 `open_session_shell`: Unix may reuse its mux, while Windows owns one direct
 long-lived `ssh.exe` channel.
 
+The current remote command framing uses POSIX shell syntax for cwd setup,
+quoting, and transport wrappers. SSH resources used by `run_shell`, `run_job`,
+or PersistentShell therefore require a remote login/execution shell compatible
+with `sh`/`bash`; fish/csh-style login shells are not supported by this contract.
+Tests that loop SSH back to the local account must use an account/environment
+with a compatible remote shell rather than inheriting an arbitrary developer
+login shell.
+
 ```toml
 [ssh.resources.tmp]
 host = "tmp"
@@ -643,7 +651,7 @@ return `restart_required=false`. Access is separately gated by the optional
 
 The managed target is still consumed by the existing SSH transport. In
 particular, registering a Windows OpenSSH destination does not imply that
-PersistentShell can start there: the current remote persistent-shell contract
+PersistentShell can start there: the current remote shell contract still
 requires the existing remote `sh`/`bash` path. Remote PowerShell PersistentShell
 is not part of this capability.
 

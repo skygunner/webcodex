@@ -1661,7 +1661,7 @@ fn assert_compact_tool_diff(full: &Value, compact: &Value) {
     for (pointer, pattern) in [
         (
             "/properties/recording_session_id",
-            "^wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})$",
+            "^(~s[1-9][0-9]{0,19}|wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32}))$",
         ),
         (
             "/properties/ack_session_message_ids/items",
@@ -1803,7 +1803,7 @@ async fn mcp_compact_preserves_safety_patterns_and_wrapper_bounds() {
 #[test]
 fn mcp_compact_opaque_patterns_require_exact_wrapper_location_and_format() {
     use crate::mcp::discovery::compact_tool;
-    let session_pattern = "^wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})$";
+    let session_pattern = "^(~s[1-9][0-9]{0,19}|wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32}))$";
     // Even at a known path, a future/different format must not silently vanish.
     for pattern in [
         "^wc_sess_[A-Za-z0-9_-]{16}$",
@@ -1838,6 +1838,34 @@ fn mcp_compact_opaque_patterns_require_exact_wrapper_location_and_format() {
         tool, once,
         "wrapper annotation projection must be idempotent"
     );
+}
+
+#[tokio::test]
+async fn mcp_recording_session_ref_fails_closed_when_malformed() {
+    let runtime = test_runtime();
+    let outcome = handle_mcp_request(
+        &runtime,
+        rpc(
+            "tools/call",
+            Some(json!(1)),
+            mcp_2026_params(adaptive_runtime_gateway_params(
+                "list_projects",
+                json!({
+                    crate::tool_runtime::sessions::TOOL_CALL_RECORDING_SESSION_ID_FIELD: "~s01"
+                }),
+            )),
+        ),
+        None,
+    )
+    .await;
+    let value = match outcome {
+        McpOutcome::BadRequest(value) => value,
+        other => panic!("expected malformed recorder ref BadRequest, got {other:?}"),
+    };
+    assert_eq!(value["error"]["code"], -32602);
+    assert!(value["error"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("unknown_session_ref")));
 }
 
 #[tokio::test]
@@ -2764,8 +2792,27 @@ async fn mcp_tools_call_rejects_legacy_session_alias_even_with_canonical_recorde
 
 #[tokio::test]
 async fn mcp_tools_call_records_event_with_recording_session_id() {
-    let runtime = test_runtime();
-    let session = runtime.sessions.start_session(None, None);
+    let tmp = tempfile::tempdir().unwrap();
+    let runtime = test_runtime().with_project_reference_database(std::sync::Arc::new(
+        crate::Database::open(&tmp.path().join("recorder-refs.db")).unwrap(),
+    ));
+    let authority = crate::tool_runtime::workflow_session_authority_fingerprint(None)
+        .expect("local test principal should have stable authority");
+    let session = runtime
+        .sessions
+        .start_session_with_options(
+            crate::tool_runtime::SessionCreateOptions::new(
+                None,
+                Some("short recorder".to_string()),
+                crate::tool_runtime::SessionMode::Normal,
+                crate::tool_runtime::SessionGuards::default(),
+            )
+            .with_owner_authority_fingerprint(Some(authority)),
+        )
+        .unwrap();
+    let session_ref = runtime
+        .session_reference_for_id(&session.session_id, None)
+        .expect("test runtime should issue Session refs");
     let outcome = handle_mcp_request(
         &runtime,
         rpc(
@@ -2774,7 +2821,7 @@ async fn mcp_tools_call_records_event_with_recording_session_id() {
             mcp_2026_params(adaptive_runtime_gateway_params(
                 "list_projects",
                 json!({
-                    crate::tool_runtime::sessions::TOOL_CALL_RECORDING_SESSION_ID_FIELD: &session.session_id
+                    crate::tool_runtime::sessions::TOOL_CALL_RECORDING_SESSION_ID_FIELD: session_ref
                 }),
             )),
         ),

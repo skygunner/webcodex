@@ -24,12 +24,12 @@ work_on_project
 它的 primary output 默认保持紧凑，不重复静态 instruction/workflow 正文；当前模型上下文缺少这些材料时，分别显式请求 `context_request=["project.instructions"]` 和/或 `context_request=["webcodex.workflow"]`。Workflow Session identity 不证明当前模型仍保留这些上下文。
 Bootstrap 或 discovery 返回 `project_ref` 后，普通 Project-scoped tool call 的 `project` 应优先复用这个短 selector。Canonical `agent:<client_id>:<project_id>` 仍保留用于 diagnostic 与显式 addressing，但模型无需机械重复。`project_ref` 由 Server 持久维护、按 principal 隔离，不携带 authority；每次调用都会根据其钉住的 canonical Project/root identity 重新授权。
 
-当 `work_on_project`、`start_session`、`session_summary` 或显式 handoff 返回 `session_ref` 时，后续 business `session_id` 优先复用这个短 selector。Canonical `wc_sess_*` 仍然有效，并继续作为持久化、审计、诊断和内部关联的权威身份。`session_ref` 只是按 principal 隔离的便利选择器：每次使用都会解析到钉住的 exact Session，并重新执行原有 Project/Session 授权、生命周期和 guard 检查。它不适用于 `recording_session_id`，也不会形成隐式或粘滞的 recorder context。
+当 `work_on_project`、`start_session`、`session_summary` 或显式 handoff 返回 `session_ref` 时，后续显式 Session 选择可优先复用这个短 selector。Business `session_id` 与 wrapper `recording_session_id` 仍是两套独立语义，但都可以显式携带已签发的 ref：Runtime 会先把它还原为钉住的 canonical `wc_sess_*`，再执行各自原有的授权、生命周期或 guard 逻辑。Canonical identity 仍是持久化、审计、诊断和内部关联的权威身份。`session_ref` 只是按 principal 隔离的便利选择器；省略 recorder 时不会自动推断，也不会形成隐式或粘滞的 recorder context。
 默认情况下，它还会返回一个很小且有界的 `extensions` selection catalog：Skill metadata 来自 canonical 的 project / Runner-configured `skills.roots` / Runner-managed Skill Store 三类来源；Plugin metadata 只包含 configured working directory 与当前 Project root 匹配、且已 ready/committed 的 provider。该 metadata 不授予任何 authority，也不会自动读取 Skill body 或创建 Plugin binding；模型选择后使用 `skill_read_file` 读取 Skill 文本，`run_skill_resource` 只执行可信 Runner-configured live `scripts/` resource（由 `expected_definition_revision` fence definition）或 Runner-installed managed resource（另由 `expected_package_revision` fence package），Plugin 则走 `plugin_tool describe -> call`。Configured resource bytes 会一直保持 live 到实际执行时，并不会预先被 package revision 固定。只有当前模型上下文仍明确保留这些 discovery metadata 时，才应设置 `include_extension_catalog=false`。
 
 ## 工具策略 guidance
 
-`work_on_project` 的 `guidance_profile` 默认是 `direct`。Workflow contract v20
+`work_on_project` 的 `guidance_profile` 默认是 `direct`。Workflow contract v21
 保持共享的 `guidance`、`model_protocol` 和 review `roles`，并在显式
 `context_request=["webcodex.workflow"]` 时通过
 `tool_strategy` 返回本次请求选中的策略。

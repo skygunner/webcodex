@@ -539,6 +539,26 @@ impl ToolRuntime {
                 correlation: Default::default(),
             };
         }
+        let canonical_recording_session_id = match context.session_id {
+            Some(raw) => match self.canonicalize_explicit_session_selector(raw, context.auth) {
+                Ok(canonical) => Some(canonical),
+                Err(message) => {
+                    return ToolCallOutcome {
+                        success: false,
+                        result: None,
+                        error_status: Some(ToolCallErrorStatus::InvalidArguments { message }),
+                        project: None,
+                        model_ergonomics: None,
+                        correlation: Default::default(),
+                    };
+                }
+            },
+            None => None,
+        };
+        let context = ToolCallContext {
+            session_id: canonical_recording_session_id.as_deref(),
+            ..context
+        };
         // Action-dependent gateways resolve exact policy before the generic
         // static Session/permission lifecycle and own one specialized ledger.
         if let Some(mut outcome) =

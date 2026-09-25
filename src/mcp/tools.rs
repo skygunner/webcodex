@@ -558,6 +558,9 @@ fn insert_stateless_collaboration_ack_property(properties: &mut serde_json::Map<
     );
 }
 
+pub(super) const RECORDING_SESSION_SELECTOR_SCHEMA_PATTERN: &str =
+    "^(~s[1-9][0-9]{0,19}|wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32}))$";
+
 pub(super) fn add_stateless_workflow_recorder_metadata(payload: &mut Value) {
     let Some(tools) = payload.get_mut("tools").and_then(Value::as_array_mut) else {
         return;
@@ -582,8 +585,8 @@ pub(super) fn add_stateless_workflow_recorder_metadata(payload: &mut Value) {
             crate::tool_runtime::sessions::TOOL_CALL_RECORDING_SESSION_ID_FIELD.to_string(),
             json!({
                 "type": "string",
-                "pattern": "^wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})$",
-                "description": "Optional explicit recorder provenance for one exact Workflow Session. Never execution authority or a business Session target. When omitted, authorized same-Window affinity may still deliver and ACK Session collaboration without recording this call."
+                "pattern": RECORDING_SESSION_SELECTOR_SCHEMA_PATTERN,
+                "description": "Optional explicit recorder provenance for one exact Workflow Session; accepts canonical wc_sess_* or issued principal-scoped ~sN. Never execution/business authority. Omission may still allow authorized same-Window attention without recording."
             }),
         );
         insert_stateless_collaboration_ack_property(properties);
@@ -1445,6 +1448,15 @@ pub(super) fn strip_recording_session_id(arguments: &mut Value) -> Result<Option
     }
 }
 
+fn canonicalize_recording_session_id(
+    runtime: &crate::tool_runtime::ToolRuntime,
+    raw: Option<String>,
+    auth: Option<&crate::auth::AuthContext>,
+) -> Result<Option<String>, String> {
+    raw.map(|raw| runtime.canonicalize_explicit_session_selector(&raw, auth))
+        .transpose()
+}
+
 pub(super) fn strip_stateless_ack_session_message_ids(
     arguments: &mut Value,
 ) -> Result<Vec<String>, String> {
@@ -1843,6 +1855,17 @@ pub(super) async fn handle_call(
         let ToolCall::PluginTool(plugin) = call else {
             unreachable!("plugin_tool parser must yield ToolCall::PluginTool");
         };
+        let recording_session_id =
+            match canonicalize_recording_session_id(runtime, recording_session_id, auth) {
+                Ok(session_id) => session_id,
+                Err(message) => {
+                    if let Some(lc) = lifecycle.as_deref() {
+                        lc.dispatch_failed("invalid_arguments");
+                        lc.dispatch_finished(false, Some(false), "invalid_arguments");
+                    }
+                    return McpOutcome::BadRequest(rpc_error(id, -32602, message));
+                }
+            };
         if let Some(lc) = lifecycle.as_deref() {
             lc.capture_payload_lazy("effective_arguments", || {
                 crate::plugin_gateway::audit_arguments(&params.arguments)
@@ -1950,6 +1973,18 @@ pub(super) async fn handle_call(
                 return McpOutcome::BadRequest(rpc_error(id, -32602, message));
             }
         };
+        // Resolve once so a valid short recorder can drive the same best-effort
+        // fallback Project projection as its canonical id. Defer ref errors until
+        // business parsing succeeds to preserve the existing fallback precedence.
+        let canonical_recording_session_id =
+            canonicalize_recording_session_id(runtime, recording_session_id.clone(), auth);
+        let recorder_project = || {
+            canonical_recording_session_id
+                .as_ref()
+                .ok()
+                .and_then(|session_id| session_id.as_deref())
+                .and_then(|session_id| runtime.sessions.session_project(session_id).flatten())
+        };
         let policy = match crate::ssh_resource_gateway::operation_policy(&params.arguments) {
             Ok(policy) => policy,
             Err(_) => {
@@ -1960,9 +1995,7 @@ pub(super) async fn handle_call(
                 }
                 let mut result =
                     crate::ssh_resource_gateway::call(runtime, params.arguments, auth).await;
-                let project = recording_session_id
-                    .as_deref()
-                    .and_then(|session_id| runtime.sessions.session_project(session_id).flatten());
+                let project = recorder_project();
                 runtime.add_peer_collaboration_to_mcp_call_result(
                     &mut result,
                     auth,
@@ -1996,9 +2029,7 @@ pub(super) async fn handle_call(
                 }
                 let mut result =
                     crate::ssh_resource_gateway::call(runtime, params.arguments, auth).await;
-                let project = recording_session_id
-                    .as_deref()
-                    .and_then(|session_id| runtime.sessions.session_project(session_id).flatten());
+                let project = recorder_project();
                 runtime.add_peer_collaboration_to_mcp_call_result(
                     &mut result,
                     auth,
@@ -2018,6 +2049,16 @@ pub(super) async fn handle_call(
                         result
                     },
                 ));
+            }
+        };
+        let recording_session_id = match canonical_recording_session_id {
+            Ok(session_id) => session_id,
+            Err(message) => {
+                if let Some(lc) = lifecycle.as_deref() {
+                    lc.dispatch_failed("invalid_arguments");
+                    lc.dispatch_finished(false, Some(false), "invalid_arguments");
+                }
+                return McpOutcome::BadRequest(rpc_error(id, -32602, message));
             }
         };
         let invocation = match crate::ssh_resource_gateway::invoke(
@@ -2219,6 +2260,27 @@ pub(super) async fn handle_call(
         "goal_plan_sync" | "work_result_state" | "work_result_send_message" | "changes_file_diff"
     ) {
         session_id = None;
+    } else {
+        session_id = match canonicalize_recording_session_id(runtime, session_id, auth) {
+            Ok(session_id) => session_id,
+            Err(message) => {
+                if let Some(lc) = lifecycle.as_deref() {
+                    lc.dispatch_failed("invalid_arguments");
+                    lc.dispatch_finished(false, Some(false), "invalid_arguments");
+                }
+                if let (Some(slot), Some(timer)) = (
+                    model_ergonomics_out.as_deref_mut(),
+                    pre_kernel_model_ergonomics.take(),
+                ) {
+                    *slot = Some(
+                        timer
+                            .finish()
+                            .record_for_pre_result_failure("invalid_arguments"),
+                    );
+                }
+                return McpOutcome::BadRequest(rpc_error(id, -32602, message));
+            }
+        };
     }
     let session_message_resolution = if stateless_2026 {
         match strip_stateless_session_message_resolution(&mut params.arguments) {

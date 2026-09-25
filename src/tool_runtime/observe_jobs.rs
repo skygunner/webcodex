@@ -86,8 +86,10 @@ fn final_wake_reason(
     } else if observed_terminal_satisfied(observed, wake_on) || wait_reason == WakeReason::Terminal
     {
         WakeReason::Terminal
-    } else if wake_on == ObserveJobsWakeOn::Change
-        && (observed_has_change(observed) || wait_reason == WakeReason::Updated)
+    } else if (wake_on == ObserveJobsWakeOn::Change && observed_has_change(observed))
+        || (wake_on == ObserveJobsWakeOn::MeaningfulChange
+            && observed_has_meaningful_change(observed))
+        || wait_reason == WakeReason::Updated
     {
         WakeReason::Updated
     } else {
@@ -99,6 +101,105 @@ fn observed_has_change(observed: &[ObservedJob]) -> bool {
     observed
         .iter()
         .any(|item| item.result.output["changed"].as_bool() == Some(true))
+}
+
+fn observed_has_meaningful_change(observed: &[ObservedJob]) -> bool {
+    observed
+        .iter()
+        .any(|item| item.result.output["meaningful_changed"].as_bool() == Some(true))
+}
+
+fn wake_policy_name(wake_on: ObserveJobsWakeOn) -> &'static str {
+    match wake_on {
+        ObserveJobsWakeOn::Change => "change",
+        ObserveJobsWakeOn::MeaningfulChange => "meaningful_change",
+        ObserveJobsWakeOn::Terminal => "terminal",
+        ObserveJobsWakeOn::AllTerminal => "all_terminal",
+    }
+}
+
+fn detailed_wake_reason(items: &[Value], wake_reason: WakeReason) -> &'static str {
+    match wake_reason {
+        WakeReason::Immediate => "immediate",
+        WakeReason::Terminal => "terminal",
+        WakeReason::ItemError => "item_error",
+        WakeReason::Timeout => "timeout",
+        WakeReason::Updated => {
+            if items.iter().any(|item| {
+                item["success"].as_bool() == Some(true)
+                    && item["output"]["meaningful_changed"].as_bool() == Some(true)
+            }) {
+                "meaningful_change"
+            } else if items.iter().any(|item| {
+                item["success"].as_bool() == Some(true)
+                    && item["output"]["heartbeat_changed"].as_bool() == Some(true)
+            }) {
+                "heartbeat"
+            } else {
+                "change"
+            }
+        }
+    }
+}
+
+fn trace_observe_jobs_diagnostics(
+    resolved: &[ResolvedObserveJobsItem],
+    completed: &[Value],
+    wake_reason: WakeReason,
+    wake_on: ObserveJobsWakeOn,
+    requested_wait_secs: Option<u64>,
+    waited_ms: u64,
+) {
+    let reason = detailed_wake_reason(completed, wake_reason);
+    tracing::debug!(
+        wake_on = wake_policy_name(wake_on),
+        requested_wait_secs = ?requested_wait_secs,
+        waited_ms,
+        wake_reason = reason,
+        item_count = completed.len(),
+        "observe_jobs wait completed"
+    );
+    for item in completed {
+        if item["success"].as_bool() != Some(true) {
+            continue;
+        }
+        let Some(index) = item["index"].as_u64().map(|value| value as usize) else {
+            continue;
+        };
+        let Some(request) = resolved.iter().find(|candidate| candidate.index == index) else {
+            continue;
+        };
+        let output = &item["output"];
+        let before = request
+            .item
+            .after_observation_token
+            .as_deref()
+            .and_then(|token| {
+                webcodex_core::job_observation::JobObservationToken::parse(token).ok()
+            });
+        let after = output["observation_token"].as_str().and_then(|token| {
+            webcodex_core::job_observation::JobObservationToken::parse(token).ok()
+        });
+        tracing::debug!(
+            job_id = %request.item.job_id,
+            before_revision = ?before.as_ref().map(|token| token.revision),
+            before_stdout_cursor = ?before.as_ref().and_then(|token| token.stdout_cursor),
+            before_stderr_cursor = ?before.as_ref().and_then(|token| token.stderr_cursor),
+            after_revision = ?after.as_ref().map(|token| token.revision),
+            after_stdout_cursor = ?after.as_ref().and_then(|token| token.stdout_cursor),
+            after_stderr_cursor = ?after.as_ref().and_then(|token| token.stderr_cursor),
+            last_update_seq = ?output["last_update_seq"].as_u64(),
+            stdout_returned_lines = ?output["stdout_returned_lines"].as_u64(),
+            stderr_returned_lines = ?output["stderr_returned_lines"].as_u64(),
+            stdout_returned_bytes = output["stdout_returned_bytes"].as_u64().unwrap_or(0),
+            stderr_returned_bytes = output["stderr_returned_bytes"].as_u64().unwrap_or(0),
+            changed = output["changed"].as_bool().unwrap_or(false),
+            meaningful_changed = output["meaningful_changed"].as_bool().unwrap_or(false),
+            heartbeat_changed = output["heartbeat_changed"].as_bool().unwrap_or(false),
+            terminal = output["terminal"].as_bool().unwrap_or(false),
+            "observe_jobs item observed"
+        );
+    }
 }
 
 fn bounded_error(error: Option<&str>) -> String {
@@ -353,6 +454,8 @@ fn batch_output(
     items: Vec<Value>,
     wake_reason: WakeReason,
     waited_ms: u64,
+    wake_on: ObserveJobsWakeOn,
+    requested_wait_secs: Option<u64>,
     output_truncated: bool,
     next_index: Option<usize>,
 ) -> Value {
@@ -375,6 +478,7 @@ fn batch_output(
                 && item["output"]["terminal"].as_bool() == Some(true)
         })
         .count();
+    let wake_detail = detailed_wake_reason(&items, wake_reason);
     let mut output = json!({
         "requested_count": requested_count,
         "returned_count": returned_count,
@@ -383,6 +487,9 @@ fn batch_output(
         "items": items,
         "wait": {
             "outcome": wake_reason.as_str(),
+            "reason": wake_detail,
+            "wake_on": wake_policy_name(wake_on),
+            "requested_secs": requested_wait_secs,
             "waited_ms": waited_ms,
         },
         "changed_count": changed_count,
@@ -452,6 +559,8 @@ fn apply_output_budget(
     completed: Vec<Value>,
     wake_reason: WakeReason,
     waited_ms: u64,
+    wake_on: ObserveJobsWakeOn,
+    requested_wait_secs: Option<u64>,
 ) -> Result<Value, String> {
     let mut returned = Vec::with_capacity(completed.len());
     let mut next_index = None;
@@ -465,6 +574,8 @@ fn apply_output_budget(
             candidate_items,
             wake_reason,
             waited_ms,
+            wake_on,
+            requested_wait_secs,
             false,
             None,
         );
@@ -478,6 +589,8 @@ fn apply_output_budget(
             vec![item.clone()],
             wake_reason,
             waited_ms,
+            wake_on,
+            requested_wait_secs,
             false,
             None,
         );
@@ -495,6 +608,8 @@ fn apply_output_budget(
             candidate_items,
             wake_reason,
             waited_ms,
+            wake_on,
+            requested_wait_secs,
             false,
             None,
         );
@@ -515,6 +630,8 @@ fn apply_output_budget(
         returned,
         wake_reason,
         waited_ms,
+        wake_on,
+        requested_wait_secs,
         next_index.is_some(),
         next_index,
     ))
@@ -589,6 +706,8 @@ fn sparse_success_item(item: &Value) -> Option<Value> {
     sparse.insert("status".to_string(), json!(status));
     sparse.insert("terminal".to_string(), json!(terminal));
     sparse.insert("changed".to_string(), json!(changed));
+    copy_present(observation, &mut sparse, "meaningful_changed");
+    copy_present(observation, &mut sparse, "heartbeat_changed");
     sparse.insert("log_delta_status".to_string(), json!(log_delta_status));
     sparse.insert("observation_token".to_string(), json!(observation_token));
     if let Some(observation_ref) = item.get("observation_ref").and_then(Value::as_str) {
@@ -905,6 +1024,11 @@ impl ToolRuntime {
                     if wake_on == ObserveJobsWakeOn::Change {
                         return Ok(WakeReason::Updated);
                     }
+                    if wake_on == ObserveJobsWakeOn::MeaningfulChange
+                        && result.output["meaningful_changed"].as_bool() == Some(true)
+                    {
+                        return Ok(WakeReason::Updated);
+                    }
                     // Private wait cursor only: final requested-tail refresh
                     // still uses the caller's original token for every delta.
                     let token = result.output["observation_token"]
@@ -1047,6 +1171,10 @@ impl ToolRuntime {
                 Some(WakeReason::Terminal)
             } else if wake_on == ObserveJobsWakeOn::Change && observed_has_change(&initial) {
                 Some(WakeReason::Updated)
+            } else if wake_on == ObserveJobsWakeOn::MeaningfulChange
+                && observed_has_meaningful_change(&initial)
+            {
+                Some(WakeReason::Updated)
             } else {
                 None
             };
@@ -1114,7 +1242,67 @@ impl ToolRuntime {
             }
         }
 
-        match apply_output_budget(requested_count, completed, wake_reason, waited_ms) {
+        trace_observe_jobs_diagnostics(
+            &resolved,
+            &completed,
+            wake_reason,
+            wake_on,
+            wait_secs,
+            waited_ms,
+        );
+        let wake_reason_detail = detailed_wake_reason(&completed, wake_reason);
+        let successful = completed
+            .iter()
+            .filter(|item| item["success"].as_bool() == Some(true))
+            .collect::<Vec<_>>();
+        super::runtime_metrics::observe_job_observation(
+            self.metrics.as_ref(),
+            super::runtime_metrics::JobObservationMetricObservation {
+                elapsed_ms: waited_ms,
+                requested_wait_secs: wait_secs,
+                wake_on: wake_policy_name(wake_on),
+                wake_reason: wake_reason_detail,
+                item_count: completed.len() as u64,
+                changed_count: successful
+                    .iter()
+                    .filter(|item| item["output"]["changed"].as_bool() == Some(true))
+                    .count() as u64,
+                meaningful_changed_count: successful
+                    .iter()
+                    .filter(|item| item["output"]["meaningful_changed"].as_bool() == Some(true))
+                    .count() as u64,
+                heartbeat_changed_count: successful
+                    .iter()
+                    .filter(|item| item["output"]["heartbeat_changed"].as_bool() == Some(true))
+                    .count() as u64,
+                terminal_count: successful
+                    .iter()
+                    .filter(|item| item["output"]["terminal"].as_bool() == Some(true))
+                    .count() as u64,
+                returned_bytes: successful
+                    .iter()
+                    .map(|item| {
+                        item["output"]["stdout_returned_bytes"]
+                            .as_u64()
+                            .unwrap_or(0)
+                            .saturating_add(
+                                item["output"]["stderr_returned_bytes"]
+                                    .as_u64()
+                                    .unwrap_or(0),
+                            )
+                    })
+                    .sum(),
+            },
+        );
+
+        match apply_output_budget(
+            requested_count,
+            completed,
+            wake_reason,
+            waited_ms,
+            wake_on,
+            wait_secs,
+        ) {
             Ok(mut output) => {
                 add_actionable_batch_continuation(&mut output, &original_items, tail_lines);
                 ToolResult::ok(output)
@@ -1297,7 +1485,15 @@ mod tests {
             "error_kind": null,
             "error": null,
         });
-        let output = apply_output_budget(1, vec![item], WakeReason::Immediate, 0).unwrap();
+        let output = apply_output_budget(
+            1,
+            vec![item],
+            WakeReason::Immediate,
+            0,
+            ObserveJobsWakeOn::Change,
+            None,
+        )
+        .unwrap();
         assert_eq!(output["wait"]["outcome"], "immediate");
         assert_eq!(output["wait"]["waited_ms"], 0);
         assert_eq!(output["returned_count"], 1);
@@ -1332,6 +1528,8 @@ mod tests {
             vec![item(0), item(1), item(2), item(3)],
             WakeReason::Immediate,
             0,
+            ObserveJobsWakeOn::Change,
+            None,
         )
         .unwrap();
         // Four ~90 KiB observations straddle the old 256 KiB aggregate budget
@@ -1345,8 +1543,15 @@ mod tests {
                 <= MAX_OBSERVE_JOBS_AGGREGATE_RESULT_BYTES
         );
 
-        let output =
-            apply_output_budget(8, (0..8).map(item).collect(), WakeReason::Immediate, 0).unwrap();
+        let output = apply_output_budget(
+            8,
+            (0..8).map(item).collect(),
+            WakeReason::Immediate,
+            0,
+            ObserveJobsWakeOn::Change,
+            None,
+        )
+        .unwrap();
         assert!(output["returned_count"].as_u64().unwrap() > 2);
         assert!(output["returned_count"].as_u64().unwrap() < 8);
         assert_eq!(output["output_truncated"], true);

@@ -490,6 +490,8 @@ fn observe_jobs_output_schema() -> Value {
             "stderr_tail": schema_type("string", "Bounded stderr baseline, delta, conservative partial-line replay, or reset-recovery tail. A previously observed unterminated final line may repeat until its line boundary is observed."),
             "stdout_lines": schema_type("integer", "Total observed stdout line count."),
             "stderr_lines": schema_type("integer", "Total observed stderr line count."),
+            "stdout_returned_bytes": schema_type("integer", "UTF-8 byte count returned in stdout_tail by this exact observation."),
+            "stderr_returned_bytes": schema_type("integer", "UTF-8 byte count returned in stderr_tail by this exact observation."),
             "stdout_truncated": schema_type("boolean", "Whether the requested stdout baseline/delta/reset projection was bounded or unavailable."),
             "stderr_truncated": schema_type("boolean", "Whether the requested stderr baseline/delta/reset projection was bounded or unavailable."),
             "log_delta_status": {
@@ -523,6 +525,8 @@ fn observe_jobs_output_schema() -> Value {
                 "required": ["stdout", "stderr"]
             },
             "changed": schema_type("boolean", "Whether the lifecycle revision or Server epoch differs from the item's supplied token. Token format upgrades alone do not set changed."),
+            "meaningful_changed": schema_type("boolean", "Whether a semantic/log/activity/lifecycle/recovery change occurred since the supplied token; false for heartbeat-only revisions."),
+            "heartbeat_changed": schema_type("boolean", "Whether the observed revision advance was heartbeat-only with no semantic/log/activity/lifecycle/recovery change."),
             "terminal": schema_type("boolean", "Canonical terminal classification."),
             "executor": {
                 "type": "string",
@@ -548,9 +552,10 @@ fn observe_jobs_output_schema() -> Value {
         },
         "required": [
             "job_id", "status", "exit_code", "stdout_tail", "stderr_tail",
-            "stdout_lines", "stderr_lines", "stdout_truncated", "stderr_truncated",
+            "stdout_lines", "stderr_lines", "stdout_returned_bytes", "stderr_returned_bytes",
+            "stdout_truncated", "stderr_truncated",
             "log_delta_status", "stdout_delta_reset", "stderr_delta_reset",
-            "observation_token", "cursor", "changed",
+            "observation_token", "cursor", "changed", "meaningful_changed", "heartbeat_changed",
             "terminal", "executor", "cwd", "shell", "purpose", "command_summary",
             "activity", "detected_summary", "validation"
         ]
@@ -563,6 +568,8 @@ fn observe_jobs_output_schema() -> Value {
             "status": schema_type("string", "Canonical current Job status."),
             "terminal": schema_type("boolean", "Stable terminal/nonterminal abstraction over Job lifecycle variants; never inferred from batch counts."),
             "changed": schema_type("boolean", "Whether lifecycle revision or Server epoch differs from the supplied observation token."),
+            "meaningful_changed": schema_type("boolean", "Whether a semantic/log/activity/lifecycle/recovery change occurred since the supplied token; false for heartbeat-only revisions."),
+            "heartbeat_changed": schema_type("boolean", "Whether the observed revision advance was heartbeat-only with no semantic/log/activity/lifecycle/recovery change."),
             "log_delta_status": {
                 "type": "string",
                 "enum": ["baseline", "delta", "unchanged", "reset"],
@@ -619,8 +626,8 @@ fn observe_jobs_output_schema() -> Value {
             "validation": validation_job_projection_schema()
         },
         "required": [
-            "job_id", "status", "terminal", "changed", "log_delta_status",
-            "observation_token"
+            "job_id", "status", "terminal", "changed", "meaningful_changed", "heartbeat_changed",
+            "log_delta_status", "observation_token"
         ]
     });
     let summary_detail_call = suggested_tool_call_schema(
@@ -758,9 +765,18 @@ fn observe_jobs_output_schema() -> Value {
                         "type": "string",
                         "enum": ["immediate", "updated", "terminal", "item_error", "timeout"]
                     },
+                    "reason": {
+                        "type": "string",
+                        "enum": ["immediate", "change", "meaningful_change", "heartbeat", "terminal", "item_error", "timeout"]
+                    },
+                    "wake_on": {
+                        "type": "string",
+                        "enum": ["change", "meaningful_change", "terminal", "all_terminal"]
+                    },
+                    "requested_secs": {"anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}]},
                     "waited_ms": {"type": "integer", "minimum": 0}
                 },
-                "required": ["outcome", "waited_ms"],
+                "required": ["outcome", "reason", "wake_on", "requested_secs", "waited_ms"],
                 "description": "The single shared-wait fact for this batch. terminal policy never wakes updated: timeout means the deadline elapsed and may coexist with changed=true and cumulative log deltas. Item errors take precedence over terminal, then timeout. Final item outputs are snapshots and do not expose a second wait outcome."
             },
             "changed_count": {"type": "integer", "minimum": 0, "maximum": 8},
@@ -808,13 +824,22 @@ fn observe_jobs_output_schema() -> Value {
                         "type": "string",
                         "enum": ["immediate", "updated", "terminal", "timeout"]
                     },
+                    "reason": {
+                        "type": "string",
+                        "enum": ["immediate", "change", "meaningful_change", "heartbeat", "terminal", "timeout"]
+                    },
+                    "wake_on": {
+                        "type": "string",
+                        "enum": ["change", "meaningful_change", "terminal", "all_terminal"]
+                    },
+                    "requested_secs": {"anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}]},
                     "waited_ms": {
                         "type": "integer",
                         "minimum": 1,
                         "description": "Non-zero shared wait duration; omitted when the canonical value is zero."
                     }
                 },
-                "required": ["outcome"],
+                "required": ["outcome", "reason", "wake_on", "requested_secs"],
                 "description": "The one shared-wait fact for an ordinary all-success, non-truncated compact batch. terminal policy never wakes updated; timeout may coexist with changed=true and cumulative deltas."
             },
             "session_hint": session_hint_schema(),

@@ -77,6 +77,17 @@ Cargo `-j` / `CARGO_BUILD_JOBS` controls compilation, not libtest execution conc
 A passing limited-concurrency run does not prove a console-only failure was caused by
 parallelism; keep the original failing entry point in the final regression evidence.
 
+## Job observation reliability and cross-architecture verification
+
+Changes to Runner Job heartbeat, observation revisions, `observe_jobs` wake policies,
+reconnect/reconciliation, or Job observation metrics should follow the dedicated
+[Job Observation Reliability Test Playbook](agent/job-observation-reliability-testing.md).
+It defines the deterministic four-shard development matrix, aarch64/x86_64 parallel
+verification, silent/noisy/reconnect/restart chaos cases, short bounded MCP watchdog
+practice, infrastructure-failure classification, and the required final monolithic
+Server run. Focused shards are rapid feedback only; they do not replace the final
+monolithic suite for cross-cutting Job changes.
+
 ## Explicit High-Cost Local Evidence
 
 Ordinary `cargo test` and ordinary CI intentionally skip ignored timing/real-process

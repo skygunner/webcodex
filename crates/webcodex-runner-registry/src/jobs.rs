@@ -528,15 +528,37 @@ pub(super) fn observe_job_terminal(job: &mut ShellJobRecord, now: i64) {
 /// authoritative snapshot. `notify_waiters` (not `notify_one`) so that every
 /// concurrent waiter observes the update; waiters re-check the snapshot after
 /// every wake, so spurious broadcasts are harmless.
-pub(super) fn notify_job_update(job: &ShellJobRecord) {
+fn notify_job_observation(job: &ShellJobRecord, meaningful: bool) {
     use std::sync::atomic::Ordering;
-    job.observation.revision.fetch_add(1, Ordering::Relaxed);
+    let revision = job
+        .observation
+        .revision
+        .fetch_add(1, Ordering::Relaxed)
+        .saturating_add(1);
+    if meaningful {
+        job.observation
+            .last_meaningful_revision
+            .store(revision, Ordering::Relaxed);
+    }
     job.observation.notify.notify_waiters();
     if job.lifecycle.is_terminal() {
         if let Some(candidates) = &job.observation.receipt_candidates {
             candidates.lock().unwrap().insert(job.job_id.clone());
         }
     }
+}
+
+/// Broadcast a semantically meaningful public Job update.
+pub(super) fn notify_job_update(job: &ShellJobRecord) {
+    notify_job_observation(job, true);
+}
+
+/// Broadcast a Runner liveness heartbeat. Heartbeats deliberately advance the
+/// ordinary observation revision so existing `wake_on=change` callers keep
+/// seeing liveness, while `last_meaningful_revision` stays unchanged for
+/// callers that opt into meaningful-change filtering.
+pub(super) fn notify_job_heartbeat(job: &ShellJobRecord) {
+    notify_job_observation(job, false);
 }
 
 pub(super) fn is_runner_active_job_status(status: &str) -> bool {

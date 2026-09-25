@@ -54,6 +54,10 @@ use crate::{
 use webcodex_core::runner_operation::{self, RunnerOperation};
 
 const JOB_UPDATE_INTERVAL_MS: u64 = 250;
+/// Runner-owned liveness cadence for active Jobs. Heartbeats are emitted by an
+/// independent manager thread, not by subprocess stdout/stderr readers, so a
+/// silent CPU-bound command remains distinguishable from a disconnected Runner.
+const JOB_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 
 /// At most the validated Job state machine's required semantic transitions are
 /// retained for live delivery. Output and advisory current-activity-only
@@ -274,6 +278,12 @@ impl JobManager {
             Arc::downgrade(&jobs),
             Arc::downgrade(&current_sink),
             Arc::downgrade(&pending_job_updates),
+            Arc::clone(&delivery_signal),
+        );
+        spawn_job_heartbeat_worker(
+            Arc::downgrade(&jobs),
+            Arc::downgrade(&pending_job_updates),
+            Arc::downgrade(&shutting_down),
             Arc::clone(&delivery_signal),
         );
         let owner_lifetime = Arc::new(JobManagerOwnerLifetime {
@@ -582,6 +592,69 @@ fn spawn_job_update_delivery_worker(
             }
         }
     });
+}
+
+fn spawn_job_heartbeat_worker(
+    jobs: Weak<Mutex<HashMap<String, RunningJob>>>,
+    pending_job_updates: Weak<Mutex<HashMap<String, JobUpdateDeliveryQueue>>>,
+    shutting_down: Weak<AtomicBool>,
+    signal: Arc<JobUpdateDeliverySignal>,
+) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(JOB_HEARTBEAT_INTERVAL);
+        let Some(shutting_down) = shutting_down.upgrade() else {
+            break;
+        };
+        if shutting_down.load(Ordering::SeqCst) {
+            break;
+        }
+        let Some(jobs_map) = jobs.upgrade() else {
+            break;
+        };
+        let Some(pending_map) = pending_job_updates.upgrade() else {
+            break;
+        };
+        let active_jobs = queue_job_heartbeat_batch(&jobs_map, &pending_map);
+        if active_jobs == 0 {
+            continue;
+        }
+        tracing::debug!(
+            active_jobs,
+            interval_secs = JOB_HEARTBEAT_INTERVAL.as_secs(),
+            "runner job heartbeat batch queued"
+        );
+        signal.notify();
+    });
+}
+
+fn queue_job_heartbeat_batch(
+    jobs_map: &Mutex<HashMap<String, RunningJob>>,
+    pending_map: &Mutex<HashMap<String, JobUpdateDeliveryQueue>>,
+) -> usize {
+    let updates = {
+        let mut jobs = lock_unpoison(jobs_map);
+        jobs.values_mut()
+            .filter(|job| job.snapshot.status == "running")
+            .map(|job| {
+                // A heartbeat intentionally changes only the sequence. The
+                // authoritative snapshot and advisory activity stay intact,
+                // allowing the Server to identify this as heartbeat-only.
+                job.snapshot.update_seq = job.snapshot.update_seq.saturating_add(1);
+                job_update_from_snapshot(&job.client_id, &job.runner_instance_id, &job.snapshot)
+            })
+            .collect::<Vec<_>>()
+    };
+    if updates.is_empty() {
+        return 0;
+    }
+    let mut pending = lock_unpoison(pending_map);
+    for update in &updates {
+        pending
+            .entry(update.job_id.clone())
+            .or_default()
+            .enqueue(PendingJobUpdateDelivery::from_update(update), false);
+    }
+    updates.len()
 }
 
 #[cfg(test)]

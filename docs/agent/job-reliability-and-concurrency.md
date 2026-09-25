@@ -382,12 +382,26 @@ observation-field schemas should make clear that:
 - `unknown_job` after same-process reconciliation is a diagnostic signal, not an
   automatic instruction to create a replacement Job.
 
-`observe_jobs` adds an optional `wake_on` policy: `change` is the compatible
-wire default and wakes on any observable update. `terminal` coalesces ordinary
-stdout/stderr/progress/activity changes until any watched Job is terminal, an
-item errors, or one shared absolute deadline expires. It never returns an
-`updated` wake reason: at the deadline `wait.outcome=timeout` can coexist with
-`changed=true`. Item errors take precedence over terminal, then timeout.
+`observe_jobs` adds an optional `wake_on` policy. `change` remains the compatible
+wire default and wakes on any observable revision, including the Runner's
+subprocess-independent Job heartbeat. `meaningful_change` suppresses a revision
+that changes only Runner heartbeat sequence while still waking for logs,
+lifecycle, progress, activity, recovery, or terminal changes. `terminal`
+coalesces all non-terminal revisions until any watched Job is terminal, an item
+errors, or one shared absolute deadline expires. `all_terminal` waits for the
+entire predetermined set. Terminal policies never return an `updated` outcome:
+at the deadline `wait.outcome=timeout` can coexist with `changed=true`. Item
+errors take precedence over terminal, then timeout.
+
+Runner-backed active Jobs emit a lightweight liveness heartbeat every 15 seconds
+from the JobManager, independently of subprocess stdout/stderr readers. The
+heartbeat advances the Runner Job update sequence but does not change lifecycle,
+logs, activity, exit state, or command authority. The Server classifies such an
+accepted sequence-only update as `heartbeat_changed=true` and
+`meaningful_changed=false`; ordinary output/state updates set
+`meaningful_changed=true`. A heartbeat is evidence that the current Runner still
+owns an active Job record, not evidence that the command has succeeded or that a
+particular child PID is healthy.
 
 Canonical execution handoffs expose the host-safe `wait_secs=55,
 wake_on=terminal` parser-ready observation continuation. When blocked on terminal,
@@ -398,10 +412,18 @@ that work, optionally requesting `jobs.attention` on an ordinary observation.
 The Runtime still accepts explicit waits up to 100 seconds and terminal completion wakes immediately,
 but longer model-facing waits may exceed an outer MCP Host deadline. Any missing token still gives
 an immediate baseline, and omitting `wait_secs` gives an immediate observation.
-Each Job waiter advances a private opaque cursor on non-terminal updates; final
-bounded deltas always use the caller's original token. Waiters use canonical
-Notify/revision rechecks, without a periodic polling heartbeat; updates neither
+Each Job waiter advances a private opaque cursor on revisions that its wake policy
+coalesces; final bounded deltas always use the caller's original token. Waiters
+use canonical Notify/revision rechecks rather than polling. The Runner heartbeat
+is an ordinary pushed Job update, not observer-side polling; updates neither
 recreate other Jobs' waiters nor extend the batch deadline.
+
+Canonical observations retain exact cursor/update-sequence and returned
+line/byte counts. `observe_jobs` emits structured, redaction-safe diagnostics for
+the requested wait policy, actual wait, wake reason, before/after observation
+revision and log cursors, current Runner update sequence, and returned
+line/byte counts. The opaque observation token does not encode the prior Runner
+`last_update_seq`, so diagnostics do not invent a before-sequence value.
 
 Workflow Session records retain every `observe_jobs` interaction for audit and
 validation evidence. Runtime Console treats these calls as observation
@@ -449,6 +471,17 @@ These expectations already have dedicated coverage in
 `docs/TESTING.md` (`e2e_job_reconciliation_ws.sh` and
 `e2e_job_recovery_failures_ws.sh`). Unit coverage also verifies old-epoch
 observation-token refresh behavior.
+
+### Parallel validation guidance
+
+The implementation and operational acceptance matrix for heartbeat-only revisions,
+`meaningful_change`, structured observation diagnostics, cross-architecture checks, and
+restart/reconnect chaos is maintained in
+[`job-observation-reliability-testing.md`](job-observation-reliability-testing.md).
+Use that playbook when handing this subsystem to another agent or test host. In
+particular, preserve persistent `job_id`/observation state across MCP interruptions,
+use short bounded observations instead of one long terminal-only liveness wait, and
+finish cross-cutting changes with a monolithic Server suite after focused shards pass.
 
 ## 7. Runner-process restart boundary
 

@@ -130,6 +130,82 @@ async fn job_log_wait_observation_update_between_calls_is_immediate() {
 }
 
 #[tokio::test]
+async fn job_log_wait_distinguishes_seq_only_heartbeat_from_meaningful_output() {
+    let registry = RunnerRegistry::default();
+    let job = start_wait_job(&registry).await;
+    registry
+        .update_job(wait_job_update(
+            "inst-wait",
+            &job.job_id,
+            1,
+            "running",
+            Some("first\n"),
+            false,
+        ))
+        .await
+        .unwrap();
+    let (baseline, _, _, _, _, _) = registry
+        .job_log_for_auth(None, &job.job_id, None, None, Some(10), None, None)
+        .await
+        .unwrap();
+    let token = baseline.observation_token.unwrap();
+
+    // Same public snapshot with only a newer Runner sequence is the canonical
+    // liveness heartbeat: legacy change observers wake, meaningful observers
+    // can suppress it without changing token format.
+    registry
+        .update_job(wait_job_update(
+            "inst-wait",
+            &job.job_id,
+            2,
+            "running",
+            None,
+            false,
+        ))
+        .await
+        .unwrap();
+    let (heartbeat, stdout, _, _, _, heartbeat_wait) = registry
+        .job_log_for_auth(None, &job.job_id, None, None, None, Some(&token), Some(1))
+        .await
+        .unwrap();
+    assert_eq!(heartbeat_wait.wait_outcome, JobLogWaitOutcome::Immediate);
+    assert!(heartbeat_wait.changed);
+    assert!(!heartbeat_wait.meaningful_changed);
+    assert!(heartbeat_wait.heartbeat_changed);
+    assert_eq!(stdout.as_deref(), Some(""));
+    assert_eq!(heartbeat.last_update_seq, Some(2));
+
+    let heartbeat_token = heartbeat.observation_token.unwrap();
+    registry
+        .update_job(wait_job_update(
+            "inst-wait",
+            &job.job_id,
+            3,
+            "running",
+            Some("second\n"),
+            false,
+        ))
+        .await
+        .unwrap();
+    let (_, stdout, _, _, _, meaningful_wait) = registry
+        .job_log_for_auth(
+            None,
+            &job.job_id,
+            None,
+            None,
+            None,
+            Some(&heartbeat_token),
+            Some(1),
+        )
+        .await
+        .unwrap();
+    assert!(meaningful_wait.changed);
+    assert!(meaningful_wait.meaningful_changed);
+    assert!(!meaningful_wait.heartbeat_changed);
+    assert_eq!(stdout.as_deref(), Some("second\n"));
+}
+
+#[tokio::test]
 async fn job_log_wait_server_transition_between_calls_is_immediate() {
     let registry = RunnerRegistry::default();
     let job = start_wait_job(&registry).await;
@@ -344,6 +420,61 @@ async fn job_log_wait_wakes_all_waiters_without_holding_registry_mutex() {
         let wait = task.await.unwrap();
         assert_eq!(wait.wait_outcome, JobLogWaitOutcome::Updated);
         assert!(wait.changed);
+    }
+}
+
+#[tokio::test]
+async fn job_log_wait_heartbeat_wakes_all_waiters_without_becoming_meaningful() {
+    let registry = RunnerRegistry::default();
+    let job = start_wait_job(&registry).await;
+    registry
+        .update_job(wait_job_update(
+            "inst-wait",
+            &job.job_id,
+            1,
+            "running",
+            Some("baseline\n"),
+            false,
+        ))
+        .await
+        .unwrap();
+    let token = registry
+        .get_job(&job.job_id)
+        .await
+        .unwrap()
+        .observation_token
+        .unwrap();
+    let mut tasks = Vec::new();
+    for _ in 0..2 {
+        let registry = registry.clone();
+        let job_id = job.job_id.clone();
+        let token = token.clone();
+        tasks.push(tokio::spawn(async move {
+            registry
+                .job_log_for_auth(None, &job_id, None, None, None, Some(&token), Some(5))
+                .await
+                .unwrap()
+                .5
+        }));
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    registry
+        .update_job(wait_job_update(
+            "inst-wait",
+            &job.job_id,
+            2,
+            "running",
+            None,
+            false,
+        ))
+        .await
+        .unwrap();
+    for task in tasks {
+        let wait = task.await.unwrap();
+        assert_eq!(wait.wait_outcome, JobLogWaitOutcome::Updated);
+        assert!(wait.changed);
+        assert!(!wait.meaningful_changed);
+        assert!(wait.heartbeat_changed);
     }
 }
 

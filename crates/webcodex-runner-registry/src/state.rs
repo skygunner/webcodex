@@ -375,6 +375,11 @@ impl JobRecoveryState {
 pub(super) struct JobObservationState {
     pub(super) epoch: Arc<str>,
     pub(super) revision: Arc<AtomicU64>,
+    /// Total observation revision of the most recent change that affected
+    /// public Job meaning beyond a Runner liveness heartbeat. This lets
+    /// observers suppress heartbeat-only wakes without changing the opaque
+    /// observation-token format or losing ordinary change compatibility.
+    pub(super) last_meaningful_revision: Arc<AtomicU64>,
     pub(super) notify: Arc<Notify>,
     /// First time this Server process observed the Job in a terminal execution
     /// lifecycle. Runner-reported `ended_at` remains the public execution time
@@ -393,6 +398,7 @@ impl JobObservationState {
         Self {
             epoch,
             revision: Arc::new(AtomicU64::new(0)),
+            last_meaningful_revision: Arc::new(AtomicU64::new(0)),
             notify: Arc::new(Notify::new()),
             terminal_observed_at: None,
             receipt_candidates: None,

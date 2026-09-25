@@ -36,6 +36,46 @@ fn retained_terminal_job(job_id: &str, ended_at: i64) -> RunningJob {
 }
 
 #[test]
+fn heartbeat_batch_advances_only_running_jobs_and_queues_coalescible_update() {
+    let manager = JobManager::new(1);
+    let running_id = "heartbeat-running";
+    lock_unpoison(&manager.jobs).insert(
+        running_id.to_string(),
+        RunningJob {
+            client_id: "test-agent".to_string(),
+            runner_instance_id: "test-instance".to_string(),
+            snapshot: test_job_snapshot(running_id),
+            child: None,
+            stop_requested: Arc::new(AtomicBool::new(false)),
+            slot_reserved: true,
+        },
+    );
+    let terminal_id = "heartbeat-terminal";
+    lock_unpoison(&manager.jobs).insert(
+        terminal_id.to_string(),
+        retained_terminal_job(terminal_id, chrono::Utc::now().timestamp()),
+    );
+
+    assert_eq!(
+        queue_job_heartbeat_batch(&manager.jobs, &manager.pending_job_updates),
+        1
+    );
+    let jobs = lock_unpoison(&manager.jobs);
+    assert_eq!(jobs[running_id].snapshot.update_seq, 2);
+    assert_eq!(jobs[terminal_id].snapshot.update_seq, 1);
+    drop(jobs);
+
+    let pending = lock_unpoison(&manager.pending_job_updates);
+    let queued = pending
+        .get(running_id)
+        .and_then(JobUpdateDeliveryQueue::next)
+        .expect("heartbeat update queued");
+    assert_eq!(queued.update_seq, 2);
+    assert!(!queued.finished);
+    assert!(pending.get(terminal_id).is_none());
+}
+
+#[test]
 fn job_reconciliation_inventory_prioritizes_active_and_bounds_terminal_history() {
     let manager = JobManager::new(1);
     let now = chrono::Utc::now().timestamp();

@@ -1914,6 +1914,10 @@ fn observe_jobs_wake_policy_defaults_and_validates() {
     for (policy, expected) in [
         (None, ObserveJobsWakeOn::Change),
         (Some("change"), ObserveJobsWakeOn::Change),
+        (
+            Some("meaningful_change"),
+            ObserveJobsWakeOn::MeaningfulChange,
+        ),
         (Some("terminal"), ObserveJobsWakeOn::Terminal),
         (Some("all_terminal"), ObserveJobsWakeOn::AllTerminal),
     ] {

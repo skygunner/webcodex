@@ -301,6 +301,14 @@ fn canonical_success_item(index: usize, observation: Value) -> Value {
 
 fn canonical_batch(items: Vec<Value>, wait_outcome: &str, waited_ms: u64) -> ToolResult {
     let returned_count = items.len();
+    let wait_reason = match wait_outcome {
+        "immediate" => "immediate",
+        "updated" => "change",
+        "terminal" => "terminal",
+        "item_error" => "item_error",
+        "timeout" => "timeout",
+        other => panic!("unsupported fixture wait outcome: {other}"),
+    };
     let succeeded_count = items.iter().filter(|item| item["success"] == true).count();
     let changed_count = items
         .iter()
@@ -316,7 +324,13 @@ fn canonical_batch(items: Vec<Value>, wait_outcome: &str, waited_ms: u64) -> Too
         "succeeded_count": succeeded_count,
         "failed_count": returned_count - succeeded_count,
         "items": items,
-        "wait": {"outcome": wait_outcome, "waited_ms": waited_ms},
+        "wait": {
+            "outcome": wait_outcome,
+            "reason": wait_reason,
+            "wake_on": "change",
+            "requested_secs": null,
+            "waited_ms": waited_ms
+        },
         "changed_count": changed_count,
         "terminal_count": terminal_count,
         "output_truncated": false
@@ -571,6 +585,8 @@ fn observe_jobs_schema_catalog_permission_and_audit_are_public_and_token_safe() 
         "status",
         "terminal",
         "changed",
+        "meaningful_changed",
+        "heartbeat_changed",
         "log_delta_status",
         "observation_token",
     ] {
@@ -586,7 +602,11 @@ fn observe_jobs_schema_catalog_permission_and_audit_are_public_and_token_safe() 
     );
     assert_eq!(
         sparse_output["properties"]["wait"]["required"],
-        json!(["outcome"])
+        json!(["outcome", "reason", "wake_on", "requested_secs"])
+    );
+    assert_eq!(
+        sparse_output["properties"]["wait"]["properties"]["wake_on"]["enum"],
+        json!(["change", "meaningful_change", "terminal", "all_terminal"])
     );
 
     let definition = super::super::tool_definition::lookup_tool_definition("observe_jobs").unwrap();

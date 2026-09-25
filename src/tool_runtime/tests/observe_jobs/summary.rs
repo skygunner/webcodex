@@ -124,6 +124,14 @@ fn summary_preserves_diagnostics_and_original_cursor_for_expansion() {
         .unwrap()
         .contains("120 passed; 0 failed"));
     assert_eq!(output["stderr_tail"], "warning: preserve this diagnostic\n");
+    assert_eq!(
+        output["stdout_returned_bytes"],
+        output["stdout_tail"].as_str().unwrap().len()
+    );
+    assert_eq!(
+        output["stderr_returned_bytes"],
+        output["stderr_tail"].as_str().unwrap().len()
+    );
     let detail = &output["suggested_call"];
     assert_eq!(
         detail["arguments"]["items"][0]["after_observation_token"],
@@ -321,7 +329,13 @@ fn summary_preserves_mixed_batch_order_errors_and_suffix_preferences() {
     assert_eq!(result.output["items"][1]["output"], failed);
     assert_eq!(
         result.output["wait"],
-        json!({"outcome": "terminal", "waited_ms": 23})
+        json!({
+            "outcome": "terminal",
+            "reason": "terminal",
+            "wake_on": "change",
+            "requested_secs": null,
+            "waited_ms": 23
+        })
     );
     assert_eq!(
         result.output["suggested_call"]["arguments"]["summary_only"],

@@ -357,6 +357,7 @@ pub(crate) fn summarize_observe_jobs_result(
             let projected = compact_validation_log(text, tool, stream);
             if projected != text {
                 compact[format!("{stream}_returned_lines")] = json!(projected.lines().count());
+                compact[format!("{stream}_returned_bytes")] = json!(projected.len());
                 compact[key] = json!(projected);
                 omitted.push(stream);
             }

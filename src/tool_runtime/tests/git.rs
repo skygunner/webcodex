@@ -1245,11 +1245,12 @@ async fn run_runner_git_diff_hunks_committed_page_with_options(
             assert!(script.contains("GIT_OPTIONAL_LOCKS=0"));
             assert!(script.contains("GIT_CONFIG_GLOBAL=/dev/null"));
             assert!(script.contains("attributesFile = /dev/null"));
+            assert!(script.contains("git checkout-index -z --stdin --prefix=\"$view/worktree/\""));
             for forbidden in [
                 "git fetch",
                 "git apply",
                 "git commit",
-                "git checkout",
+                "git checkout ",
                 "git reset",
                 "git push",
                 "git stash",
@@ -1427,7 +1428,7 @@ async fn git_diff_hunks_committed_exact_range_isolated_targeted_and_head_attribu
 async fn git_diff_hunks_ignores_external_diff_helpers_in_worktree_and_cached_modes() {
     use std::os::unix::fs::PermissionsExt;
 
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::test_support::executable_tempdir();
     init_git_repo(tmp.path());
     write_git_review_fixture_file(tmp.path(), "safe.txt", "safe-old\n");
     write_git_review_fixture_file(tmp.path(), ".env", "FAKE_PRIVATE_MARKER_117\n");
@@ -6501,11 +6502,14 @@ async fn run_git_review_summary_via_agent(
             assert!(payload.script.contains("GIT_ATTR_NOSYSTEM=1"));
             assert!(payload.script.contains("attributesFile = /dev/null"));
             assert!(payload.script.contains("GIT_CONFIG_GLOBAL=/dev/null"));
+            assert!(payload
+                .script
+                .contains("git checkout-index -z --stdin --prefix=\"$view/worktree/\""));
             for forbidden in [
                 "git fetch",
                 "git apply",
                 "git commit",
-                "git checkout",
+                "git checkout ",
                 "git reset",
                 "git push",
                 "git stash",
@@ -7636,7 +7640,7 @@ async fn show_changes_agent_untracked_preview_uses_internal_posix_runtime() {
 fn show_changes_preserves_sentinel_text_from_external_diff() {
     use std::os::unix::fs::PermissionsExt;
 
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::test_support::executable_tempdir();
     init_git_repo(tmp.path());
     commit_file(tmp.path(), "external.txt", "before\n", "initial");
     std::fs::write(tmp.path().join("external.txt"), "after\n").unwrap();
@@ -8469,7 +8473,7 @@ fn bounded_show_changes_output_from_frames(
 fn show_changes_oversized_no_hunk_preamble_is_bounded_and_drained() {
     use std::os::unix::fs::PermissionsExt;
 
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::test_support::executable_tempdir();
     init_git_repo(tmp.path());
     commit_file(tmp.path(), "README.md", "before\n", "initial");
     std::fs::write(tmp.path().join("README.md"), "after\n").unwrap();
@@ -8664,7 +8668,7 @@ fn show_changes_long_commit_subject_stays_within_budget() {
 async fn show_changes_runtime_rejects_stat_only_failure_for_both_diff_modes() {
     use std::os::unix::fs::PermissionsExt;
 
-    let repo = tempfile::tempdir().unwrap();
+    let repo = crate::test_support::executable_tempdir();
     init_git_repo(repo.path());
     commit_file(repo.path(), "README.md", "before\n", "initial");
     std::fs::write(repo.path().join("README.md"), "after\n").unwrap();
@@ -8675,7 +8679,7 @@ async fn show_changes_runtime_rejects_stat_only_failure_for_both_diff_modes() {
     let real_git = real_git.trim();
     assert!(!real_git.is_empty());
 
-    let wrapper_dir = tempfile::tempdir().unwrap();
+    let wrapper_dir = crate::test_support::executable_tempdir();
     let wrapper_path = wrapper_dir.path().join("git");
     std::fs::write(
         &wrapper_path,

@@ -121,11 +121,15 @@ fn main() -> io::Result<()> {
                     continue;
                 }
                 if scenario == "oversized_message" {
+                    let padding_bytes = args
+                        .get(2)
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .unwrap_or(7 * 1024 * 1024);
                     send(
                         &mut writer,
                         &format!(
                             r#"{{"jsonrpc":"2.0","id":{id},"result":{{"padding":"{}","tools":[]}}}}"#,
-                            "x".repeat(2 * 1024 * 1024)
+                            "x".repeat(padding_bytes)
                         ),
                     )?;
                     continue;
@@ -271,7 +275,7 @@ fn main() -> io::Result<()> {
                         ),
                     )?,
                     "max_image_result" => {
-                        let data = format!("iVBORw0KGgoA{}AA==", "AAAA".repeat(349_522));
+                        let data = format!("iVBORw0KGgoA{}AA==", "AAAA".repeat(1_398_098));
                         send(
                             &mut writer,
                             &format!(
@@ -280,7 +284,7 @@ fn main() -> io::Result<()> {
                         )?;
                     }
                     "oversized_image" => {
-                        let data = "AAAA".repeat(349_526);
+                        let data = "AAAA".repeat(1_398_102);
                         send(
                             &mut writer,
                             &format!(

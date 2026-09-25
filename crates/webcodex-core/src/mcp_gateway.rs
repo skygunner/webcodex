@@ -682,10 +682,16 @@ mod tests {
         assert_eq!(MCP_GATEWAY_MAX_RESULT_BYTES, 512 * 1024);
         assert_eq!(MCP_GATEWAY_MAX_JSON_STRING_BYTES, 512 * 1024);
         assert_eq!(MCP_GATEWAY_MAX_MESSAGE_BYTES, 1024 * 1024);
-        assert_eq!(MCP_GATEWAY_MAX_IMAGE_BYTES, 1024 * 1024);
-        assert_eq!(MCP_GATEWAY_MAX_IMAGE_BASE64_BYTES, 1_398_104);
-        assert!(MCP_GATEWAY_MAX_PROVIDER_MESSAGE_BYTES < 2 * 1024 * 1024);
-        assert!(MCP_GATEWAY_MAX_TOOL_RESULT_MESSAGE_BYTES < 2 * 1024 * 1024);
+        assert_eq!(MCP_GATEWAY_MAX_IMAGE_BYTES, 4 * 1024 * 1024);
+        assert_eq!(MCP_GATEWAY_MAX_IMAGE_BASE64_BYTES, 5_592_408);
+        assert!(
+            MCP_GATEWAY_MAX_PROVIDER_MESSAGE_BYTES
+                < crate::runner_protocol::RUNNER_ENVELOPE_MAX_BYTES
+        );
+        assert!(
+            MCP_GATEWAY_MAX_TOOL_RESULT_MESSAGE_BYTES
+                < crate::runner_protocol::RUNNER_ENVELOPE_MAX_BYTES
+        );
 
         let large_text = McpGatewayToolResult {
             content: vec![McpGatewayContent::Text {
@@ -827,10 +833,12 @@ mod tests {
             .unwrap_err()
             .contains("non-image"));
 
+        let first_image_bytes = MCP_GATEWAY_MAX_IMAGE_BYTES / 2;
+        let second_image_bytes = MCP_GATEWAY_MAX_IMAGE_BYTES - first_image_bytes + 1;
         let mut png_chunk = b"\x89PNG\r\n\x1a\n".to_vec();
-        png_chunk.resize(600 * 1024, 0);
+        png_chunk.resize(first_image_bytes, 0);
         let mut jpeg_chunk = vec![0xff, 0xd8, 0xff];
-        jpeg_chunk.resize(600 * 1024, 0);
+        jpeg_chunk.resize(second_image_bytes, 0);
         let aggregate = McpGatewayToolResult {
             content: vec![
                 McpGatewayContent::Image {
@@ -845,7 +853,9 @@ mod tests {
             structured_content: None,
             is_error: false,
         };
-        assert!(validate_tool_result(&aggregate).is_err());
+        assert!(validate_tool_result(&aggregate)
+            .unwrap_err()
+            .contains("aggregate maximum"));
     }
 
     #[test]

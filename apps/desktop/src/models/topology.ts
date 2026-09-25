@@ -127,6 +127,7 @@ export interface TunnelProxySnapshot {
 export type DesktopOperationKind =
   | "local_setup"
   | "local_project_activate"
+  | "project_unregister"
   | "remote_setup"
   | "quick_share_start"
   | "quick_share_stop"
@@ -170,6 +171,7 @@ export interface ChatGptActivitySnapshot {
 }
 
 export interface DesktopState {
+  workspace_runner?: SettingsTarget | null;
   configuration_issue?: string | null;
   saved_projects?: ProjectSelection[];
   topology?: RuntimeTopology | null;

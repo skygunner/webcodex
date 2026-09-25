@@ -6,6 +6,15 @@ Desktop 负责准备本机项目和管理连接；你在 ChatGPT 等 AI 客户�
 
 贡献者如果要做 frontend/Tauri 开发、从源码加载 runtime、构建 NSIS/DMG 或运行原生安装 smoke，请看 [Desktop 开发与打包](DESKTOP_DEVELOPMENT.zh-CN.md)。
 
+
+## Runner 项目清单
+
+“项目”页列出此 Runner 的项目、Git 分支、活跃 Session 和最近活动。多个项目可以同时使用；模型使用 exact runtime Project ID，不需要先在 Desktop 切换项目。首页的主要展示项目只是 Desktop 的内部默认展示。
+
+“添加项目”保留目录选择与注册流程。Windows 盘符、UNC 和 extended-length 路径的不同写法不会产生重复项目行；用户界面显示普通路径，注册 ID 和 canonical path 不变。
+
+“取消注册”需要确认具体项目，只移除 Runner 注册及对应 Desktop 保存记录，不删除目录或 Git 文件，不撤销或扩大 allowed roots。运行中的 Job 会由服务端拒绝此操作。失败或结果不确定时不会自动重试；先刷新 inventory 再检查。取消首页默认项目后，Desktop 不会自动激活另一个项目；添加目录仍可通过设置流程完成。
+
 ## 第一次使用
 
 1. 在欢迎页选择 **在此电脑使用 WebCodex**。这是普通个人使用的推荐入口。
@@ -79,3 +88,17 @@ Desktop 的授权结果不等于独立 Runner 已获授权。Computer Use 实际
 macOS 使用 **⌘ + 1–6**，Windows 使用 **Ctrl + 1–6**，依次切换首页、项目、连接、扩展、活动和设置。这些导航快捷键在输入框和语言选择框内同样生效，普通输入及复制、粘贴等文本编辑快捷键不受影响。可用 Tab 聚焦按钮，用 Enter 激活；诊断折叠项也支持键盘操作。
 
 首页的运行控制和设置页的技术诊断默认折叠。主动停止后显示“已停止”，点击“启动”继续。活动页优先显示操作结果，勾选“显示进程详情”查看常规进程事件。Tunnel ID 和密钥在连接页配置；API key 不回显。
+
+### 取消注册后的 Runtime 状态
+
+Full Runtime 由 Server、Runner 和项目清单组成，Desktop 默认展示项目是可选的。
+取消注册默认项目（包括最后一个项目）后，Runtime 继续可用，只清空该项目的
+ChatGPT 活动观察，不自动选择替代项目。仍可通过“添加项目”注册目录。
+Desktop 重启使用已保存的 Server/Runner 身份恢复 Runtime 和 Connections，
+不会重新登录或自动注册历史项目。
+
+正常在线且完整的 Runner 项目清单是注册状态的权威来源。Desktop 仅在同一
+Runner 配置和客户端身份下清理失效的注册历史；离线、无访问权限、截断或失败
+的观察不会触发清理。跨越 Desktop 操作的旧响应会被丢弃。仅在历史实际变化或
+需要重试已确认取消注册后的本地写入时保存状态。取消注册仍仅删除注册记录，
+保留项目目录、Git 文件、allowed roots 和运行中的 Server/Runner 进程。

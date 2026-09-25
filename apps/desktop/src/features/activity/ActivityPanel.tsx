@@ -5,7 +5,7 @@ import { useProduct } from "../../i18n/product";
 import { useShellText } from "../../i18n/runtime-shell";
 import type { ActivityEntry } from "../../models/topology";
 import type { WindowDetail, WindowSummary } from "../../models/workspace";
-import { projectName, sessionTitle, useWorkspace, workspaceQuery } from "../workspace/WorkspaceContext";
+import { displayProjectPath, projectName, sessionTitle, useWorkspace, workspaceQuery } from "../workspace/WorkspaceContext";
 import { observationTime } from "../workspace/WorkspaceStatus";
 import { WindowActivityDetail } from "./WindowActivityDetail";
 import { WorkflowSessionDetail, sessionLifecycle, SessionAttention } from "./WorkflowSessionDetail";
@@ -51,6 +51,7 @@ export function ActivityPanel({ activity }: { activity: ActivityEntry[] }) {
   const visible = windows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
   const previews = useWindowPreviews(visible, tab === "windows" && !workspace.state.current_operation, workspace.revision);
   useEffect(() => { setPage(0); }, [project, tab]);
+  useEffect(() => { if (project && !workspace.projects.some(row => row.id === project)) setProject(""); }, [workspace.projects, project]);
   useEffect(() => { if (page * PAGE_SIZE >= windows.length && page > 0) setPage(0); }, [windows.length, page]);
   const projectLabel = (id?: string) => projectName(workspace.projects.find(row => row.id === id) || { id: id || "—" });
   const labels: Record<Tab, string> = { windows: s("ChatGPT calls"), sessions: s("Workflow Sessions"), system: s("System events") };
@@ -61,7 +62,7 @@ export function ActivityPanel({ activity }: { activity: ActivityEntry[] }) {
       if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
       event.preventDefault(); const next = TABS[(TABS.indexOf(value) + (event.key === "ArrowRight" ? 1 : TABS.length - 1)) % TABS.length]; setTab(next); document.getElementById(`activity-tab-${next}`)?.focus();
     }}>{labels[value]}</button>)}</div>
-    {tab !== "system" && <div className="activity-project-filter"><span className="filter-label">{s("Project")}</span><ProjectPicker label={s("Project")} allLabel={p("allProjects")} emptyLabel={p("noMatches")} searchLabel={p("search")} value={project} onChange={setProject} options={workspace.projects.filter(row => row.id).map(row => ({ value: row.id, label: projectName(row), detail: row.path }))} /></div>}
+    {tab !== "system" && <div className="activity-project-filter"><span className="filter-label">{s("Project")}</span><ProjectPicker label={s("Project")} allLabel={p("allProjects")} emptyLabel={p("noMatches")} searchLabel={p("search")} value={project} onChange={setProject} options={workspace.projects.filter(row => row.id).map(row => ({ value: row.id, label: projectName(row), detail: displayProjectPath(row.path) }))} /></div>}
     {workspace.loading && <p role="status" className="workspace-notice">{p("loading")}</p>}
     <section role="tabpanel" id={`activity-view-${tab}`} aria-labelledby={`activity-tab-${tab}`}>
     {tab === "windows" && <>

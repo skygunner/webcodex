@@ -362,7 +362,7 @@ beforeEach(() => {
     api.getState.mockResolvedValue(readyState);
     vi.mocked(open).mockRejectedValueOnce({ code: "project_invalid", message: "Picker unavailable", next_action: "Retry." });
     renderApp(); await screen.findByRole("heading", { level: 3, name: "repo" });
-    expect(screen.getByText("当前项目")).toBeInTheDocument();
+    expect(screen.queryByText("当前项目")).not.toBeInTheDocument();
     expect(screen.queryByText(/responsible process|Runtime Bearer|Runner 中执行/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "添加项目" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Picker unavailable");
@@ -444,7 +444,7 @@ beforeEach(() => {
     expect(screen.getByRole("main")).toHaveFocus();
   });
 
-  it("switches a local project in place while preserving an active Tunnel", async () => {
+  it("adds a local project while preserving an active Tunnel", async () => {
     const tunneledState: DesktopState = {
       ...readyState,
       topology: { ...readyState.topology!, exposure: { kind: "open_ai_tunnel" } },
@@ -465,8 +465,10 @@ beforeEach(() => {
 
     renderApp();
     fireEvent.click(await screen.findByRole("button", { name: "项目" }));
-    expect(screen.getByRole("heading", { level: 1, name: /^项目/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: /此 Runner 的项目/ })).toBeInTheDocument();
     expect(screen.getByRole("main")).toHaveFocus();
+    expect(screen.queryByRole("button", { name: /切换项目|Use project|Select project/ })).not.toBeInTheDocument();
+    expect(api.activateLocalProject).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "添加项目" }));
 
     await waitFor(() => expect(api.activateLocalProject).toHaveBeenCalledWith(projectC.path));
@@ -478,8 +480,10 @@ beforeEach(() => {
     expect(api.startRegularTunnel).not.toHaveBeenCalled();
   });
 
-  it("uses full setup when no saved local project identity exists", async () => {
-    const noProject: DesktopState = { ...readyState, project: null };
+  it("adds a project to a ready projectless Runtime without opening setup", async () => {
+    const noProject: DesktopState = { ...readyState, project: null, readiness: { ...readyState.readiness, project: "none" } };
+    vi.mocked(open).mockResolvedValue("/tmp/new-project");
+    api.activateLocalProject.mockResolvedValue(readyState);
     api.getState.mockResolvedValue(noProject);
     api.observeChatgptActivity.mockResolvedValue(noProject);
 
@@ -487,9 +491,54 @@ beforeEach(() => {
     fireEvent.click(await screen.findByRole("button", { name: "项目" }));
     fireEvent.click(screen.getByRole("button", { name: /添加项目/ }));
 
-    expect(await screen.findByRole("button", { name: /在此电脑使用 WebCodex/ })).toBeInTheDocument();
-    expect(api.activateLocalProject).not.toHaveBeenCalled();
+    await waitFor(() => expect(api.activateLocalProject).toHaveBeenCalledWith("/tmp/new-project"));
+    expect(screen.queryByRole("button", { name: /在此电脑使用 WebCodex/ })).not.toBeInTheDocument();
     expect(api.configureLocal).not.toHaveBeenCalled();
+  });
+
+  it("reuses a saved remote Runner when adding a project after the default was removed", async () => {
+    const serverUrl = "https://server.example.test";
+    const projectlessRemote: DesktopState = {
+      ...readyState,
+      workspace_runner: { config_path: "C:/fixture/runner.toml", client_id: "desktop", server_url: serverUrl },
+      topology: {
+        experience: "full",
+        server: { kind: "remote", url: serverUrl },
+        runner: { kind: "local" },
+        exposure: { kind: "existing_https", url: serverUrl },
+        enrollment: { kind: "managed_pairing" },
+      },
+      project: null,
+      saved_projects: [],
+      readiness: { ...readyState.readiness, project: "none" },
+    };
+    const projectB = {
+      path: "C:\\fixture\\project-b",
+      allowed_root: "C:\\fixture\\project-b",
+      is_git_repository: true,
+      runtime_project_id: null,
+    };
+    api.getState.mockResolvedValue(projectlessRemote);
+    api.observeChatgptActivity.mockResolvedValue(projectlessRemote);
+    api.inspectProject.mockResolvedValue(projectB);
+    api.configureRemote.mockResolvedValue({
+      ...projectlessRemote,
+      project: { ...projectB, runtime_project_id: "agent:desktop:project-b" },
+      readiness: { ...projectlessRemote.readiness, project: "ready" },
+    });
+    vi.mocked(open).mockResolvedValue(projectB.path);
+
+    renderApp();
+    await screen.findByRole("heading", { level: 1, name: "WebCodex" });
+    await changeServerConnection();
+    fireEvent.click(screen.getByRole("button", { name: /连接现有 Server/ }));
+    expect(screen.getByText("将复用现有连接")).toBeInTheDocument();
+    expect(screen.queryByLabelText("一次性登录码")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "选择文件夹" }));
+    await waitFor(() => expect(api.inspectProject).toHaveBeenCalledWith(projectB.path));
+    fireEvent.click(screen.getByRole("button", { name: "重新连接电脑" }));
+    await waitFor(() => expect(api.configureRemote).toHaveBeenCalledWith(serverUrl, "", projectB.path));
   });
 
   it("reports a legacy Runner restart requirement without implicitly restarting any process", async () => {

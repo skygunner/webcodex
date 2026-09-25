@@ -19,6 +19,19 @@ pub struct ProjectRuntimeIdentity {
     pub project_id: String,
     pub runtime_project_id: String,
     pub project_path: String,
+    pub runner: RunnerRuntimeIdentity,
+}
+
+impl std::ops::Deref for ProjectRuntimeIdentity {
+    type Target = RunnerRuntimeIdentity;
+    fn deref(&self) -> &Self::Target {
+        &self.runner
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunnerRuntimeIdentity {
+    pub client_id: String,
     pub runner_config: PathBuf,
     pub user_token_file: PathBuf,
     pub server_url: String,
@@ -484,7 +497,7 @@ impl WebCodexAdapter {
 
     pub async fn runner_ready(
         &mut self,
-        identity: &ProjectRuntimeIdentity,
+        identity: &RunnerRuntimeIdentity,
         cancellation: &CancellationContext,
     ) -> DesktopResult<bool> {
         self.runner_ready_with_deadline(identity, cancellation, None)
@@ -493,7 +506,7 @@ impl WebCodexAdapter {
 
     pub async fn runner_ready_until(
         &mut self,
-        identity: &ProjectRuntimeIdentity,
+        identity: &RunnerRuntimeIdentity,
         cancellation: &CancellationContext,
         deadline: Deadline,
     ) -> DesktopResult<bool> {
@@ -503,7 +516,7 @@ impl WebCodexAdapter {
 
     pub async fn observe_runner_connection(
         &mut self,
-        identity: &ProjectRuntimeIdentity,
+        identity: &RunnerRuntimeIdentity,
         expected_client_id: Option<&str>,
         cancellation: &CancellationContext,
     ) -> DesktopResult<RunnerConnectionObservation> {
@@ -518,7 +531,7 @@ impl WebCodexAdapter {
 
     async fn observe_runner_connection_with_deadline(
         &mut self,
-        identity: &ProjectRuntimeIdentity,
+        identity: &RunnerRuntimeIdentity,
         expected_client_id: Option<&str>,
         cancellation: &CancellationContext,
         deadline: Option<Deadline>,
@@ -578,6 +591,7 @@ impl WebCodexAdapter {
         }
         if !same_existing_file(Path::new(&output.config.path), &identity.runner_config)
             || !same_server(&output.config.server_url, &identity.server_url)
+            || output.config.client_id != identity.client_id
             || expected_client_id.is_some_and(|expected| expected != output.config.client_id)
         {
             return Err(DesktopError::new(
@@ -603,7 +617,7 @@ impl WebCodexAdapter {
 
     async fn runner_ready_with_deadline(
         &mut self,
-        identity: &ProjectRuntimeIdentity,
+        identity: &RunnerRuntimeIdentity,
         cancellation: &CancellationContext,
         deadline: Option<Deadline>,
     ) -> DesktopResult<bool> {
@@ -614,7 +628,7 @@ impl WebCodexAdapter {
 
     pub async fn activate_project(
         &mut self,
-        identity: &ProjectRuntimeIdentity,
+        identity: &RunnerRuntimeIdentity,
         expected_client_id: &str,
         project: &ProjectSelection,
         cancellation: &CancellationContext,
@@ -643,15 +657,18 @@ impl WebCodexAdapter {
             project_id: output.project.id,
             runtime_project_id: output.project.runtime_project,
             project_path: output.project.path,
-            runner_config: identity.runner_config.clone(),
-            user_token_file: identity.user_token_file.clone(),
-            server_url: identity.server_url.clone(),
+            runner: RunnerRuntimeIdentity {
+                client_id: expected_client_id.to_string(),
+                runner_config: identity.runner_config.clone(),
+                user_token_file: identity.user_token_file.clone(),
+                server_url: identity.server_url.clone(),
+            },
         })
     }
 
     pub async fn legacy_register_project(
         &mut self,
-        identity: &ProjectRuntimeIdentity,
+        identity: &RunnerRuntimeIdentity,
         client_id: &str,
         project: &ProjectSelection,
         cancellation: &CancellationContext,
@@ -681,9 +698,12 @@ impl WebCodexAdapter {
             runtime_project_id: format!("agent:{client_id}:{}", output.project.id),
             project_id: output.project.id,
             project_path: output.project.path,
-            runner_config: identity.runner_config.clone(),
-            user_token_file: identity.user_token_file.clone(),
-            server_url: identity.server_url.clone(),
+            runner: RunnerRuntimeIdentity {
+                client_id: client_id.to_string(),
+                runner_config: identity.runner_config.clone(),
+                user_token_file: identity.user_token_file.clone(),
+                server_url: identity.server_url.clone(),
+            },
         })
     }
 
@@ -909,9 +929,18 @@ fn validate_login_output(
         project_id: registered.id.clone(),
         runtime_project_id: registered.runtime_project.clone(),
         project_path: registered.path.clone(),
-        runner_config: PathBuf::from(&output.runner_config),
-        user_token_file: PathBuf::from(&output.user_token_file),
-        server_url: output.server_url.clone(),
+        runner: RunnerRuntimeIdentity {
+            client_id: registered
+                .runtime_project
+                .strip_prefix("agent:")
+                .and_then(|id| id.strip_suffix(&format!(":{}", registered.id)))
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| invalid_contract("login Runner identity"))?
+                .to_string(),
+            runner_config: PathBuf::from(&output.runner_config),
+            user_token_file: PathBuf::from(&output.user_token_file),
+            server_url: output.server_url.clone(),
+        },
     })
 }
 
@@ -1009,17 +1038,12 @@ fn same_server(left: &str, right: &str) -> bool {
 fn same_existing_file(left: &Path, right: &Path) -> bool {
     match (left.canonicalize(), right.canonicalize()) {
         (Ok(left), Ok(right)) => left == right,
-        _ if cfg!(windows) => display_path(left).eq_ignore_ascii_case(&display_path(right)),
-        _ => left == right,
+        _ => webcodex_runner_config::paths::paths_equal(left, right),
     }
 }
 
 fn same_path(left: &str, right: &str) -> bool {
-    if cfg!(windows) {
-        display_path(Path::new(left)).eq_ignore_ascii_case(&display_path(Path::new(right)))
-    } else {
-        left == right
-    }
+    webcodex_runner_config::paths::paths_equal(Path::new(left), Path::new(right))
 }
 
 fn display_path(path: &Path) -> String {
@@ -1261,9 +1285,12 @@ mod tests {
             project_id: "repo".to_string(),
             runtime_project_id: "agent:desktop:repo".to_string(),
             project_path: r"C:\repo".to_string(),
-            runner_config: PathBuf::from("runner.toml"),
-            user_token_file: PathBuf::from("user-token"),
-            server_url: "https://example.test".to_string(),
+            runner: RunnerRuntimeIdentity {
+                client_id: "desktop".to_string(),
+                runner_config: PathBuf::from("runner.toml"),
+                user_token_file: PathBuf::from("user-token"),
+                server_url: "https://example.test".to_string(),
+            },
         };
         let ready = super::super::models::OpsProject {
             id: "agent:desktop:repo".to_string(),
@@ -1345,10 +1372,16 @@ mod tests {
     #[test]
     fn windows_extended_and_display_paths_match_the_same_project() {
         if cfg!(windows) {
-            assert!(same_path(
-                r"\\?\C:\Users\example\repo",
-                r"C:\Users\example\repo"
-            ));
+            for (left, right) in [
+                (r"\\?\C:\Users\example\repo", r"c:/users/example/repo/"),
+                (r"C:\", r"\\?\C:\"),
+                (r"D:\", r"\\?\D:\"),
+                (r"\\SERVER\Share\Repo", r"\\?\UNC\server\share\repo\"),
+                (r"\\server\share", r"\\?\UNC\SERVER\Share\"),
+            ] {
+                assert!(same_path(left, right), "{left} != {right}");
+            }
+            assert!(!same_path(r"C:\repo", r"D:\repo"));
         }
     }
 

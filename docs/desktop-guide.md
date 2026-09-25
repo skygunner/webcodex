@@ -6,6 +6,15 @@ Desktop prepares local projects and manages connections. You ask for work in Cha
 
 For contributor workflows—frontend/Tauri development, source runtime resolution, NSIS/DMG packaging, and native smoke tests—see [Desktop development](DESKTOP_DEVELOPMENT.md).
 
+
+## Runner project inventory
+
+Projects lists this Runner’s projects, Git branches, active Sessions and recent activity. Multiple projects can be used concurrently; models select an exact runtime Project ID and do not require a Desktop project switch. The home page’s primary project is an internal display default.
+
+Add Project retains folder selection and registration. Windows drive, UNC and extended-length spellings deduplicate without changing registered IDs or canonical paths; the UI presents ordinary user paths.
+
+Unregister requires confirmation of the exact project. It removes the Runner registration and matching Desktop saved entries, preserving the directory, Git files and allowed roots. The Server rejects removal when active Jobs conflict. Failures or uncertain outcomes are never automatically retried; refresh and inspect the inventory first. Removing the home page’s default does not activate another project; adding a folder remains available through setup.
+
 ## First use
 
 1. Choose **Use WebCodex on this computer** on the welcome page, the recommended personal setup.
@@ -79,3 +88,20 @@ Closing the window hides it in the menu bar or system tray; the runtime continue
 Use **⌘ + 1–6** on macOS or **Ctrl + 1–6** on Windows to switch between Home, Projects, Connection, Extensions, Activity, and Settings. Navigation shortcuts also work inside inputs and language selectors; ordinary typing and text-editing shortcuts remain available. Use Tab to focus controls and Enter to activate them; diagnostic disclosure controls also support the keyboard.
 
 Runtime controls on Home and technical diagnostics in Settings are collapsed by default. An explicit stop displays Stopped with a Start action. Activity prioritizes results; enable Show process details for routine process events. Configure Tunnel ID and credentials on Connection; API keys are never displayed.
+
+### Runtime after unregistering a project
+
+A Full Runtime consists of the Server, Runner, and its project inventory. The
+Desktop default/display project is optional. Unregistering that project (including
+the last project) leaves the Runtime available, clears its project-specific ChatGPT
+observation, and does not select a replacement. Add Project remains available.
+Desktop restart resumes the saved Server/Runner identity and Connections without
+logging in again or registering saved projects.
+
+A complete, online Runner inventory is authoritative. Desktop reconciles stale
+saved registration history only within the same Runner configuration and client
+identity; offline, inaccessible, truncated, or failed observations do not prune
+history. Late responses from before a Desktop operation are rejected. Local state
+is written only when reconciliation changes history or a confirmed unregister's
+previous write needs retrying. Unregister remains registry-only: project folders,
+Git files, allowed roots, and running Server/Runner processes are preserved.

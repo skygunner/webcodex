@@ -1,3 +1,4 @@
+import { displayProjectPath } from "../../../../../frontend/src/ui/projectPresentation";
 import { useMemo, useState } from "react";
 import { FolderOpen, Globe2, Share2 } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -51,7 +52,7 @@ export function FirstRun({ state, onState, chooseModeFirst = false, onComplete }
   const canReuseRemoteEnrollment = Boolean(
     mode === "remote" &&
       !remoteEnrollmentNeedsRefresh &&
-      state.project?.runtime_project_id &&
+      (state.workspace_runner?.client_id || state.project?.runtime_project_id) &&
       state.topology?.experience === "full" &&
       state.topology.server.kind === "remote" &&
       sameServerOrigin(serverUrl, state.topology.server.url),
@@ -176,7 +177,7 @@ export function FirstRun({ state, onState, chooseModeFirst = false, onComplete }
       <div className="project-picker-card">
         <div>
           <span className="section-kicker">{t("setup.project")}</span>
-          <strong>{project ? project.path : t("setup.chooseProject")}</strong>
+          <strong>{project ? displayProjectPath(project.path) : t("setup.chooseProject")}</strong>
           {mode === "local" && !project && (
             <span className="project-meta">{t("setup.projectRequired")}</span>
           )}

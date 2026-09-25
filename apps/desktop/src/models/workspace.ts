@@ -16,6 +16,7 @@ export interface WorkspaceProject {
   sessions?: { active_sessions: number; running_sessions: number; latest_updated_at?: number; sessions_truncated?: boolean };
 }
 export interface RunnerOverview {
+  projects_available?: boolean;
   client_id: string; connected: boolean; status?: string; visible_project_count: number;
   projects: WorkspaceProject[]; projects_truncated: boolean;
   recent_sessions?: { sessions: WorkflowSession[]; truncated: boolean; scan_truncated: boolean };
@@ -57,4 +58,11 @@ export interface WindowCall {
   ended_at_ms?: number; started_at_ms?: number; request_observed_at_ms?: number; response_handed_at_ms?: number;
   service_ms?: number; next_call_gap_ms?: number; window_transition_kind?: string; response_streaming?: boolean;
   activity_presentation?: string; activity_kind?: string;
+}
+
+export interface UnregisterObservation {
+  target: import("./topology").SettingsTarget;
+  project: string;
+  expected_revision: string;
+  path: string;
 }

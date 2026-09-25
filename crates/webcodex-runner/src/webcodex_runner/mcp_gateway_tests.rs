@@ -101,6 +101,9 @@ impl Fixture {
         let marker = temp.path().join("marker.log");
         let fake = fake_binary();
         let mut args = vec![scenario.to_string(), marker.to_string_lossy().to_string()];
+        if scenario == "oversized_message" {
+            args.push((MCP_GATEWAY_MAX_PROVIDER_MESSAGE_BYTES + 1).to_string());
+        }
         if let Some(cwd) = cwd.as_ref() {
             args.push(cwd.clone());
         }
@@ -450,10 +453,12 @@ fn image_only_result_succeeds_with_standard_wire_fields() {
 
 #[test]
 fn image_result_crosses_expanded_provider_wire_bound_and_reuses_connection() {
-    assert_eq!(MCP_GATEWAY_MAX_IMAGE_BYTES, 1024 * 1024);
-    assert_eq!(MCP_GATEWAY_MAX_IMAGE_BASE64_BYTES, 1_398_104);
+    assert_eq!(MCP_GATEWAY_MAX_IMAGE_BYTES, 4 * 1024 * 1024);
+    assert_eq!(MCP_GATEWAY_MAX_IMAGE_BASE64_BYTES, 5_592_408);
     assert!(MCP_GATEWAY_MAX_PROVIDER_MESSAGE_BYTES > MCP_GATEWAY_MAX_MESSAGE_BYTES);
-    assert!(MCP_GATEWAY_MAX_PROVIDER_MESSAGE_BYTES < 2 * 1024 * 1024);
+    assert!(
+        MCP_GATEWAY_MAX_PROVIDER_MESSAGE_BYTES < crate::runner_protocol::RUNNER_ENVELOPE_MAX_BYTES
+    );
 
     let fixture = Fixture::new("max_image_result", 3);
     let provider = fixture.provider();

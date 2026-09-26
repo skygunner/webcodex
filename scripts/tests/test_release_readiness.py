@@ -351,7 +351,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("contains(github.event.pull_request.labels.*.name, 'run-ci')", linux_tooling)
         self.assertIn("needs.changes.outputs.needs_docker == 'true'", docker)
         self.assertIn("platforms: linux/amd64", docker)
-        self.assertIn("docker/build-push-action@v6", docker)
+        self.assertRegex(docker, r"docker/build-push-action@[0-9a-f]{40} # v6")
         self.assertIn("test ! -e /usr/local/bin/webcodex-runner", docker)
 
         self.assertIn("needs: changes", contract)

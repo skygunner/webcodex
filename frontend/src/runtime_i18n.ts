@@ -963,6 +963,135 @@ Object.assign(RUNTIME_ZH_TEXT, {
   "resumed": "已恢复",
 });
 
+Object.assign(RUNTIME_ZH_TEXT, {
+  "Activity": "活动",
+  "Live work": "实时工作",
+  "Project filter": "项目筛选",
+  "All project workspaces": "全部项目",
+  "Search Windows": "搜索窗口",
+  "Search active tool, Project, Runner, or Window ID…": "搜索活动工具、项目、Runner 或窗口标识…",
+  "Windows": "窗口",
+  "Observed activity": "已观察活动",
+  "No Project evidence": "暂无项目证据",
+  "Runner not observed": "未观察到 Runner",
+  "observe": "观察",
+  "Window activity refresh failed; showing previous observations.": "窗口活动刷新失败，正在显示上一次观察结果。",
+  "Window activity unavailable": "窗口活动不可用",
+  "No matching Windows": "没有匹配的窗口",
+  "No matching work Sessions": "没有匹配的工作会话",
+  "Session filter": "会话筛选",
+  "All calls": "全部调用",
+  "No calls in this Session": "此会话没有可显示的调用",
+  "Window inventory is bounded; not all observed Windows are loaded.": "窗口清单受返回范围限制，部分已观察窗口尚未加载。",
+  "Observed Window": "已观察窗口",
+  "WebCodex request active now": "当前有 WebCodex 请求正在执行",
+  "Inactive for": "距离上次活动",
+  "last observed": "最后观察",
+  "Idle": "空闲",
+  "Window summary": "窗口概览",
+  "Primary workspace": "主工作区",
+  "Not observed": "未观察到",
+  "Linked Session evidence": "关联会话证据",
+  "Project not exposed in relation": "关联关系未暴露项目",
+  "linked": "已关联",
+  "No explicit Session link": "没有显式会话关联",
+  "Select an observed Window": "选择一个已观察窗口",
+  "Window activity is shown even when no Workflow Session exists.": "即使不存在 Workflow Session，也会显示该窗口的真实活动。",
+  "Window context": "窗口上下文",
+  "ACTIVE": "活动中",
+  "IDLE": "空闲",
+  "A WebCodex request is currently executing in this Window.": "当前有 WebCodex 请求正在此窗口中执行。",
+  "No WebCodex request for": "已无 WebCodex 请求",
+  "Current work": "当前工作",
+  "Peer": "协作窗口",
+  "Workspace": "工作区",
+  "Last activity": "最近活动",
+  "Relations": "关联",
+  "Source": "来源",
+  "Session links are optional evidence. Window activity remains visible without them.": "会话关联只是可选证据；即使没有会话关联，窗口活动仍然保持可见。",
+  "Every observed WebCodex request is shown, including observe and diagnostic actions.": "显示该窗口观察到的每一次 WebCodex 请求，包括观察与诊断动作。",
+  "Observe": "观察",
+  "Filter by Project name, Runner, or workspace path": "按项目名称、Runner 或工作区路径筛选",
+  "workspace path unavailable": "工作区路径不可用",
+  "workspaces": "个工作区",
+  "worktrees": "个工作树",
+  "Session links": "会话关联",
+  "View workspaces and activity": "查看工作区与活动",
+  "Recent Windows whose latest Project evidence belongs to this project.": "显示最近一次项目证据属于此项目的窗口。",
+  "Workspace not observed": "未观察到工作区",
+  "No Window activity observed for this project.": "尚未观察到此项目的窗口活动。",
+  "Workspaces": "工作区",
+  "The primary checkout and its managed worktrees belong to one human project.": "主 checkout 与 managed worktree 归属于同一个人类可理解的项目。",
+  "Sessions are optional relations for this exact workspace, not the project identity.": "会话只是这个精确工作区的可选关联，不是项目身份。",
+  "No Workflow Sessions retained for this workspace.": "此工作区没有保留的 Workflow Session。",
+  "Window collaboration": "窗口协作",
+  "Peer identity": "协作身份",
+  "Peer identity belongs to this Window directly and does not require a Workflow Session.": "协作身份直接属于这个窗口，不依赖 Workflow Session。",
+  "Session list unavailable. Check access to this Project.": "会话列表不可用，请检查此项目的访问权限。"
+});
+
+Object.assign(RUNTIME_ZH_TEXT, {
+  "Project information unavailable": "暂无项目信息",
+  "Completed": "已完成",
+  "Runner unavailable": "执行端信息暂不可用",
+  "Search windows or projects…": "搜索窗口或项目…",
+  "Select a window": "选择一个窗口",
+});
+
+Object.assign(RUNTIME_ZH_TEXT, {
+  "Tool calls": "工具调用",
+  "Each call is shown separately, from first to last.": "按执行顺序逐条展示，从第一条到最近一条。",
+  "Earlier calls are not available in this view. Showing retained activity from oldest to newest.": "更早的调用已不在当前展示范围内，以下按时间顺序展示保留的记录。",
+  "Succeeded": "成功",
+  "Failed": "失败",
+  "No tool calls yet": "暂无工具调用",
+  "Choose a window to see its tool calls.": "选择左侧窗口，查看逐条工具调用。",
+});
+
+Object.assign(RUNTIME_ZH_TEXT, {
+  "Window views": "窗口视图",
+  "Work Sessions": "工作会话",
+  "Sessions in this Window": "此窗口中的工作会话",
+  "Work Session": "工作会话",
+  "No linked work Sessions": "没有关联工作会话",
+  "This Window has not recorded an explicit Workflow Session relation yet.": "这个窗口尚未记录明确的 Workflow Session 关联。",
+  "Session relations are bounded; older linked Sessions may be omitted.": "会话关联记录受范围上限约束，更早的关联会话可能未展示。",
+  "The selected Session project is not available to this workspace.": "当前工作区无法访问所选会话对应的项目。",
+  "Window relation": "窗口关联",
+  "Window link": "窗口关联",
+  "Recorded in this Window": "记录于此窗口",
+  "Last linked": "最近关联",
+  "Session activity": "会话活动",
+  "Complete retained evidence for the selected Workflow Session.": "展示所选 Workflow Session 的完整保留活动证据。",
+  "Loading Session activity…": "正在加载会话活动…",
+  "Session activity unavailable": "会话活动不可用",
+  "Linked Windows": "关联窗口",
+  "Collaboration": "协作",
+  "Reserved for the next Window-level collaboration design.": "此位置保留给下一步的窗口级协作设计。"
+});
+
+Object.assign(RUNTIME_ZH_TEXT, {
+  "Background job": "后台任务",
+  "Background running": "后台运行",
+  "Observing": "观察",
+  "completed": "已完成",
+  "failed": "失败",
+  "stopped": "已停止",
+  "lost": "已丢失",
+  "timeout": "超时",
+  "timed_out": "超时",
+  "cancelled": "已取消",
+  "recovering": "恢复中",
+  "queued": "排队中",
+  "running": "运行中"
+});
+
+Object.assign(RUNTIME_ZH_TEXT, {
+  "Projects": "项目",
+  "All projects": "全部项目",
+  "No Window activity": "暂无窗口活动"
+});
+
 export function translate(source: string, language: RuntimeLanguage = "en"): string {
   return language === "zh-CN" ? (RUNTIME_ZH_TEXT[source] || source) : source;
 }

@@ -6,20 +6,15 @@
 .activity-feed-heading { align-items: end; flex-wrap: wrap; gap: 12px; }
 .window-call-card { padding: 16px 0; display: grid; gap: 10px; border-bottom: 1px solid var(--line); min-width: 0; }
 .window-call-card.running { padding: 16px; margin-top: 10px; border: 1px solid var(--accent); border-radius: var(--ui-radius-sm); background: var(--ui-accent-soft); }
+.window-call-card.running .window-project-tag { background: var(--surface); }
 .window-call-card header { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
-.window-call-card header > div { min-width: 0; display: grid; gap: 4px; }
 .window-call-card header strong { font-size: 14px; overflow-wrap: anywhere; }
-.window-call-card header code { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .window-call-context, .window-call-timing, .session-work-context { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; }
 .window-call-context .window-project-tag { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 .window-call-timing { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.window-call-timing > span { display: inline-flex; align-items: baseline; gap: 0; }
 .window-call-timing strong, .window-call-timing time { color: var(--text); font-weight: 500; }
-.window-call-sessions { display: grid; gap: 5px; font-size: 12px; }
-.window-call-sessions button { justify-content: start; text-align: left; flex-wrap: wrap; overflow-wrap: anywhere; }
-.window-call-sessions small { color: var(--muted); }
-.window-call-evidence { min-width: 0; color: var(--muted); font-size: 12px; }
-.window-call-evidence summary { cursor: pointer; width: fit-content; padding: 4px 0; }
-.window-call-evidence .evidence-chip-row { margin-top: 8px; }
+.window-call-live-time { color: var(--text); font-weight: 600; }
 .session-work-context { padding: 12px 0; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .session-work-context button { text-align: left; }
 .runtime-page .window-row time { font-size: 12px; color: var(--muted); }
@@ -34,8 +29,182 @@
   .window-call-card header { flex-wrap: wrap; }
   .window-call-timing { gap: 6px 12px; }
 }
-/* The Window relation already names its Session; no per-Session count fetch. */
-.runtime-page .linked-session-row { grid-template-columns: 9px minmax(0,1fr) auto auto 14px; }
+/* Window work has one list and one workspace; context belongs with the activity. */
+.work-layout.window-primary-workbench { grid-template-columns: 278px minmax(0, 1fr); }
+.window-work-main { grid-template-rows: auto minmax(0, 1fr); background: var(--surface); overflow: hidden; }
+.window-work-scroll { min-width: 0; }
+.window-work-row:hover { background: var(--surface-soft); }
+.window-work-row.selected { background: var(--accent-soft); }
+
+.window-work-main { grid-template-rows: auto 42px minmax(0, 1fr); }
+.window-center-tabs { flex: 0 0 auto; }
+.window-header-meta {
+  display: flex;
+  gap: 6px 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.window-header-meta > * { display: inline-flex; align-items: center; }
+.window-header-meta > * + *::before {
+  content: "·";
+  margin-right: 10px;
+  color: var(--quiet);
+}
+.window-header-meta time { font-variant-numeric: tabular-nums; }
+.window-call-card.session-linked { cursor: pointer; }
+.window-call-card.session-linked:hover { background: var(--surface-soft); }
+.window-call-card.session-linked:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.window-call-context { gap: 7px; }
+.window-session-focus {
+  width: min(1040px, calc(100% - 36px));
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin: 0 auto;
+  border-bottom: 1px solid var(--line);
+  padding: 12px 0;
+}
+.window-session-focus > span {
+  flex: 0 0 auto;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+.window-session-focus > small {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.window-session-focus-select {
+  --session-hue: 220;
+  position: relative;
+  min-width: 0;
+  flex: 1 1 360px;
+  max-width: 620px;
+}
+.window-session-focus-select .window-session-color-dot {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  left: 12px;
+  transform: translateY(-50%);
+}
+.window-session-focus-select:not([data-active="true"]) .window-session-color-dot {
+  background: var(--quiet);
+}
+.window-session-focus-select select {
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  appearance: none;
+  border: 1px solid color-mix(in srgb, var(--text) 22%, var(--line));
+  border-radius: 9px;
+  padding: 0 32px 0 29px;
+  background:
+    linear-gradient(45deg, transparent 50%, var(--muted) 50%) calc(100% - 15px) 15px / 5px 5px no-repeat,
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%) calc(100% - 10px) 15px / 5px 5px no-repeat,
+    var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 650;
+}
+.window-session-focus-select[data-active="true"] select {
+  border-color: color-mix(in srgb, hsl(var(--session-hue) 65% 44%) 58%, var(--line));
+  background-color: color-mix(in srgb, hsl(var(--session-hue) 70% 52%) 7%, var(--surface));
+}
+.window-session-focus-select select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.window-session-tag {
+  --session-hue: 220;
+}
+[data-session-tone="1"] { --session-hue: 148; }
+[data-session-tone="2"] { --session-hue: 32; }
+[data-session-tone="3"] { --session-hue: 282; }
+[data-session-tone="4"] { --session-hue: 188; }
+[data-session-tone="5"] { --session-hue: 350; }
+[data-session-tone="6"] { --session-hue: 72; }
+[data-session-tone="7"] { --session-hue: 255; }
+.window-session-tag {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  max-width: 230px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.window-session-tag:hover:not(:disabled) { background: var(--surface-soft); color: var(--text); }
+.window-session-tag.selected {
+  border-color: color-mix(in srgb, hsl(var(--session-hue) 64% 45%) 55%, var(--line));
+  background: color-mix(in srgb, hsl(var(--session-hue) 70% 52%) 10%, var(--surface));
+  color: var(--text);
+}
+.window-session-tag:disabled { cursor: default; opacity: .72; }
+.window-job-tag {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  max-width: 260px;
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.window-job-tag.active {
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+  color: var(--text);
+}
+.window-job-tag.observe { background: var(--surface-soft); }
+.window-job-tag small { color: inherit; font-size: inherit; font-weight: 500; }
+.window-job-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--quiet);
+}
+.window-job-tag.active .window-job-dot { background: var(--accent); }
+.window-job-tag.observe .window-job-dot { background: var(--muted); }
+
+.window-session-color-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: hsl(var(--session-hue) 68% 48%);
+}
+.window-session-panel { min-height: 100%; }
+.window-collaboration-placeholder { min-height: 420px; }
+
+@media (max-width: 1100px) {
+  .work-layout.window-primary-workbench { grid-template-columns: 252px minmax(0, 1fr); }
+}
 @media (max-width: 700px) {
-  .runtime-page .linked-session-row { grid-template-columns: 9px minmax(0,1fr) 14px; }
+  .window-primary-list { height: auto; max-height: 42dvh; min-height: 250px; }
+  .window-session-focus {
+    width: calc(100% - 24px);
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+  .window-session-focus > span { width: 100%; }
+  .window-session-focus-select {
+    flex-basis: 100%;
+    max-width: none;
+  }
+  .window-work-main { min-height: 58dvh; }
+  .window-work-header { padding: 14px 18px; gap: 10px; }
+  .window-work-scroll { max-height: 75dvh; }
 }

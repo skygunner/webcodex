@@ -2,12 +2,22 @@
 
 Open `/runtime` and connect with an existing runtime credential.
 
-The default **Work** page opens **Sessions**. Filter the loaded Session inventory
-by Project, or search by title, Project, Runner, and Session identity. Running Jobs
-and attention requests stay first. The selected Session keeps its Project,
-Session id, update time, and linked Window shortcuts visible above the workflow.
-Activity groups start expanded, including tool names, paths, and provenance.
-Window observations with different Project/Session provenance stay separate.
+The default **Work** page opens **Activity**, with a Window list and a single
+workspace. Filter Windows by Project or search by activity, Project, Runner, or
+Window identity. The selected Window displays a chronological tool-call stream,
+without a Session selector or a separate context sidebar.
+
+Every returned invocation has its own row, including repeated observe and
+diagnostic calls. Running and completed calls share start-time order, oldest
+first. Each row shows the tool name, status, start time, and duration (elapsed
+time for running calls). A Project path tag appears only when the call itself
+names a Project whose path is available; Session relations never supply a tag.
+There are no per-call technical disclosures or Session links. The Window view
+also does not fetch Session details or messages.
+
+The console requests up to 2,000 retained calls. When the response is truncated,
+a visible notice explains that earlier calls are not available in this view;
+the stream does not imply that pruned history is recoverable.
 **Goals** remains available in the Work switch; returning from another destination
 preserves the chosen Work surface.
 
@@ -16,23 +26,13 @@ preserves the chosen Work surface.
 
 In **Window Activity**, the left list puts Windows with active requests first,
 then sorts by recent activity. Each row shows the hashed Window identity,
-last observed Project, linked Session count, request count, and recency. Hovering
+last observed Project, request count, and recency. Hovering
 on a timestamp reveals the absolute time. The last Project is a historical
 observation, not the attribution for every call in the Window.
 
-The selected Window shows linked Sessions expanded and a tool activity feed:
-
-- Currently observed requests appear first with tool, Project, start time, and
-  elapsed time from the server snapshot.
-- Retained calls appear newest first with Project evidence, explicit Session
-  links, status, start time, duration, and completion recency. Session links open
-  the exact Project/Session. Calls without a link say so explicitly.
-- A Project filter applies to loaded calls within this Window, including active
-  requests. It does not infer a call's Project from the Window's last Project.
-- Only technical details (trace, method, service and cycle timing) are collapsed.
-  Failed refreshes identify previous observations as stale; bounded history is
-  labeled. Switching Windows never displays the prior Window's detail as the
-  newly selected Window.
+The selected Window uses the same individual tool-call stream as **Work**.
+Failed refreshes identify retained observations as stale. Switching Windows
+never displays the previous Window's calls under the newly selected identity.
 
 Adapter `_meta["openai/session"]` is hashed into a `ClientWindow`, separate from
 explicit `wc_sess_*` Workflow Sessions. This view never exposes the raw host value,

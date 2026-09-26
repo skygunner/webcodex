@@ -162,6 +162,12 @@ export type ProjectRow = {
   project_ref?: string;
   name?: string;
   path?: string;
+  registration_source?: string;
+  lineage?: {
+    kind: "managed_worktree_source";
+    source_project_id: string;
+    base_sha: string;
+  };
   connected: boolean;
   agent_status?: string;
   sessions?: SessionAggregate;
@@ -218,6 +224,7 @@ export type RuntimeOverview = {
   source_mismatched_runners: number;
   mixed_builds_present: boolean;
   active_jobs: number;
+  active_windows: number;
   projects_available: boolean;
   visible_projects: number;
   projects_truncated: boolean;
@@ -244,6 +251,9 @@ export type WindowSummary = {
   last_seen_at_ms: number;
   last_tool_call_at_ms?: number;
   last_meaningful_activity_at_ms?: number;
+  last_activity_name?: string;
+  last_activity_status?: string;
+  last_activity_meaningful?: boolean;
   active_count: number;
   linked_session_count: number;
   recorder_gap_count: number;
@@ -271,6 +281,8 @@ export type WindowActivity = {
   project?: string;
   status: string;
   meaningful: boolean;
+  async_job_id?: string;
+  observed_job_ids?: string[];
   recorder_gap_session_id?: string;
   server_trace_id?: string;
   workflow_sessions: WindowActivitySession[];
@@ -285,6 +297,17 @@ export type WindowLinkedSession = {
   relation_count: number;
   title?: string;
   lifecycle?: string;
+};
+
+export type WindowJob = {
+  job_id: string;
+  status: string;
+  active: boolean;
+  terminal: boolean;
+  started_at?: number;
+  ended_at?: number;
+  duration_ms?: number;
+  elapsed_secs?: number;
 };
 
 export type WindowDetail = {
@@ -308,6 +331,8 @@ export type WindowDetail = {
   activity: WindowActivity[];
   activity_returned: number;
   activity_truncated: boolean;
+  jobs?: WindowJob[];
+  jobs_truncated?: boolean;
   visibility: { scope: "global" | "principal" };
 };
 

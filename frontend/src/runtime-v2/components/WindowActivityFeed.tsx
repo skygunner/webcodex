@@ -1,94 +1,187 @@
-import { useState } from "react";
+import { displayProjectPath } from "../../ui/projectPresentation.js";
 import type { RuntimeLanguage } from "../../runtime_i18n.js";
 import { translate } from "../../runtime_i18n.js";
-import { absoluteTime, durationText, projectDisplayName, relativeTime, shortId } from "../model/format.js";
-import type { ProjectRow, WindowActivity, WindowDetail } from "../model/types.js";
-import type { SessionLocation } from "../state/useSessionWorkspace.js";
+import { absoluteTime, clockTime, durationText, shortId } from "../model/format.js";
+import type { ProjectRow, WindowDetail } from "../model/types.js";
+import {
+  focusedWindowCallKeys,
+  windowSessionCatalog,
+  windowSessionsWithCallEvidence,
+} from "../model/windowSessions.js";
 
 type Props = {
   detail: WindowDetail;
   projects: ProjectRow[];
   language: RuntimeLanguage;
-  onOpenSession: (location: SessionLocation) => void;
+  selectedSessionId?: string;
+  onSelectSession?: (sessionId: string) => void;
 };
 
-// An invocation can record one Session and target another. Preserve both identities.
-function activityProjects(activity: WindowActivity): string[] {
-  return [...new Set([activity.project, ...activity.workflow_sessions.map((row) => row.project)]
-    .filter((id): id is string => Boolean(id)))];
-}
-
-export function WindowActivityFeed({ detail, projects, language, onOpenSession }: Props) {
+export function WindowActivityFeed({
+  detail,
+  projects,
+  language,
+  selectedSessionId = "",
+  onSelectSession,
+}: Props) {
   const t = (value: string) => translate(value, language);
-  const [projectFilter, setProjectFilter] = useState("");
-  const projectIds = [...new Set([
-    ...detail.activity.flatMap(activityProjects),
-    ...detail.active_requests.flatMap((row) => row.project ? [row.project] : []),
-  ])].sort();
-  const projectName = (id: string) => projectDisplayName(projects.find((row) => row.id === id)?.name, id);
-  const activity = detail.activity.filter((row) => !projectFilter || activityProjects(row).includes(projectFilter))
-    .slice().sort((a, b) => b.started_at_ms - a.started_at_ms || b.ended_at_ms - a.ended_at_ms);
-  const running = detail.active_requests.filter((row) => !projectFilter || row.project === projectFilter);
-
-  const projectTags = (ids: string[]) => ids.length
-    ? ids.map((id) => <span className="window-project-tag" data-testid="window-project-tag" key={id} title={id}>{projectName(id)}</span>)
-    : <span className="muted-copy">{t("No Project evidence")}</span>;
+  const orderedSessions = windowSessionCatalog(detail);
+  const sessionOrder = new Map(orderedSessions.map((session, index) => [session.workflow_session_id, index]));
+  const sessionMeta = new Map(orderedSessions.map((session) => [session.workflow_session_id, session]));
+  const jobsById = new Map((detail.jobs || []).map((job) => [job.job_id, job]));
+  const callEvidenceSessions = new Set(windowSessionsWithCallEvidence(detail));
+  const filterSessions = orderedSessions.filter((session) => callEvidenceSessions.has(session.workflow_session_id));
+  // Keep each invocation, including repeated observation calls. The trace only
+  // reconciles a completed call with the same call in the live snapshot.
+  const completedTraces = new Set(detail.activity.map((row) => row.server_trace_id).filter(Boolean));
+  const calls = [
+    ...detail.activity.map((row, index) => ({
+      key: row.server_trace_id || `completed-${row.started_at_ms}-${index}`,
+      tool: row.tool_name || row.method,
+      project: row.project,
+      startedAt: row.started_at_ms,
+      duration: row.duration_ms,
+      status: row.status,
+      sessions: row.workflow_sessions
+        .map((link) => link.workflow_session_id)
+        .filter((sessionId, index, values) => values.indexOf(sessionId) === index)
+        .sort((left, right) => (sessionOrder.get(left) ?? Number.MAX_SAFE_INTEGER) - (sessionOrder.get(right) ?? Number.MAX_SAFE_INTEGER)),
+      asyncJobId: row.async_job_id,
+      observedJobIds: row.observed_job_ids || [],
+      running: false,
+    })),
+    ...detail.active_requests.filter((row) => !completedTraces.has(row.server_trace_id)).map((row) => ({
+      key: row.server_trace_id,
+      tool: row.tool_name || row.method,
+      project: row.project,
+      startedAt: row.started_at_ms,
+      duration: row.elapsed_ms,
+      status: "running",
+      sessions: [] as string[],
+      running: true,
+      asyncJobId: undefined as string | undefined,
+      observedJobIds: [] as string[],
+    })),
+  ].sort((a, b) => a.startedAt - b.startedAt);
+  const activeSessionId = callEvidenceSessions.has(selectedSessionId) ? selectedSessionId : "";
+  const focusedKeys = focusedWindowCallKeys(calls, activeSessionId);
+  const visibleCalls = activeSessionId ? calls.filter((call) => focusedKeys.has(call.key)) : calls;
+  const selectedTone = activeSessionId ? (sessionOrder.get(activeSessionId) ?? 0) % 8 : 0;
 
   return (
-    <section className="window-detail-section window-workflow-section">
-      <div className="section-heading activity-feed-heading">
-        <div><h2>{t("Tool activity")}</h2><p>{t("Newest first. Project, Session and timing stay visible.")}</p></div>
-        <label className="activity-project-filter">
-          <span>{t("Project filter")}</span>
-          <select value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)}>
-            <option value="">{t("All Projects in this Window")}</option>
-            {projectIds.map((id) => <option key={id} value={id}>{projectName(id)} · {id}</option>)}
-          </select>
-        </label>
-      </div>
+    <section className="window-detail-section window-workflow-section" aria-label={t("Window activity")}>
+      {filterSessions.length > 0 && (
+        <div className="window-session-focus">
+          <span>{t("Session")}</span>
+          <div className="window-session-focus-select" data-session-tone={selectedTone} data-active={Boolean(activeSessionId)}>
+            <span className="window-session-color-dot" />
+            <select
+              aria-label={t("Session filter")}
+              value={activeSessionId}
+              onChange={(event) => onSelectSession?.(event.currentTarget.value)}
+            >
+              <option value="">{t("All calls")}</option>
+              {filterSessions.map((session, index) => (
+                <option key={session.workflow_session_id} value={session.workflow_session_id}>
+                  {(session.title || t("Work Session") + " " + (index + 1)) + " · " + shortId(session.workflow_session_id, 14, 6)}
+                </option>
+              ))}
+            </select>
+          </div>
+          <small>{visibleCalls.length}/{calls.length}</small>
+        </div>
+      )}
+      {detail.activity_truncated && <div className="inventory-note">{t("Earlier calls are not available in this view. Showing retained activity from oldest to newest.")}</div>}
       <div className="window-workflow-list">
-        {running.map((request) => (
-          <article className="window-call-card running" key={request.server_trace_id}>
-            <header><strong>{request.tool_name || request.method}</strong><span className="status-pill good">{t("Running")}</span></header>
-            <div className="window-call-context">{projectTags(request.project ? [request.project] : [])}</div>
-            <div className="window-call-timing"><span>{t("Started")} <time title={absoluteTime(request.started_at_ms)}>{absoluteTime(request.started_at_ms)}</time></span><span>{t("Elapsed")} <strong>{durationText(request.elapsed_ms)}</strong></span></div>
-          </article>
-        ))}
-        {activity.map((row, index) => (
-          <article className="window-call-card" data-testid="window-workflow-step" key={row.server_trace_id || `${row.started_at_ms}-${index}`}>
-            <header>
-              <div><strong>{row.activity_presentation || row.tool_name || row.method}</strong>{row.tool_name && row.activity_presentation && row.activity_presentation !== row.tool_name && <code>{row.tool_name}</code>}</div>
-              <span className={"status-pill " + (["ok", "success"].includes(row.status) ? "good" : "warn")}>{t(row.status)}</span>
-            </header>
-            <div className="window-call-context">{projectTags(activityProjects(row))}</div>
-            <div className="window-call-sessions">
-              {row.workflow_sessions.length ? row.workflow_sessions.map((relation) => {
-                const linked = detail.linked_sessions.find((session) => session.workflow_session_id === relation.workflow_session_id);
-                const project = projects.find((project) => project.id === (relation.project || linked?.project));
-                return <button className="text-button" type="button" key={relation.workflow_session_id + ":" + relation.relation}
-                  disabled={!project} title={relation.workflow_session_id}
-                  onClick={() => project && onOpenSession({ projectId: project.id, projectName: project.name || project.id, runner: project.client_id, sessionId: relation.workflow_session_id })}>
-                  {t("Session")} · {linked?.title || shortId(relation.workflow_session_id)} <small>{relation.relation} · {shortId(relation.workflow_session_id)}</small>
-                </button>;
-              }) : <span className="muted-copy">{t("No explicit Session link")}</span>}
-            </div>
-            <div className="window-call-timing">
-              <span>{t("Started")} <time title={absoluteTime(row.started_at_ms)}>{absoluteTime(row.started_at_ms)}</time></span>
-              <span>{t("Duration")} <strong>{durationText(row.duration_ms)}</strong></span>
-              <span title={absoluteTime(row.ended_at_ms)}>{t("Finished")} {relativeTime(row.ended_at_ms)}</span>
-            </div>
-            <details className="window-call-evidence">
-              <summary>{t("Technical details")}</summary>
-              <div className="evidence-chip-row"><code>{row.method}</code>{row.activity_kind && <code>{row.activity_kind}</code>}</div>
-              {row.service_ms !== undefined && <p>{t("Service time")}: {durationText(row.service_ms)}</p>}
-              {row.next_call_gap_ms !== undefined && <p>{t("Outside WebCodex")}: {durationText(row.next_call_gap_ms)}</p>}
-              {row.cycle_ms !== undefined && <p>{t("Cycle")}: {durationText(row.cycle_ms)}</p>}
-              {row.server_trace_id && <code className="trace-id">trace {row.server_trace_id}</code>}
-            </details>
-          </article>
-        ))}
-        {!activity.length && !running.length && <div className="empty-inline">{t("No activity observed yet")}</div>}
-        {detail.activity_truncated && <div className="inventory-note">{t("Server activity history is bounded; older Window activity is not loaded.")}</div>}
+        {visibleCalls.map((call) => {
+          const project = projects.find((row) => row.id === call.project);
+          const path = project?.path ? displayProjectPath(project.path) : undefined;
+          const success = ["ok", "success", "succeeded"].includes(call.status);
+          const failed = ["error", "failed", "failure"].includes(call.status);
+          const status = call.running ? "Running" : success ? "Succeeded" : failed ? "Failed" : call.status;
+          const primarySession = call.sessions.find((sessionId) => sessionMeta.has(sessionId));
+          const selectable = Boolean(primarySession && onSelectSession);
+          const asyncJob = call.asyncJobId ? jobsById.get(call.asyncJobId) : undefined;
+          const asyncJobLabel = asyncJob
+            ? asyncJob.active
+              ? t("Background running")
+              : asyncJob.status === "completed"
+                ? t("Completed")
+                : t(asyncJob.status)
+            : t("Background job");
+          const asyncJobDuration = asyncJob?.active && asyncJob.elapsed_secs !== undefined
+            ? durationText(asyncJob.elapsed_secs * 1000)
+            : asyncJob?.duration_ms !== undefined
+              ? durationText(asyncJob.duration_ms)
+              : "";
+          return (
+            <article
+              className={"window-call-card" + (call.running ? " running" : "") + (selectable ? " session-linked" : "")}
+              data-testid="window-workflow-step"
+              key={call.key}
+              onClick={() => primarySession && onSelectSession?.(primarySession)}
+            >
+              <header>
+                <strong>{call.tool}</strong>
+                <span className={"status-pill " + (call.running ? "" : success ? "good" : "warn")}>{t(status)}</span>
+              </header>
+              {(path || call.sessions.length > 0 || call.asyncJobId || call.observedJobIds.length > 0) && (
+                <div className="window-call-context">
+                  {path && <span className="window-project-tag" data-testid="window-project-tag" title={path}>{path}</span>}
+                  {call.sessions.map((sessionId) => {
+                    const linked = sessionMeta.get(sessionId);
+                    const tone = (sessionOrder.get(sessionId) ?? 0) % 8;
+                    const tagSelectable = Boolean(linked && onSelectSession);
+                    const selected = activeSessionId === sessionId;
+                    return (
+                      <button
+                        className={"window-session-tag" + (selected ? " selected" : "")}
+                        data-session-tone={tone}
+                        data-testid="window-session-tag"
+                        key={sessionId}
+                        type="button"
+                        disabled={!tagSelectable}
+                        title={(linked?.title ? linked.title + " · " : "") + sessionId}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          if (tagSelectable) onSelectSession?.(selected ? "" : sessionId);
+                        }}
+                      >
+                        <span className="window-session-color-dot" />
+                        {shortId(sessionId, 14, 6)}
+                      </button>
+                    );
+                  })}
+                  {call.asyncJobId && (
+                    <span className={"window-job-tag" + (asyncJob?.active ? " active" : "")} title={call.asyncJobId}>
+                      <span className="window-job-dot" />
+                      {asyncJobLabel} · {shortId(call.asyncJobId, 14, 6)}
+                      {asyncJobDuration && <small> · {asyncJobDuration}</small>}
+                    </span>
+                  )}
+                  {call.observedJobIds.map((jobId) => (
+                    <span className="window-job-tag observe" title={jobId} key={jobId}>
+                      <span className="window-job-dot" />
+                      {t("Observing")} · {shortId(jobId, 14, 6)}
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div className="window-call-timing">
+                {call.running ? (
+                  <span className="window-call-live-time">{t("Running")} · <strong>{durationText(call.duration)}</strong></span>
+                ) : (
+                  <span>
+                    <time dateTime={new Date(call.startedAt).toISOString()} title={absoluteTime(call.startedAt)}>{clockTime(call.startedAt)}</time>
+                    <span aria-hidden="true"> · </span>
+                    <strong>{durationText(call.duration)}</strong>
+                  </span>
+                )}
+              </div>
+            </article>
+          );
+        })}
+        {!visibleCalls.length && <div className="empty-inline">{t(activeSessionId ? "No calls in this Session" : "No tool calls yet")}</div>}
       </div>
     </section>
   );

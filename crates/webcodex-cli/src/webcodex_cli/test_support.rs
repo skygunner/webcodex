@@ -90,6 +90,25 @@ pub(crate) fn canonical_test_tempdir() -> tempfile::TempDir {
         .expect("create canonical CLI test tempdir")
 }
 
+/// Create a test directory on the repository filesystem for fixtures that are
+/// executed. Keep this separate from `canonical_test_tempdir`: canonical-path
+/// policy tests intentionally exercise `/tmp`, while executable fixtures must
+/// also work on hardened hosts where `/tmp` is mounted `noexec`.
+pub(crate) fn executable_test_tempdir() -> tempfile::TempDir {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("target")
+        .join("test-executables");
+    std::fs::create_dir_all(&root).expect("create CLI executable test temp root");
+    let root = root
+        .canonicalize()
+        .expect("canonicalize CLI executable test temp root");
+    tempfile::Builder::new()
+        .prefix("webcodex-cli-exec-")
+        .tempdir_in(root)
+        .expect("create CLI executable test tempdir")
+}
+
 pub(crate) fn args(values: &[&str]) -> Vec<String> {
     values.iter().map(|s| s.to_string()).collect()
 }

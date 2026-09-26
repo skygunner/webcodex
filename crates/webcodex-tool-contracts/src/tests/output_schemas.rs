@@ -1600,6 +1600,27 @@ fn key_tool_output_schemas_include_expected_fields() {
             .as_array()
             .unwrap()
             .contains(&serde_json::json!("wake_on")));
+        let pending_strategy = output_schema_property(&specs, name, "pending_strategy");
+        assert_eq!(
+            pending_strategy["properties"]["default"]["const"],
+            "continue_independent_work"
+        );
+        assert_eq!(
+            pending_strategy["properties"]["passive_terminal_attention"]["const"],
+            "same_scope_may_surface"
+        );
+        assert_eq!(
+            pending_strategy["properties"]["observe_continuation"]["const"],
+            "logs_details_recovery_fallback"
+        );
+        assert_eq!(
+            pending_strategy["properties"]["observe_auto_follow"]["const"],
+            false
+        );
+        assert_eq!(
+            pending_strategy["properties"]["blocked_fallback"]["const"],
+            "wait_for_job_terminal"
+        );
         assert!(
             has_output_field(name, "failure_kind"),
             "{name} missing failure_kind"
@@ -2499,6 +2520,13 @@ fn model_visible_output_schemas_admit_bounded_passive_job_attention() {
         "success": true,
         "output": {
             "execution_state": "pending",
+            "pending_strategy": {
+                "default": "continue_independent_work",
+                "passive_terminal_attention": "same_scope_may_surface",
+                "observe_continuation": "logs_details_recovery_fallback",
+                "observe_auto_follow": false,
+                "blocked_fallback": "wait_for_job_terminal"
+            },
             "continuation": {
                 "tool": "observe_jobs",
                 "arguments": {

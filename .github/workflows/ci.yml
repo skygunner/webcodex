@@ -7,12 +7,14 @@ on:
       - 'release/**'
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
 
-# Keep only the newest run for a PR. Branch pushes use the commit SHA as the
-# group key, while PR, main, and release-branch runs use path-aware daily CI classification.
+# PR runs coalesce by PR number. Merge-group candidates plus main/release pushes use
+# the exact candidate SHA as the group key so each integration candidate keeps its evidence.
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
@@ -22,9 +24,10 @@ env:
 
 jobs:
   changes:
-    # Classify only trusted event metadata plus base...head Git data. For PRs the
-    # classifier is loaded from the trusted base commit, so a PR cannot weaken its
-    # own native gates. If the trusted base predates the classifier, fail safe to
+    # Classify only trusted event metadata plus base...head Git data. For PRs and
+    # merge-group candidates the classifier is loaded from the trusted base commit,
+    # so candidate changes cannot weaken their own native gates. If the trusted base
+    # predates the classifier, fail safe to
     # the full daily native matrix instead of executing classifier code from the PR head.
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -52,7 +55,7 @@ jobs:
       - name: Checkout trusted classifier source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.sha }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Classify native CI risk
@@ -61,9 +64,10 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           EXTERNAL_CONTRIBUTOR: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.login != github.repository_owner }}
           RUN_CI: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'run-ci') }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || '' }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+          MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref || '' }}
         run: |
           set -euo pipefail
           classifier="scripts/ci_path_risk.py"
@@ -100,6 +104,20 @@ jobs:
             fetched_head="$(git rev-parse FETCH_HEAD)"
             if [ "$fetched_head" != "$HEAD_SHA" ]; then
               echo "fetched PR head does not match event head SHA" >&2
+              exit 1
+            fi
+          fi
+
+          if [ "$EVENT_NAME" = merge_group ] && \
+             ! git cat-file -e "$HEAD_SHA^{commit}" 2>/dev/null; then
+            if [ -z "$MERGE_GROUP_HEAD_REF" ]; then
+              echo "merge-group head ref is missing" >&2
+              exit 1
+            fi
+            git fetch --no-tags origin "$MERGE_GROUP_HEAD_REF"
+            fetched_head="$(git rev-parse FETCH_HEAD)"
+            if [ "$fetched_head" != "$HEAD_SHA" ]; then
+              echo "fetched merge-group head does not match event head SHA" >&2
               exit 1
             fi
           fi

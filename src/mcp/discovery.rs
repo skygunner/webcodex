@@ -19,11 +19,8 @@ pub(super) fn compact_tool(tool: &mut Value) {
             "call_runtime_tool" => "Call one admitted runtime tool with its exact arguments. Use tool_manifest to discover the contract. Prefer an available direct callable; ordinary direct tools may fall back here when unavailable, but MCP App presentation tools must use their direct callable while Apps are enabled. Target validation and authority checks still apply.",
             "run_process" => "Run one native executable with literal argv. Use run_shell for shell grammar or a short related command chain. Long work continues as the same Runner-owned Job through observe_jobs; retain the returned continuation instead of redispatching.",
             "run_shell" => "Run shell grammar or a short related command chain. Use run_process for one native executable with literal argv. Long work continues as the same Runner-owned Job through observe_jobs; retain the returned continuation instead of redispatching.",
-            "run_detached_process" => "Start a native child that intentionally survives Runner restart or replacement as a durable Job. Duration alone does not require detachment. Requires an idempotency_key; retain the same Job and use observe_jobs or stop_job after handoff uncertainty.",
             "observe_jobs" => "Continue known Jobs by job_id; do not list first. Pass observation_token unchanged as after_observation_token. Follow the returned continuation for more output; observation never redispatches work. Use wait_for_job_terminal when blocked only on terminal completion.",
-            "list_jobs" => "Recover or inventory caller-visible Job identities. When a job_id or continuation is already known, use observe_jobs directly.",
             "wait_for_job_terminal" => "Arm a bounded one-shot terminal wait for one exact existing Job. Reuse the keyed wait and returned continuation; never redispatch the Job. Continue independent work, or follow the offered Host continuation when only terminal completion blocks progress.",
-            "stop_job" => "Stop one existing Job by exact job_id with confirm=true. Preserves Project and Session ownership. Use observe_jobs to inspect output or wait_for_job_terminal to wait without stopping.",
             "present_agent_continuation" => "Present one exact Agent/Endpoint generation as the persistent MCP App continuation card. Pass agent_continuation_ref or the exact tuple. New window setup: create_agent_identity -> rotate_agent_continuation_endpoint -> present_agent_continuation, then yield/end promptly. Presentation success is not wake readiness; later verify list_agent_identities.production_auto_resume_available.",
             "start_agent_task_attempt" => "Create one leased fenced Attempt for the explicit current assignee. Returns attempt_id, attempt_fence, and attempt_ref. Exact keyed retry returns that same Attempt. Does not dispatch CodingAgent, Job, Wake, or Endpoint work.",
             "start_agent_task_endpoint_continuation" => "Select the Endpoint continuation for one exact live AgentTaskAttempt. Pass attempt_ref or task, attempt, assignee, fence, and controller generation. Does not choose an Endpoint or grant CodingAgent authority. A stale ref fails closed and is not rewritten onto a later attempt or generation.",
@@ -46,34 +43,40 @@ pub(super) fn compact_tool(tool: &mut Value) {
                 }
             }
         }
-        // Only these root properties are protocol wrappers. A business
-        // session_id keeps its own canonical-derived copy and requiredness.
-        // Nested IDs/resolution have no description; keep their type hints here.
-        for (pointer, description) in [
-            ("/properties/recording_session_id", "Optional explicit recorder for one exact Workflow Session (wc_sess_* or issued ~sN); never execution/business authority. Omission may still allow authorized same-Window attention without recording."),
-            ("/properties/ack_session_message_ids", "ACK-required wc_msg_* retained in model context; Session/Peer/Operator exact-ID ACK; never resolves or authorizes."),
-            ("/properties/ack_ref", "Compact exact Session ACK-set evidence returned in session_attention; Session-only, request-scoped, non-authoritative, and never resolves messages."),
-            ("/properties/session_message_resolution", "Resolve one handled non-todo recorder message by exact wc_msg_*; ACK separately if required. Independent of call success."),
-            ("/properties/context_request", "Post-result sidecar keys; no authority: project.instructions, webcodex.workflow, jobs.attention, skills.catalog, plugins.catalog, memory.bootstrap."),
-            ("/properties/context_request/items", "Context key; unsupported keys are nonfatal."),
+        // Only root protocol wrappers: never business session_id, paths, Job
+        // identities or fences. Preserve shapes/requiredness/bounds; remove only
+        // repeated copy. Full discovery and the canonical parser remain strict.
+        for (field, hint) in [
+            ("recording_session_id", "Recorder Session ID/ref; never business authority."),
+            ("ack_session_message_ids", "Retained wc_msg_* IDs to ACK; does not resolve."),
+            ("ack_ref", ""),
+            ("session_message_resolution", "Handled non-todo message; requires recording_session_id."),
+            ("context_request", "Sidecar keys: project.instructions, webcodex.workflow, jobs.attention, skills.catalog, plugins.catalog, memory.bootstrap."),
         ] {
-            if let Some(Value::String(copy)) = schema
-                .pointer_mut(pointer)
-                .and_then(|property| property.get_mut("description"))
-            {
-                *copy = description.to_string();
+            if let Some(property) = schema.pointer_mut(&format!("/properties/{field}")) {
+                let had_description = property.get("description").is_some();
+                strip_wrapper_descriptions(property);
+                if had_description && !hint.is_empty() {
+                    property["description"] = Value::String(hint.into());
+                }
             }
         }
-        // ACK ref is echoed verbatim from session_attention. Repeating the
-        // explanation on every compact tool would dominate the token savings.
-        // Full discovery keeps the safety contract; compact keeps field/bound.
-        if let Some(property) = schema
-            .pointer_mut("/properties/ack_ref")
-            .and_then(Value::as_object_mut)
-        {
-            property.remove("description");
-        }
         compact_discovery_validation_annotations(schema);
+    }
+}
+
+fn strip_wrapper_descriptions(schema: &mut Value) {
+    let Some(object) = schema.as_object_mut() else {
+        return;
+    };
+    object.remove("description");
+    if let Some(properties) = object.get_mut("properties").and_then(Value::as_object_mut) {
+        for property in properties.values_mut() {
+            strip_wrapper_descriptions(property);
+        }
+    }
+    if let Some(items) = object.get_mut("items") {
+        strip_wrapper_descriptions(items);
     }
 }
 
@@ -98,10 +101,7 @@ fn compact_control_sidecar(schema: &mut Value) {
     // Compact discovery is only a model-selection copy, so do not repeat those
     // large canonical payload schemas on every ordinary tool. Runtime stripping,
     // closed enum parsing, and canonical ToolCall parsing remain unchanged.
-    *control = serde_json::json!({
-        "type": "object",
-        "description": "Optional explicit control piggyback; exact payloads use the full MCP schema and canonical standalone-tool contracts."
-    });
+    *control = serde_json::json!({"type": "object"});
 }
 
 fn compact_discovery_validation_annotations(schema: &mut Value) {
@@ -138,11 +138,11 @@ fn common_input_description(tool: &str, field: &str) -> Option<&'static str> {
     // particular run_shell cwd/timeouts can refer to a named SSH resource;
     // project, client_id and idempotency_key also differ between direct tools.
     Some(match (tool, field) {
-        ("run_process" | "run_detached_process", "cwd") =>
+        ("run_process", "cwd") =>
             "Project-relative cwd; omit, empty or '.' for root. No named Session SSH resources.",
         ("run_skill_resource", "cwd") =>
             "Project-relative cwd; omit, empty or '.' for root. Skill resolution does not change cwd.",
-        ("run_process" | "run_detached_process", "timeout_secs") =>
+        ("run_process", "timeout_secs") =>
             "Total runtime seconds; default 60, clamped to 604800 (7 days).",
         ("run_skill_resource", "timeout_secs") =>
             "Total runtime seconds; default 60, clamped to 3600.",

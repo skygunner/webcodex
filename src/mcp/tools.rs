@@ -1050,8 +1050,37 @@ pub(super) fn project_job_terminal_resume_suggested_call(
     );
 }
 
+fn project_mcp_runtime_status_input_schema(input_schema: &mut Value) {
+    let Some(compact) = input_schema
+        .pointer_mut("/properties/compact")
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    compact.insert("default".to_string(), json!(true));
+    compact.insert(
+        "description".to_string(),
+        json!("MCP defaults to sparse status. Set false for full diagnostics; summary_only=true still selects sparse."),
+    );
+}
+
+fn project_mcp_runtime_status_manifest_defaults(result: &mut ToolResult) {
+    if !result.success || result.output["name"].as_str() != Some("runtime_status") {
+        return;
+    }
+    if let Some(input_schema) = result.output.get_mut("input_schema") {
+        project_mcp_runtime_status_input_schema(input_schema);
+    }
+}
+
 fn mcp_tool_spec_json(mut spec: ToolSpec, compact: bool, app_enabled: bool) -> Value {
     let tool_name = spec.name.clone();
+    if tool_name == "runtime_status" {
+        project_mcp_runtime_status_input_schema(&mut spec.input_schema);
+        spec.description
+            .push_str(" MCP defaults to sparse status; compact=false opts into full diagnostics.");
+    }
+
     if matches!(tool_name.as_str(), "computer_observe" | "browser_observe") {
         adapt_native_image_output_schema_for_mcp(&mut spec);
     }
@@ -2387,6 +2416,16 @@ pub(super) async fn handle_call(
     // tool identity. A few MCP-only validations still happen before the
     // shared ToolRuntime kernel; preserve those failed attempts in generic
     // telemetry without creating a second record for normal kernel calls.
+    // MCP model calls default to sparse status, including the generic gateway.
+    // Preserve omission versus explicit false before canonical bool parsing.
+    if params.name == "runtime_status" {
+        if params.arguments.is_null() {
+            params.arguments = json!({});
+        }
+        if let Some(arguments) = params.arguments.as_object_mut() {
+            arguments.entry("compact").or_insert(json!(true));
+        }
+    }
     let mut pre_kernel_model_ergonomics =
         ModelErgonomicsTimer::start_with_arguments(&params.name, &params.arguments);
     let artifact_presentation =
@@ -2612,6 +2651,9 @@ pub(super) async fn handle_call(
             .expect("tool kernel outcome without error must include result"),
     };
     debug_assert_eq!(outcome.success, result.success);
+    if params.name == "tool_manifest" {
+        project_mcp_runtime_status_manifest_defaults(&mut result);
+    }
     project_job_terminal_resume_suggested_call(
         app_enabled
             && job_terminal_continuation_app_admitted

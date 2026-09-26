@@ -370,3 +370,85 @@ async fn adaptive_mcp_work_on_project_recovery_is_immediately_gateway_callable()
     };
     assert_eq!(recovery["result"]["structuredContent"]["success"], true);
 }
+
+#[tokio::test]
+async fn mcp_runtime_status_defaults_sparse_preserves_explicit_full_and_gateway_parity() {
+    let runtime = test_runtime();
+    for gateway in [false, true] {
+        for (arguments, sparse) in [
+            (json!({}), true),
+            (Value::Null, true),
+            (json!({"compact": true}), true),
+            (json!({"compact": false}), false),
+            (json!({"compact": false, "summary_only": true}), true),
+        ] {
+            let params = if gateway {
+                adaptive_runtime_gateway_params("runtime_status", arguments)
+            } else {
+                json!({"name": "runtime_status", "arguments": arguments})
+            };
+            let McpOutcome::Ok(value) =
+                handle_mcp_request(&runtime, rpc("tools/call", Some(json!(1)), params), None).await
+            else {
+                panic!("status call")
+            };
+            let output = &value["result"]["structuredContent"]["output"];
+            assert_eq!(value["result"]["structuredContent"]["success"], true);
+            assert_eq!(output.get("authority").is_none(), sparse);
+            assert_eq!(output.get("mcp_host").is_some(), sparse);
+            if !sparse {
+                for field in [
+                    "effective_config",
+                    "session_store",
+                    "quic",
+                    "version_compatibility",
+                    "connection_layers",
+                    "tools",
+                ] {
+                    assert!(output.get(field).is_some(), "{field}");
+                }
+            }
+        }
+    }
+    let McpOutcome::Ok(manifest) = handle_mcp_request(
+        &runtime,
+        rpc(
+            "tools/call",
+            Some(json!(2)),
+            mcp_2026_params(json!({
+                "name": "tool_manifest",
+                "arguments": {"tool_name": "runtime_status"}
+            })),
+        ),
+        None,
+    )
+    .await
+    else {
+        panic!("runtime_status manifest")
+    };
+    let manifest_output = &manifest["result"]["structuredContent"]["output"];
+    assert_eq!(manifest_output["name"], "runtime_status");
+    assert_eq!(
+        manifest_output["input_schema"]["properties"]["compact"]["default"],
+        true
+    );
+    assert!(
+        manifest_output["input_schema"]["properties"]["compact"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("MCP defaults to sparse status")
+    );
+
+    let canonical = runtime
+        .dispatch(
+            crate::tool_runtime::ToolCall::from_tool_name("runtime_status", json!({})).unwrap(),
+        )
+        .await;
+    assert!(canonical.output.get("authority").is_some());
+    assert_eq!(
+        webcodex_tool_contracts::input_schema_for_tool("runtime_status")["properties"]["compact"]
+            ["default"],
+        false,
+        "canonical/API runtime_status default must remain full"
+    );
+}

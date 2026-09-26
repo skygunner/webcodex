@@ -1566,18 +1566,27 @@ fn mcp_tools_list_inputs_equal_canonical_except_descriptions_and_host_file_overl
             let name = tool["name"].as_str().unwrap();
             let canonical = &specs[name];
             let mut expected = canonical.input_schema.clone();
-            // MCP Host rewrites these two required references; this is the only
-            // direct-input transport overlay, independent of description mode.
+            // MCP owns Host-file requiredness and runtime_status omission defaults;
+            // neither overlay mutates the canonical schema.
             if name == "import_conversation_files_to_project" {
                 expected["properties"]["openaiFileIdRefs"]["items"]["required"] =
                     json!(["download_url", "file_id"]);
+            }
+            let mut expected_description = canonical.description.clone();
+            if name == "runtime_status" {
+                assert_eq!(expected["properties"]["compact"]["default"], false);
+                expected["properties"]["compact"]["default"] = json!(true);
+                expected["properties"]["compact"]["description"] = json!("MCP defaults to sparse status. Set false for full diagnostics; summary_only=true still selects sparse.");
+                expected_description.push_str(
+                    " MCP defaults to sparse status; compact=false opts into full diagnostics.",
+                );
             }
             let mut actual = tool["inputSchema"].clone();
             if compact {
                 strip_description_text(&mut expected);
                 strip_description_text(&mut actual);
             } else {
-                assert_eq!(tool["description"], canonical.description, "{name}");
+                assert_eq!(tool["description"], expected_description, "{name}");
                 // Output schemas retain their existing MCP suggested-call
                 // routing overlays; compact discovery must not remove them here.
                 assert!(tool["outputSchema"].is_object(), "{name}");
@@ -1613,9 +1622,9 @@ async fn mcp_compact_preserves_stateless_wrappers_app_metadata_and_exact_manifes
                         assert!(tool.get("outputSchema").is_none());
                         let properties = &tool["inputSchema"]["properties"];
                         for (field, hint) in [
-                            ("recording_session_id", "wc_sess_*"),
+                            ("recording_session_id", "Recorder Session"),
                             ("ack_session_message_ids", "wc_msg_*"),
-                            ("session_message_resolution", "wc_msg_*"),
+                            ("session_message_resolution", "recording_session_id"),
                             ("context_request", "jobs.attention"),
                         ] {
                             if let Some(property) = properties.get(field) {
@@ -2046,11 +2055,6 @@ fn mcp_compact_common_copy_respects_tool_and_argument_boundaries() {
             vec!["Project-relative", "Skill resolution"],
         ),
         (
-            "run_detached_process",
-            "timeout_secs",
-            vec!["Total runtime", "604800"],
-        ),
-        (
             "run_shell",
             "assertion_name",
             vec!["reuse after a fix", "validation-like"],
@@ -2142,20 +2146,12 @@ fn mcp_compact_descriptions_preserve_selection_and_schema_literals() {
             vec!["shell grammar", "related command chain", "observe_jobs"],
         ),
         (
-            "run_detached_process",
-            vec!["survives Runner", "idempotency_key", "same Job"],
-        ),
-        (
             "observe_jobs",
             vec![
                 "observation_token",
                 "after_observation_token",
                 "never redispatches",
             ],
-        ),
-        (
-            "list_jobs",
-            vec!["Recover or inventory", "observe_jobs directly"],
         ),
         (
             "wait_for_job_terminal",
@@ -2165,7 +2161,6 @@ fn mcp_compact_descriptions_preserve_selection_and_schema_literals() {
                 "Host continuation",
             ],
         ),
-        ("stop_job", vec!["confirm=true", "without stopping"]),
         (
             "present_agent_continuation",
             vec![
@@ -2260,6 +2255,73 @@ fn mcp_compact_descriptions_preserve_selection_and_schema_literals() {
     assert_eq!(tool["inputSchema"], original_schema);
 }
 
+// Test-only deterministic attribution. Byte parts partition the actual descriptor:
+// business includes the schema envelope; residual includes names/annotations.
+const DISCOVERY_WRAPPERS: &[&str] = &[
+    "recording_session_id",
+    "ack_session_message_ids",
+    "ack_ref",
+    "session_message_resolution",
+    "context_request",
+    "window_reply",
+    "_control",
+];
+
+fn discovery_cost(tool: &Value) -> (usize, usize, usize, usize, usize) {
+    let bytes = |value: &Value| serde_json::to_vec(value).unwrap().len();
+    let mut business = tool["inputSchema"].clone();
+    if let Some(properties) = business["properties"].as_object_mut() {
+        for key in DISCOVERY_WRAPPERS {
+            properties.remove(*key);
+        }
+    }
+    let schema = bytes(&business);
+    let wrappers = bytes(&tool["inputSchema"]) - schema;
+    let mut rest = tool.clone();
+    rest.as_object_mut().unwrap().remove("description");
+    let description = bytes(tool) - bytes(&rest);
+    let before = bytes(&rest);
+    rest.as_object_mut().unwrap().remove("_meta");
+    let app = before - bytes(&rest);
+    (bytes(tool), description, schema, wrappers, app)
+}
+
+fn report_discovery_costs(tools: &[Value]) {
+    let mut ranked: Vec<_> = tools
+        .iter()
+        .map(|tool| (tool, discovery_cost(tool)))
+        .collect();
+    ranked.sort_by(|(a, ac), (b, bc)| {
+        bc.0.cmp(&ac.0)
+            .then_with(|| a["name"].as_str().cmp(&b["name"].as_str()))
+    });
+    for (tool, (total, description, business, wrappers, app)) in ranked.iter().take(10) {
+        assert!(*total >= description + business + wrappers + app);
+        eprintln!("MCP_TOP name={} total={total} description={description} business={business} wrappers={wrappers} app={app}", tool["name"]);
+    }
+    for name in [
+        "list_jobs",
+        "stop_job",
+        "run_detached_process",
+        "wait_for_job_terminal",
+        "transfer_project_artifact",
+        "import_conversation_files_to_project",
+        "session_discussion_summary",
+        "session_handoff_summary",
+        "rotate_agent_continuation_endpoint",
+        "wait_for_agent_events",
+    ] {
+        let definition = webcodex_tool_contracts::lookup_tool_definition(name).unwrap();
+        if let Some((_, cost)) = ranked.iter().find(|(tool, _)| tool["name"] == name) {
+            eprintln!(
+                "MCP_CANDIDATE {name} rank={:?} bytes={}",
+                definition.adaptive_runtime_direct_rank(),
+                cost.0
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn mcp_tools_list_stateless_serialized_size_budget() {
     let mut scoped = crate::auth::shared_key_context("surface-size-test");
@@ -2270,14 +2332,13 @@ async fn mcp_tools_list_stateless_serialized_size_budget() {
     ]);
     let mut admin = scoped.clone();
     admin.scopes.push(crate::auth::SCOPE_ADMIN.to_string());
-    // Final Stateless result bytes (including wrappers/gateways, excluding the
-    // JSON-RPC envelope). With compact `_control`: 99,640 / 102,324 / 113,348
-    // bytes, plus 16,987 with Apps. Keep roughly 10% byte headroom rather than
-    // silently absorbing future advertised surface growth.
+    // Final Stateless result bytes include wrappers/gateways, not the RPC
+    // envelope. Wrapper compaction and four gateway-only long-tail entries
+    // leave about 82/85/95 KB. Keep small explicit growth headroom.
     for (label, auth, max_tools, max_bytes) in [
-        ("anonymous", None, 34, 110_000),
-        ("scoped", Some(&scoped), 35, 113_000),
-        ("admin", Some(&admin), 41, 125_000),
+        ("anonymous", None, 30, 84_000),
+        ("scoped", Some(&scoped), 31, 87_000),
+        ("admin", Some(&admin), 37, 97_000),
     ] {
         for app_enabled in [false, true] {
             let mut sizes = Vec::new();
@@ -2297,6 +2358,13 @@ async fn mcp_tools_list_stateless_serialized_size_budget() {
                 let count = result["tools"].as_array().unwrap().len();
                 let bytes = serde_json::to_vec(result).unwrap().len();
                 let tools = result["tools"].as_array().unwrap();
+                if compact {
+                    let wrappers: usize = tools.iter().map(|tool| discovery_cost(tool).3).sum();
+                    eprintln!("MCP_WRAPPERS {label} app={app_enabled} bytes={wrappers}");
+                    if label == "admin" && app_enabled {
+                        report_discovery_costs(tools);
+                    }
+                }
                 let top_chars: usize = tools
                     .iter()
                     .map(|tool| tool["description"].as_str().unwrap().chars().count())
@@ -2315,7 +2383,7 @@ async fn mcp_tools_list_stateless_serialized_size_budget() {
                 // alongside the existing Goal Plan/continuation/read helpers.
                 let count_budget = max_tools + if app_enabled { 17 } else { 0 } + feature_tools;
                 let byte_budget =
-                    max_bytes + if app_enabled { 18_000 } else { 0 } + feature_tools * 4096;
+                    max_bytes + if app_enabled { 19_000 } else { 0 } + feature_tools * 4096;
                 if feature_tools == 0 {
                     assert_eq!(
                         count, count_budget,

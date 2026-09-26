@@ -1,0 +1,24 @@
+Auto-merging crates/webcodex-runner-registry/src/job_updates.rs
+CONFLICT (content): Merge conflict in crates/webcodex-runner-registry/src/job_updates.rs
+Auto-merging crates/webcodex-runner-registry/src/state.rs
+Auto-merging crates/webcodex-tool-contracts/src/registry/output_schemas/discovery.rs
+Auto-merging crates/webcodex-tool-contracts/src/registry/output_schemas/jobs.rs
+Auto-merging crates/webcodex-tool-contracts/src/tests/output_schemas.rs
+Auto-merging crates/webcodex-tool-contracts/src/tests/registry_specs.rs
+Auto-merging crates/webcodex-tool-contracts/src/tool_call.rs
+Auto-merging crates/webcodex-tool-contracts/src/tool_definition/jobs.rs
+CONFLICT (content): Merge conflict in crates/webcodex-tool-contracts/src/tool_definition/jobs.rs
+Auto-merging docs/DEPLOYMENT.md
+Auto-merging docs/DEPLOYMENT.zh-CN.md
+Auto-merging docs/agent/job-reliability-and-concurrency.md
+CONFLICT (content): Merge conflict in docs/agent/job-reliability-and-concurrency.md
+Auto-merging src/lib.rs
+CONFLICT (content): Merge conflict in src/lib.rs
+Auto-merging src/mcp.rs
+Auto-merging src/mcp_tests/model_ergonomics.rs
+Auto-merging src/mcp_tests/tools.rs
+Auto-merging src/tool_runtime/jobs.rs
+Auto-merging src/tool_runtime/runtime_info.rs
+Auto-merging src/tool_runtime/tests/metadata.rs
+Auto-merging src/tool_runtime/tests/observe_jobs.rs
+Automatic merge failed; fix conflicts and then commit the result.

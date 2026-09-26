@@ -1,0 +1,5 @@
+Merge made by the 'ort' strategy.
+ crates/webcodex-store/src/window_collaboration.rs   |  4 +++-
+ .../src/window_collaboration_tests.rs               | 21 +++++++++++++++++++++
+ docs/agent/manual-window-collaboration.md           |  3 +++
+ 3 files changed, 27 insertions(+), 1 deletion(-)

@@ -506,10 +506,10 @@ fn tool_specs_describe_default_coding_loop_preferences() {
         "project-source mutation should normally use canonical structured editors",
         "runner-owned execution",
         "timeout_secs is total lifetime",
-        "sync_wait_secs is only job-handoff grace",
-        "retain exact job_id/continuation",
+        "server timing policy controls job-handoff grace",
+        "execution_state=pending",
         "continue independent work",
-        "passive job attention",
+        "sparse terminal job attention",
         "observe_jobs only for logs/details/recovery",
         "wait_for_job_terminal only when terminal outcome is a true dependency",
         "duration alone does not select a detached primitive",
@@ -528,9 +528,9 @@ fn tool_specs_describe_default_coding_loop_preferences() {
         "bounded runner-owned quoting contract",
         "persistent shell is only for retained same-process or named-ssh state, not command count",
         "same execution and remains runner-owned",
-        "retain exact job_id/continuation",
+        "execution_state=pending",
         "continue independent work",
-        "passive job attention",
+        "sparse terminal job attention",
         "observe_jobs only for logs/details/recovery",
         "wait_for_job_terminal only when terminal outcome is a true dependency",
         "run_detached_process",
@@ -553,9 +553,9 @@ fn tool_specs_describe_default_coding_loop_preferences() {
         "run_shell for shell grammar",
         "project-source mutation should normally use canonical structured editors",
         "same execution and remains runner-owned",
-        "retain exact job_id/continuation",
+        "execution_state=pending",
         "continue independent work",
-        "passive job attention",
+        "sparse terminal job attention",
         "observe_jobs only for logs/details/recovery",
         "wait_for_job_terminal only when terminal outcome is a true dependency",
         "script bodies never become shell command text",
@@ -714,17 +714,17 @@ fn removed_legacy_edit_tools_are_not_known_tools() {
 fn model_preference_upper_bounds_are_clamped_by_runtime_not_rejected_by_schema() {
     let specs = registered_tool_specs();
     let cases: &[(&str, &[&str])] = &[
-        ("run_process", &["timeout_secs", "sync_wait_secs"]),
+        ("run_process", &["timeout_secs"]),
         ("run_detached_process", &["timeout_secs"]),
-        ("run_script", &["timeout_secs", "sync_wait_secs"]),
+        ("run_script", &["timeout_secs"]),
         ("run_shell", &["timeout_secs"]),
         ("session_shell_exec", &["timeout_secs"]),
         ("observe_jobs", &["tail_lines", "wait_secs"]),
         ("list_jobs", &["limit"]),
-        ("cargo_fmt", &["timeout_secs", "sync_wait_secs"]),
-        ("cargo_check", &["timeout_secs", "sync_wait_secs"]),
-        ("cargo_test", &["timeout_secs", "sync_wait_secs"]),
-        ("go_test", &["timeout_secs", "sync_wait_secs"]),
+        ("cargo_fmt", &["timeout_secs"]),
+        ("cargo_check", &["timeout_secs"]),
+        ("cargo_test", &["timeout_secs"]),
+        ("go_test", &["timeout_secs"]),
         ("session_discussion_summary", &["limit"]),
         ("workspace_hygiene_check", &["max_findings"]),
         ("list_projects", &["limit"]),
@@ -1087,24 +1087,12 @@ fn observe_jobs_wake_policy_schema_is_closed_and_compatible() {
     ] {
         assert!(spec.description.contains(phrase), "missing {phrase}");
     }
-    let recommended_wait = format!(
-        "wait_secs={}",
-        webcodex_core::runtime_contract::MODEL_JOB_CONTINUATION_WAIT_SECS
-    );
-    assert!(
-        spec.description.contains(&recommended_wait),
-        "missing {recommended_wait}"
-    );
     let wait_description = spec.input_schema["properties"]["wait_secs"]["description"]
         .as_str()
         .unwrap();
     assert!(wait_description.contains("above 100 seconds"));
     assert!(wait_description.contains("clamped to 100"));
-    let recommended_wait_description = format!(
-        "recommend {} seconds",
-        webcodex_core::runtime_contract::MODEL_JOB_CONTINUATION_WAIT_SECS
-    );
-    assert!(wait_description.contains(&recommended_wait_description));
+    assert!(wait_description.contains("MCP transport may clamp"));
     assert!(wait_description.contains("further useful progress depends on terminal outcome"));
     assert!(wait_description.contains("independent work continues"));
     let wake_description = wake["description"].as_str().unwrap();

@@ -195,14 +195,7 @@ this presentation policy changes no nested authority. Making
 `stop_job` directly callable in ordinary MCP/Adaptive does not change that
 allowlist. Query and mutation must not share a conditional-effect sidecar.
 
-An admitted E2a validation may return the same durable Job continuation. Retain
-it outside the cell. When terminal is a real dependency, use the ordinary
-`wait_for_job_terminal` primitive with a supported Host carrier; when work is
-independent, continue read/search/review. An ordinary outer observation can use
-`context_request=["jobs.attention"]` for bounded Project-level attention without
-logs or Session inference. Nested children still reject Server-owned sidecar and
-target overrides. Detailed observation and explicit `stop_job(confirm=true)`
-remain ordinary canonical calls, never nested Job controls.
+An admitted E2a validation may return `execution_state=pending` for the same durable execution. Its exact continuation is a fallback, not a command to poll. Keep independent read/search/review work in the same turn; ordinary **outer** model-facing calls with the exact Window/Project/Session may later carry sparse terminal `job_attention`. Nested children still have no Window and therefore receive no passive Job sidecar, so effect receipts, mutation fences, and validation-source semantics remain the only nested authority. `context_request=["jobs.attention"]` remains a separate bounded Project-level fallback. When terminal is the hard dependency and no independent work remains, use the ordinary continuation / `wait_for_job_terminal` path. Detailed `observe_jobs` and explicit `stop_job(confirm=true)` remain ordinary canonical calls, never nested Job controls. No Host automatic-resume capability is required for the normal pending path.
 
 ## Authority and Session model
 
@@ -535,7 +528,7 @@ const edit = await tools.apply_text_edits({changes:[{
 if (!edit.success || typeof edit.output?.state_changed !== "boolean") {
   throw new Error("Inspect the edit recovery; do not validate a rejected edit");
 }
-const check = await tools.cargo_check({sync_wait_secs:1});
+const check = await tools.cargo_check({});
 text({state_changed:edit.output.state_changed, call_success:check.success,
       source_state:check.output?.source_state, job_handoff:!!check.output?.job_id});
 ```

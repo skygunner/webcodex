@@ -1,0 +1,301 @@
+npm notice run test
+npm notice run npm run test:admin && npm run test:runtime
+npm notice run test:admin
+npm notice run node --test test/build.test.mjs
+✔ Admin React build emits the three fixed Server assets (731.771396ms)
+✔ Runtime Vite build emits deterministic self-contained Server assets (1215.319202ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1984.902584
+npm notice run test:runtime
+npm notice run vitest run --config vitest.config.ts
+
+ RUN  v4.0.18 /home/vincenty/Projects/webcodex-nightly-2026-09-27/frontend
+
+ ❯ test-v2/work-projection.test.ts (8 tests | 8 failed) 16ms
+     × treats only Runner Jobs as authoritative live execution 2ms
+     × keeps inactive/no-Job Sessions out of Running 0ms
+     × surfaces attention before ordinary active work 0ms
+     × presents canonical current validation, including pass after an older failure 0ms
+     × accepts server activity rows with serde-omitted empty arrays 1ms
+     × keeps Window, Session, Workspace, and Job activity semantically independent 1ms
+     × groups low-level activity by user-facing intent without a second UI history cap 1ms
+   × keeps otherwise identical Window calls separate when their Project provenance differs 10ms
+ ❯ test-v2/admin_mutation_controller.test.ts (4 tests | 4 failed) 7ms
+   × same target is single-flight and duplicate click reuses one key 4ms
+   × token switch aborts and stale success cannot update 0ms
+   × indeterminate and network errors preserve retry context and key 1ms
+   × revision conflict refreshes and requires a new operation key 1ms
+ ❯ test-v2/admin_model.test.ts (2 tests | 2 failed) 3ms
+   × admin dashboard retains only failed sections and accepts fresh siblings 2ms
+   × admin status and capability display is defensive 1ms
+ ❯ test-v2/accent.test.ts (2 tests | 2 failed) 4ms
+     × accepts only a complete hex color 2ms
+     × keeps preset and arbitrary colors readable in both themes 1ms
+ ❯ test-v2/admin_controller.test.ts (13 tests | 13 failed) 25ms
+   × lock invalidates a request that later succeeds 4ms
+   × lock invalidates a request that later fails 1ms
+   × slow token A cannot overwrite fast token B 18ms
+   × same-session refreshes are single-flight and cannot reorder 0ms
+   × auto-refresh and manual refresh share one active request 0ms
+   × current 401 locks the current session 0ms
+   × stale 401 cannot lock a newer session 0ms
+   × current 500 and network errors preserve session and data 0ms
+   × AbortError is silent and does not alter the latest state 0ms
+   × dispose models pagehide by aborting request and stopping timer 0ms
+   × invalidateAndRefresh aborts old request and only renders forced result 0ms
+   × current unauthorized delegates to unified lock callback 0ms
+   × dispose forgets the credential and requires an explicit new session 0ms
+ ❯ test-v2/admin_mutation_view.test.ts (7 tests | 7 failed) 18ms
+   × register failure retries through production coordinator with same key 2ms
+   × changed create form cancels old context and creates a new key 0ms
+   × escape cancels idle context, clears sensitive fields, and restores focus 1ms
+   × escape while pending keeps dialog and mutation open 0ms
+   × close fallback is idempotent and removes zombie context 0ms
+   × active jobs conflict keeps context while revision conflict invalidates it 0ms
+   × dashboard unauthorized orchestration aborts mutation and closes dialog 13ms
+ ❯ test-v2/project-presentation.test.ts (2 tests | 2 failed) 4ms
+     × preserves canonical inputs while rendering disk and UNC paths 3ms
+     × repairs generic root names and preserves explicit names 1ms
+ ❯ test-v2/shared-contracts.test.ts (4 tests | 4 failed) 7ms
+     × keeps remembered credentials tab-scoped and clears them on lock 3ms
+     × keeps English keys stable and localizes known Chinese strings 0ms
+     × lets Runtime Console inventory endpoints own their retained-data bounds 1ms
+     × sends bearer auth only to the configured API base and treats transport failure as status 0 2ms
+ ❯ test-v2/project_picker.test.tsx (4 tests | 4 failed) 189ms
+     × searches projects, changes the exact value, and restores focus 111ms
+     × supports arrow keys, Escape, and choosing all projects 34ms
+     × clears a dismissed search before reopening 36ms
+   × closes an open resource picker when its owning operation becomes disabled 8ms
+ ❯ test-v2/window-collaboration.test.tsx (13 tests | 13 failed) 406ms
+     × sends before a Session exists and keeps Window identity when context changes 122ms
+     × clears deterministic conflict identity and uses a new key on the next explicit send 34ms
+     × preserves an invalid-context draft but rebuilds context only on the next explicit send 28ms
+     × keeps ordinary deterministic 400 failures distinct from stale context 20ms
+     × retains the exact uncertain payload across retries and context changes: {"ok":false,"status":0,"data":null} 28ms
+     × retains the exact uncertain payload across retries and context changes: {"ok":false,"status":500,"data":null} 22ms
+     × retains the exact uncertain payload across retries and context changes: {"ok":false,"status":502,"data":null} 22ms
+     × retains the exact uncertain payload across retries and context changes: {"ok":false,"status":503,"data":null} 23ms
+     × retains the exact uncertain payload across retries and context changes: {"ok":false,"status":504,"data":null} 26ms
+     × retains the exact uncertain payload across retries and context changes: {"ok":true,"status":200,"data":null} 23ms
+     × retains the exact uncertain payload across retries and context changes: {"ok":true,"status":200,"data":{"message_id":123}} 20ms
+     × retains the exact uncertain payload across retries and context changes: null 20ms
+     × does not offer exact retry when the Window is unavailable 17ms
+ ❯ test-v2/runtime-state.test.tsx (6 tests | 6 failed) 401ms
+     × distinguishes loading, available, stale, error and denied 177ms
+     × clears stale Window inventory metadata when observation authority is revoked 109ms
+     × routes unauthorized responses to the credential boundary 54ms
+   × does not display the previous Window while the newly selected detail is pending 54ms
+   × lets slow Window polls finish and discovers new Windows independently of slow detail 3ms
+   × does not cancel a slow active Session refresh on the next five-second tick 2ms
+ ❯ test-v2/session-communication.test.tsx (10 tests | 10 failed) 541ms
+     × keeps Reply available while limiting Edit/Withdraw to mutable open message kinds 192ms
+     × shows ACK, resolution, direct reply evidence, and Workflow activity time 34ms
+     × keeps Window liveness distinct from sparse Session, Workspace, and Job evidence 12ms
+     × keeps retained unfinished calls from masquerading as live execution 7ms
+     × makes guidance a first-class visible collaboration action 29ms
+     × hides mutable actions after collaborate authority is denied 27ms
+     × returns to Workflow when the selected Session changes 21ms
+     × clears prior Session evidence immediately when selection changes 55ms
+     × ignores stale mutation completion after switching Sessions 110ms
+     × retains an explicit recovery notice when a send transport outcome is unknown 53ms
+ ❯ test-v2/goal-workbench.test.tsx (2 tests | 2 failed) 330ms
+     × renders durable Goal truth and navigates to exact existing resources 206ms
+     × keeps Goal list and detail read-only 123ms
+ ❯ test-v2/window-first-work.test.tsx (4 tests | 4 failed) 306ms
+   × shows active Window work without any Workflow Session and keeps observe calls visible 179ms
+   × uses exact Session tags to focus contiguous Window call segments 52ms
+   × shows background Job identity on handoff calls and observe_jobs 24ms
+   × groups a managed worktree under one human Project and exposes Window activity at the family level 51ms
+ ❯ test-v2/navigation.test.tsx (3 tests | 3 failed) 369ms
+     × keeps Work / Projects / Runtime as the only primary destinations 282ms
+     × keeps the three primary destinations reachable in a narrow viewport 31ms
+     × cannot apply delayed Window detail after the workspace is locked 56ms
+ ❯ test-v2/relations.test.tsx (10 tests | 10 failed) 550ms
+     × renders Project -> multiple active Sessions and bounded Window counts 85ms
+     × loads the selected Project's retained Sessions when its card is opened 42ms
+     × keeps Add Project a single non-replayed write after an uncertain result 177ms
+     × renders Window calls without Session relationships or technical disclosures 48ms
+     × renders Session Evidence -> multiple Windows and handles Session with no Window 69ms
+     × keeps Runner build metadata in a dedicated cell with product-facing alignment text 7ms
+     × surfaces Runtime availability truth instead of presenting denied state as connected 8ms
+     × renders all server-returned Window activity without a second client-side cap 72ms
+     × stops presenting stale Session detail as current after authority is denied 36ms
+   × shows individual calls in order with exact Project paths and authoritative Session tags 5ms
+ ❯ test-v2/admin_app.test.tsx (5 tests | 5 failed) 1262ms
+   × Admin React shell unlocks, renders data, and locks without persisting the credential 194ms
+   × Admin React dialog retries an uncertain mutation with the same idempotency key 488ms
+   × Admin React lock aborts a dashboard request in flight 69ms
+   × Admin pagehide clears authentication and protected dashboard before a bfcache restore 50ms
+   × Admin can authorize a fresh mutation after an in-flight mutation loses authorization 460ms
+
+⎯⎯⎯⎯⎯⎯ Failed Tests 99 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test-v2/accent.test.ts > theme accent > accepts only a complete hex color
+ FAIL  test-v2/accent.test.ts > theme accent > keeps preset and arbitrary colors readable in both themes
+ FAIL  test-v2/goal-workbench.test.tsx > Goal Workbench > renders durable Goal truth and navigates to exact existing resources
+ FAIL  test-v2/goal-workbench.test.tsx > Goal Workbench > keeps Goal list and detail read-only
+ FAIL  test-v2/navigation.test.tsx > Runtime v2 navigation > keeps Work / Projects / Runtime as the only primary destinations
+ FAIL  test-v2/navigation.test.tsx > Runtime v2 navigation > keeps the three primary destinations reachable in a narrow viewport
+ FAIL  test-v2/navigation.test.tsx > Runtime v2 navigation > cannot apply delayed Window detail after the workspace is locked
+ FAIL  test-v2/project-presentation.test.ts > shared Windows project presentation > preserves canonical inputs while rendering disk and UNC paths
+ FAIL  test-v2/project-presentation.test.ts > shared Windows project presentation > repairs generic root names and preserves explicit names
+ FAIL  test-v2/project_picker.test.tsx > ProjectPicker > searches projects, changes the exact value, and restores focus
+ FAIL  test-v2/project_picker.test.tsx > ProjectPicker > supports arrow keys, Escape, and choosing all projects
+ FAIL  test-v2/project_picker.test.tsx > ProjectPicker > clears a dismissed search before reopening
+ FAIL  test-v2/relations.test.tsx > Project / Session / Window relationships > renders Project -> multiple active Sessions and bounded Window counts
+ FAIL  test-v2/relations.test.tsx > Project / Session / Window relationships > loads the selected Project's retained Sessions when its card is opened
+ FAIL  test-v2/relations.test.tsx > Project / Session / Window relationships > keeps Add Project a single non-replayed write after an uncertain result
+ FAIL  test-v2/relations.test.tsx > Project / Session / Window relationships > renders Window calls without Session relationships or technical disclosures
+ FAIL  test-v2/relations.test.tsx > Project / Session / Window relationships > renders Session Evidence -> multiple Windows and handles Session with no Window
+ FAIL  test-v2/relations.test.tsx > Project / Session / Window relationships > keeps Runner build metadata in a dedicated cell with product-facing alignment text
+ FAIL  test-v2/relations.test.tsx > Project / Session / Window relationships > surfaces Runtime availability truth instead of presenting denied state as connected
+ FAIL  test-v2/relations.test.tsx > Project / Session / Window relationships > renders all server-returned Window activity without a second client-side cap
+ FAIL  test-v2/relations.test.tsx > Project / Session / Window relationships > stops presenting stale Session detail as current after authority is denied
+ FAIL  test-v2/runtime-state.test.tsx > Runtime server state > distinguishes loading, available, stale, error and denied
+ FAIL  test-v2/runtime-state.test.tsx > Runtime server state > clears stale Window inventory metadata when observation authority is revoked
+ FAIL  test-v2/runtime-state.test.tsx > Runtime server state > routes unauthorized responses to the credential boundary
+ FAIL  test-v2/session-communication.test.tsx > Session communication parity > keeps Reply available while limiting Edit/Withdraw to mutable open message kinds
+ FAIL  test-v2/session-communication.test.tsx > Session communication parity > shows ACK, resolution, direct reply evidence, and Workflow activity time
+ FAIL  test-v2/session-communication.test.tsx > Session communication parity > keeps Window liveness distinct from sparse Session, Workspace, and Job evidence
+ FAIL  test-v2/session-communication.test.tsx > Session communication parity > keeps retained unfinished calls from masquerading as live execution
+ FAIL  test-v2/session-communication.test.tsx > Session communication parity > makes guidance a first-class visible collaboration action
+ FAIL  test-v2/session-communication.test.tsx > Session communication parity > hides mutable actions after collaborate authority is denied
+ FAIL  test-v2/session-communication.test.tsx > Session communication parity > returns to Workflow when the selected Session changes
+ FAIL  test-v2/session-communication.test.tsx > Session communication parity > clears prior Session evidence immediately when selection changes
+ FAIL  test-v2/session-communication.test.tsx > Session communication parity > ignores stale mutation completion after switching Sessions
+ FAIL  test-v2/session-communication.test.tsx > Session communication parity > retains an explicit recovery notice when a send transport outcome is unknown
+ FAIL  test-v2/shared-contracts.test.ts > shared Runtime browser contracts > keeps remembered credentials tab-scoped and clears them on lock
+ FAIL  test-v2/shared-contracts.test.ts > shared Runtime browser contracts > keeps English keys stable and localizes known Chinese strings
+ FAIL  test-v2/shared-contracts.test.ts > shared Runtime browser contracts > lets Runtime Console inventory endpoints own their retained-data bounds
+ FAIL  test-v2/shared-contracts.test.ts > shared Runtime browser contracts > sends bearer auth only to the configured API base and treats transport failure as status 0
+ FAIL  test-v2/window-collaboration.test.tsx > Window collaboration > sends before a Session exists and keeps Window identity when context changes
+ FAIL  test-v2/window-collaboration.test.tsx > Window collaboration > clears deterministic conflict identity and uses a new key on the next explicit send
+ FAIL  test-v2/window-collaboration.test.tsx > Window collaboration > preserves an invalid-context draft but rebuilds context only on the next explicit send
+ FAIL  test-v2/window-collaboration.test.tsx > Window collaboration > keeps ordinary deterministic 400 failures distinct from stale context
+ FAIL  test-v2/window-collaboration.test.tsx > Window collaboration > retains the exact uncertain payload across retries and context changes: {"ok":false,"status":0,"data":null}
+ FAIL  test-v2/window-collaboration.test.tsx > Window collaboration > retains the exact uncertain payload across retries and context changes: {"ok":false,"status":500,"data":null}
+ FAIL  test-v2/window-collaboration.test.tsx > Window collaboration > retains the exact uncertain payload across retries and context changes: {"ok":false,"status":502,"data":null}
+ FAIL  test-v2/window-collaboration.test.tsx > Window collaboration > retains the exact uncertain payload across retries and context changes: {"ok":false,"status":503,"data":null}
+ FAIL  test-v2/window-collaboration.test.tsx > Window collaboration > retains the exact uncertain payload across retries and context changes: {"ok":false,"status":504,"data":null}
+ FAIL  test-v2/window-collaboration.test.tsx > Window collaboration > retains the exact uncertain payload across retries and context changes: {"ok":true,"status":200,"data":null}
+ FAIL  test-v2/window-collaboration.test.tsx > Window collaboration > retains the exact uncertain payload across retries and context changes: {"ok":true,"status":200,"data":{"message_id":123}}
+ FAIL  test-v2/window-collaboration.test.tsx > Window collaboration > retains the exact uncertain payload across retries and context changes: null
+ FAIL  test-v2/window-collaboration.test.tsx > Window collaboration > does not offer exact retry when the Window is unavailable
+ FAIL  test-v2/work-projection.test.ts > Work projection > treats only Runner Jobs as authoritative live execution
+ FAIL  test-v2/work-projection.test.ts > Work projection > keeps inactive/no-Job Sessions out of Running
+ FAIL  test-v2/work-projection.test.ts > Work projection > surfaces attention before ordinary active work
+ FAIL  test-v2/work-projection.test.ts > Work projection > presents canonical current validation, including pass after an older failure
+ FAIL  test-v2/work-projection.test.ts > Work projection > accepts server activity rows with serde-omitted empty arrays
+ FAIL  test-v2/work-projection.test.ts > Work projection > keeps Window, Session, Workspace, and Job activity semantically independent
+ FAIL  test-v2/work-projection.test.ts > Work projection > groups low-level activity by user-facing intent without a second UI history cap
+Error: unable to open database file
+ ❯ test-v2/setup.ts:6:23
+      4| afterEach(() => {
+      5|   cleanup();
+      6|   window.localStorage.clear();
+       |                       ^
+      7|   window.sessionStorage.clear();
+      8| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/101]⎯
+
+ FAIL  test-v2/admin_app.test.tsx > Admin React shell unlocks, renders data, and locks without persisting the credential
+Error: unable to open database file
+ ❯ test-v2/admin_app.test.tsx:30:15
+     28|   expect(screen.getByText("agent:fixture:alpha")).toBeTruthy();
+     29|   expect(calls[0].headers).toMatchObject({ Authorization: "Bearer fixt…
+     30|   expect(JSON.stringify(localStorage)).not.toContain("fixture-secret");
+       |               ^
+     31|   fireEvent.click(screen.getByRole("button", { name: "Lock" }));
+     32|   await waitFor(() => expect(screen.getByRole("heading", { name: "Admi…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/101]⎯
+
+ FAIL  test-v2/admin_app.test.tsx > Admin React shell unlocks, renders data, and locks without persisting the credential
+ FAIL  test-v2/admin_app.test.tsx > Admin React dialog retries an uncertain mutation with the same idempotency key
+ FAIL  test-v2/admin_app.test.tsx > Admin React lock aborts a dashboard request in flight
+ FAIL  test-v2/admin_app.test.tsx > Admin pagehide clears authentication and protected dashboard before a bfcache restore
+ FAIL  test-v2/admin_app.test.tsx > Admin can authorize a fresh mutation after an in-flight mutation loses authorization
+Error: unable to open database file
+ ❯ test-v2/setup.ts:6:23
+      4| afterEach(() => {
+      5|   cleanup();
+      6|   window.localStorage.clear();
+       |                       ^
+      7|   window.sessionStorage.clear();
+      8| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/101]⎯
+
+ FAIL  test-v2/admin_controller.test.ts > lock invalidates a request that later succeeds
+ FAIL  test-v2/admin_controller.test.ts > lock invalidates a request that later fails
+ FAIL  test-v2/admin_controller.test.ts > slow token A cannot overwrite fast token B
+ FAIL  test-v2/admin_controller.test.ts > same-session refreshes are single-flight and cannot reorder
+ FAIL  test-v2/admin_controller.test.ts > auto-refresh and manual refresh share one active request
+ FAIL  test-v2/admin_controller.test.ts > current 401 locks the current session
+ FAIL  test-v2/admin_controller.test.ts > stale 401 cannot lock a newer session
+ FAIL  test-v2/admin_controller.test.ts > current 500 and network errors preserve session and data
+ FAIL  test-v2/admin_controller.test.ts > AbortError is silent and does not alter the latest state
+ FAIL  test-v2/admin_controller.test.ts > dispose models pagehide by aborting request and stopping timer
+ FAIL  test-v2/admin_controller.test.ts > invalidateAndRefresh aborts old request and only renders forced result
+ FAIL  test-v2/admin_controller.test.ts > current unauthorized delegates to unified lock callback
+ FAIL  test-v2/admin_controller.test.ts > dispose forgets the credential and requires an explicit new session
+ FAIL  test-v2/admin_model.test.ts > admin dashboard retains only failed sections and accepts fresh siblings
+ FAIL  test-v2/admin_model.test.ts > admin status and capability display is defensive
+ FAIL  test-v2/admin_mutation_controller.test.ts > same target is single-flight and duplicate click reuses one key
+ FAIL  test-v2/admin_mutation_controller.test.ts > token switch aborts and stale success cannot update
+ FAIL  test-v2/admin_mutation_controller.test.ts > indeterminate and network errors preserve retry context and key
+ FAIL  test-v2/admin_mutation_controller.test.ts > revision conflict refreshes and requires a new operation key
+ FAIL  test-v2/admin_mutation_view.test.ts > register failure retries through production coordinator with same key
+ FAIL  test-v2/admin_mutation_view.test.ts > changed create form cancels old context and creates a new key
+ FAIL  test-v2/admin_mutation_view.test.ts > escape cancels idle context, clears sensitive fields, and restores focus
+ FAIL  test-v2/admin_mutation_view.test.ts > escape while pending keeps dialog and mutation open
+ FAIL  test-v2/admin_mutation_view.test.ts > close fallback is idempotent and removes zombie context
+ FAIL  test-v2/admin_mutation_view.test.ts > active jobs conflict keeps context while revision conflict invalidates it
+ FAIL  test-v2/admin_mutation_view.test.ts > dashboard unauthorized orchestration aborts mutation and closes dialog
+ FAIL  test-v2/project_picker.test.tsx > closes an open resource picker when its owning operation becomes disabled
+ FAIL  test-v2/relations.test.tsx > shows individual calls in order with exact Project paths and authoritative Session tags
+ FAIL  test-v2/runtime-state.test.tsx > does not display the previous Window while the newly selected detail is pending
+ FAIL  test-v2/runtime-state.test.tsx > lets slow Window polls finish and discovers new Windows independently of slow detail
+ FAIL  test-v2/runtime-state.test.tsx > does not cancel a slow active Session refresh on the next five-second tick
+ FAIL  test-v2/window-first-work.test.tsx > shows active Window work without any Workflow Session and keeps observe calls visible
+ FAIL  test-v2/window-first-work.test.tsx > uses exact Session tags to focus contiguous Window call segments
+ FAIL  test-v2/window-first-work.test.tsx > shows background Job identity on handoff calls and observe_jobs
+ FAIL  test-v2/window-first-work.test.tsx > groups a managed worktree under one human Project and exposes Window activity at the family level
+ FAIL  test-v2/work-projection.test.ts > keeps otherwise identical Window calls separate when their Project provenance differs
+Error: unable to open database file
+ ❯ test-v2/setup.ts:6:23
+      4| afterEach(() => {
+      5|   cleanup();
+      6|   window.localStorage.clear();
+       |                       ^
+      7|   window.sessionStorage.clear();
+      8| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/101]⎯
+
+ FAIL  test-v2/shared-contracts.test.ts > shared Runtime browser contracts > keeps remembered credentials tab-scoped and clears them on lock
+Error: unable to open database file
+ ❯ test-v2/shared-contracts.test.ts:20:32
+     18|     persistRuntimeCredentialForTab("secret-token", true);
+     19|     expect(window.sessionStorage.getItem(RUNTIME_CREDENTIAL_SESSION_KE…
+     20|     expect(window.localStorage.getItem(RUNTIME_CREDENTIAL_SESSION_KEY)…
+       |                                ^
+     21|     expect(loadRememberedRuntimeCredential()).toBe("secret-token");
+     22|     clearRememberedRuntimeCredential();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/101]⎯
+
+
+ Test Files  17 failed (17)
+      Tests  99 failed (99)
+   Start at  04:57:03
+   Duration  2.09s (transform 1.41s, setup 1.04s, import 3.63s, tests 4.44s, environment 5.37s)
+
+FE_EXIT=1

@@ -225,7 +225,6 @@ pub fn observe_job_continuation_schema() -> Value {
                 },
                 "wait_secs": {
                     "type": "integer",
-                    "const": webcodex_core::runtime_contract::MODEL_JOB_CONTINUATION_WAIT_SECS,
                     "minimum": 1,
                     "maximum": webcodex_core::runtime_contract::MAX_JOB_OBSERVATION_WAIT_SECS
                 },
@@ -556,6 +555,172 @@ pub fn recovery_kind_schema() -> Value {
         "enum": RECOVERY_KIND_VALUES,
         "description": "Closed model-facing class of the next safe recovery action. retry_same means exact idempotent replay only; outcome_unknown is never ordinary retry authority."
     })
+}
+
+fn passive_failure_diagnostics_schema() -> Value {
+    use webcodex_core::validation_evidence::{PASSIVE_MAX_DIAGNOSTICS, PASSIVE_MAX_FAILED_TESTS};
+    let mut schema = super::testing::cargo_test_diagnostics_schema(
+        "Actionable safe parser evidence, at most 8 KiB serialized. Truncation or absent evidence leaves details available through observe_jobs.");
+    let fields = schema["properties"].as_object_mut().unwrap();
+    for field in [
+        "parser",
+        "reason",
+        "invalid_diagnostics_omitted",
+        "truncated",
+    ] {
+        fields.remove(field);
+    }
+    fields.get_mut("diagnostics").unwrap()["maxItems"] = json!(PASSIVE_MAX_DIAGNOSTICS);
+    fields.get_mut("returned_diagnostic_count").unwrap()["maximum"] =
+        json!(PASSIVE_MAX_DIAGNOSTICS);
+    fields.get_mut("failed_test_details").unwrap()["maxItems"] = json!(PASSIVE_MAX_FAILED_TESTS);
+    // The generic decoration appears on many schemas; retain selection/bounds
+    // in one description instead of repeating full explicit-observation prose.
+    for field in fields.values_mut() {
+        if let Some(object) = field.as_object_mut() {
+            object.remove("description");
+        }
+    }
+    schema["required"] = json!([
+        "available",
+        "diagnostics",
+        "returned_diagnostic_count",
+        "diagnostics_truncated",
+        "failed_test_details",
+        "failed_test_details_truncated"
+    ]);
+    schema
+}
+
+pub(super) fn passive_job_attention_schema() -> Value {
+    let details = suggested_tool_call_schema(
+        "observe_jobs",
+        json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 1,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "job_id": {"type": "string", "minLength": 1, "maxLength": 128}
+                        },
+                        "required": ["job_id"]
+                    }
+                }
+            },
+            "required": ["items"]
+        }),
+        "Read bounded logs/details for this exact existing Job only when the sparse passive state is insufficient.",
+    );
+    let validation = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Sparse validation truth. Execution pass/fail is historical; source_state independently says whether covered source has crossed a known canonical mutation fence.",
+        "properties": {
+            "tool": {"type": "string", "maxLength": 64},
+            "kind": {"type": "string", "enum": ["format", "check", "test", "validation", "build", "release"]},
+            "state": {"type": "string", "enum": ["pending", "running", "completed", "timed_out", "cancelled", "lost"]},
+            "passed": nullable_schema("boolean", "Validation verdict from the available authoritative execution/evidence contract; null means not proven."),
+            "tests_detected": nullable_schema("boolean", "Whether authoritative test evidence detected tests."),
+            "tests_run_count": nullable_schema("integer", "Authoritative executed-test count when available."),
+            "zero_tests_run": nullable_schema("boolean", "Whether authoritative evidence proved zero executed tests."),
+            "test_count_assertion": cargo_test_count_assertion_schema(),
+            "require_tests": {"type": "boolean"},
+            "no_run": {"type": "boolean"},
+            "validation_target_id": {"type": "string", "maxLength": 256},
+            "source_state": validation_source_state_schema(),
+            "diagnostics": passive_failure_diagnostics_schema()
+        },
+        "required": ["tool", "kind", "state", "passed", "source_state"]
+    });
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Optional bounded same-turn sidecar for changed durable executions in the exact authenticated Window/Project/Workflow-Session context. It never starts, retries, waits for, or polls Runner execution.",
+        "properties": {
+            "changed": {"type": "boolean", "const": true},
+            "items": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 8,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "job_id": {"type": "string", "minLength": 1, "maxLength": 128},
+                        "tool": {"type": "string", "maxLength": 64},
+                        "status": {"type": "string", "maxLength": 64},
+                        "state": {"type": "string", "enum": ["active", "terminal"]},
+                        "recovery_state": {"type": "string", "maxLength": 64},
+                        "recovery_reason_code": {"type": "string", "maxLength": 128},
+                        "outcome": {"type": "string", "enum": ["passed", "failed", "timed_out", "cancelled"]},
+                        "exit_code": nullable_schema("integer", "Terminal process exit code when known."),
+                        "command_ok": nullable_schema("boolean", "Whether the underlying command completed successfully; validation proof remains under validation."),
+                        "validation": validation,
+                        "details": details
+                    },
+                    "required": ["job_id", "tool", "status", "state"]
+                }
+            }
+        },
+        "required": ["changed", "items"]
+    })
+}
+
+fn add_optional_output_property(schema: &mut Value, name: &str, property_schema: &Value) {
+    if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+        properties
+            .entry(name.to_string())
+            .or_insert_with(|| property_schema.clone());
+    } else if schema.get("additionalProperties").and_then(Value::as_bool) == Some(false) {
+        let mut properties = Map::new();
+        properties.insert(name.to_string(), property_schema.clone());
+        schema["properties"] = Value::Object(properties);
+    }
+    for keyword in ["anyOf", "oneOf", "allOf"] {
+        if let Some(branches) = schema.get_mut(keyword).and_then(Value::as_array_mut) {
+            for branch in branches {
+                add_optional_output_property(branch, name, property_schema);
+            }
+        }
+    }
+    for keyword in ["then", "else"] {
+        if let Some(branch) = schema.get_mut(keyword) {
+            add_optional_output_property(branch, name, property_schema);
+        }
+    }
+}
+
+pub(super) fn add_passive_job_attention_to_envelope(schema: &mut Value) {
+    let attention = passive_job_attention_schema();
+    add_passive_job_attention_to_envelope_with_schema(schema, &attention);
+}
+
+fn add_passive_job_attention_to_envelope_with_schema(schema: &mut Value, attention: &Value) {
+    if let Some(output) = schema
+        .get_mut("properties")
+        .and_then(Value::as_object_mut)
+        .and_then(|properties| properties.get_mut("output"))
+    {
+        add_optional_output_property(output, "job_attention", attention);
+    }
+    for keyword in ["anyOf", "oneOf", "allOf"] {
+        if let Some(branches) = schema.get_mut(keyword).and_then(Value::as_array_mut) {
+            for branch in branches {
+                add_passive_job_attention_to_envelope_with_schema(branch, attention);
+            }
+        }
+    }
+    for keyword in ["then", "else"] {
+        if let Some(branch) = schema.get_mut(keyword) {
+            add_passive_job_attention_to_envelope_with_schema(branch, attention);
+        }
+    }
 }
 
 pub fn wrapped_output_schema(output_properties: Vec<(&str, Value)>) -> Value {

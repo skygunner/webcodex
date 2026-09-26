@@ -45,7 +45,7 @@ fn structured_execution_output(
                     "job_id": job_id.expect("promoted Job id"),
                     "after_observation_token": "observation"
                 }],
-                "wait_secs": webcodex_core::runtime_contract::MODEL_JOB_CONTINUATION_WAIT_SECS,
+                "wait_secs": webcodex_core::runtime_contract::DEFAULT_JOB_CONTINUATION_WAIT_SECS,
                 "wake_on": "terminal"
             }
         });
@@ -1139,6 +1139,7 @@ fn key_tool_output_schemas_include_expected_fields() {
             "outcome_unknown",
             "completed",
             "timed_out",
+            "pending",
             "queued",
             "running"
         ])
@@ -1583,8 +1584,13 @@ fn key_tool_output_schemas_include_expected_fields() {
             webcodex_core::runtime_contract::MAX_JOB_OBSERVATION_WAIT_SECS
         );
         assert_eq!(
-            continuation["properties"]["arguments"]["properties"]["wait_secs"]["const"],
-            webcodex_core::runtime_contract::MODEL_JOB_CONTINUATION_WAIT_SECS
+            continuation["properties"]["arguments"]["properties"]["wait_secs"]["minimum"],
+            1
+        );
+        assert!(
+            continuation["properties"]["arguments"]["properties"]["wait_secs"]
+                .get("const")
+                .is_none()
         );
         assert_eq!(
             continuation["properties"]["arguments"]["properties"]["wake_on"]["const"],
@@ -1614,12 +1620,11 @@ fn key_tool_output_schemas_include_expected_fields() {
             .as_str()
             .expect("cargo execution_state description");
         for state in [
+            "pending",
             "not_started",
             "outcome_unknown",
             "completed",
             "timed_out",
-            "queued",
-            "running",
         ] {
             assert!(
                 state_description.contains(state),
@@ -2443,6 +2448,103 @@ fn skill_recovery_output_schema_accepts_canonical_shapes_and_declares_legacy_rej
 
 fn default_output_schema_field_names() -> BTreeSet<&'static str> {
     BTreeSet::from(["session_hint", "permission", "recovery_kind"])
+}
+
+#[test]
+fn model_visible_output_schemas_admit_bounded_passive_job_attention() {
+    let attention = json!({
+        "changed": true,
+        "items": [{
+            "job_id": "wc_job_schema",
+            "tool": "cargo_test",
+            "status": "completed",
+            "state": "terminal",
+            "outcome": "passed",
+            "exit_code": 0,
+            "command_ok": true,
+            "validation": {
+                "tool": "cargo_test",
+                "kind": "test",
+                "state": "completed",
+                "passed": null,
+                "source_state": {
+                    "freshness": "unproven",
+                    "observed_mutation_fence": "unknown"
+                }
+            },
+            "details": {
+                "tool": "observe_jobs",
+                "arguments": {"items": [{"job_id": "wc_job_schema"}]}
+            }
+        }]
+    });
+    let specs = registered_tool_specs();
+    for spec in &specs {
+        let fields = output_schema_field_names(spec);
+        assert_eq!(
+            fields.contains("job_attention"),
+            runtime_tool_supports_passive_job_attention(&spec.name),
+            "{} passive-attention schema eligibility must match canonical runtime policy",
+            spec.name
+        );
+    }
+
+    let cargo_check = spec_named(&specs, "cargo_check");
+    let field = cargo_check.output_schema["properties"]["output"]["properties"]
+        .get("job_attention")
+        .expect("cargo_check must declare passive job_attention");
+    test_support::validate_schema_instance(&attention, field)
+        .expect("cargo_check passive job_attention shape must validate");
+    let pending = json!({
+        "success": true,
+        "output": {
+            "execution_state": "pending",
+            "continuation": {
+                "tool": "observe_jobs",
+                "arguments": {
+                    "items": [{"job_id": "wc_job_pending", "after_observation_token": "wj3_AAAAAAAAAAAAAAAAAAAAAA.1.0.0"}],
+                    "wait_secs": 5,
+                    "wake_on": "terminal"
+                }
+            },
+            "job_attention": attention
+        },
+        "error": null
+    });
+    test_support::validate_schema_instance(&pending, &cargo_check.output_schema)
+        .expect("strict cargo_check output must admit the generic passive sidecar");
+}
+
+#[test]
+fn passive_failure_diagnostics_schema_rejects_overflow_and_private_fields() {
+    let schema = output_schema_for_tool("cargo_check");
+    let field = &schema["properties"]["output"]["properties"]["job_attention"]["properties"]
+        ["items"]["items"]["properties"]["validation"]["properties"]["diagnostics"];
+    let safe = json!({"available": true, "diagnostic_count": 1,
+        "diagnostics": [{"severity": "error", "code": "E0308", "file": "src/foo.rs", "line": 123, "column": 9, "message": "expected X, found Y"}],
+        "returned_diagnostic_count": 1, "diagnostics_truncated": false,
+        "failed_test_details": [], "failed_test_details_truncated": false});
+    test_support::validate_schema_instance(&safe, field).unwrap();
+    let mut overflow = safe.clone();
+    overflow["diagnostics"] = json!(vec![safe["diagnostics"][0].clone(); 4]);
+    assert!(test_support::validate_schema_instance(&overflow, field).is_err());
+    for key in [
+        "stdout",
+        "stderr",
+        "command",
+        "argv",
+        "cwd",
+        "env",
+        "observation_token",
+        "provider_payload",
+    ] {
+        let mut leak = safe.clone();
+        leak[key] = json!("private");
+        assert!(
+            test_support::validate_schema_instance(&leak, field).is_err(),
+            "{key}"
+        );
+    }
 }
 
 #[test]

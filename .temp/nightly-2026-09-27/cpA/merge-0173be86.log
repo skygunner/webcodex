@@ -1,0 +1,10 @@
+Merge made by the 'ort' strategy.
+ crates/webcodex-core/src/runner_protocol.rs     |   4 +-
+ crates/webcodex-core/src/runner_protocol/job.rs |  12 +-
+ crates/webcodex-validation/src/adapters/go.rs   |  31 ++-
+ crates/webcodex-validation/src/adapters/mod.rs  |  70 ++++-
+ crates/webcodex-validation/src/adapters/rust.rs | 103 +++++---
+ crates/webcodex-validation/src/lib.rs           |   4 +-
+ crates/webcodex-validation/src/profile_tests.rs |  26 ++
+ src/tool_runtime/cargo.rs                       | 328 +++++++-----------------
+ 8 files changed, 284 insertions(+), 294 deletions(-)

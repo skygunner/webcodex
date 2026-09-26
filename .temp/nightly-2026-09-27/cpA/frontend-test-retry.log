@@ -1,0 +1,33 @@
+npm notice run npx
+npm notice run 'vitest' run --config vitest.config.ts
+
+ RUN  v4.0.18 /home/vincenty/Projects/webcodex-nightly-2026-09-27/frontend
+
+ ✓ test-v2/admin_mutation_controller.test.ts (4 tests) 3ms
+ ✓ test-v2/admin_model.test.ts (2 tests) 3ms
+ ✓ test-v2/project-presentation.test.ts (2 tests) 5ms
+ ✓ test-v2/accent.test.ts (2 tests) 5ms
+ ✓ test-v2/work-projection.test.ts (8 tests) 12ms
+ ✓ test-v2/admin_mutation_view.test.ts (7 tests) 9ms
+ ✓ test-v2/admin_controller.test.ts (13 tests) 10ms
+ ✓ test-v2/shared-contracts.test.ts (4 tests) 5ms
+ ✓ test-v2/project_picker.test.tsx (4 tests) 280ms
+ ✓ test-v2/session-communication.test.tsx (10 tests) 595ms
+ ✓ test-v2/goal-workbench.test.tsx (2 tests) 435ms
+ ✓ test-v2/window-collaboration.test.tsx (15 tests) 727ms
+ ✓ test-v2/agents-workbench.test.tsx (5 tests) 527ms
+   ✓ puts the inbox first, keeps global conversations separate and sends human messages to the chosen conversation  343ms
+ ✓ test-v2/window-first-work.test.tsx (5 tests) 508ms
+ ✓ test-v2/relations.test.tsx (10 tests) 705ms
+ ✓ test-v2/runtime-state.test.tsx (14 tests) 1072ms
+ ✓ test-v2/navigation.test.tsx (11 tests) 1116ms
+     ✓ keeps Work / Projects / Runtime as the only primary destinations  436ms
+ ✓ test-v2/admin_app.test.tsx (5 tests) 1414ms
+   ✓ Admin React dialog retries an uncertain mutation with the same idempotency key  508ms
+   ✓ Admin can authorize a fresh mutation after an in-flight mutation loses authorization  482ms
+
+ Test Files  18 passed (18)
+      Tests  123 passed (123)
+   Start at  04:58:32
+   Duration  2.25s (transform 1.53s, setup 1.09s, import 4.22s, tests 7.43s, environment 5.96s)
+

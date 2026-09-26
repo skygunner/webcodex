@@ -235,6 +235,25 @@ fn check_session_message_resolution_scope(
 }
 
 impl ToolRuntime {
+    #[cfg(feature = "experimental-code-mode")]
+    pub(crate) fn call_tool_with_context_and_return_timing<'a>(
+        &'a self,
+        request: ToolCallRequest,
+        context: ToolCallContext<'a>,
+        return_timing: super::return_timing::ToolReturnTimingPolicy,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            self.call_tool_with_invocation_metadata_and_return_timing(
+                request,
+                context,
+                ToolInvocationMetadata::default(),
+                ToolProtocolCapabilities::default(),
+                return_timing,
+            )
+            .await
+        })
+    }
+
     pub(crate) fn call_tool_with_context<'a>(
         &'a self,
         request: ToolCallRequest,
@@ -303,14 +322,32 @@ impl ToolRuntime {
         &'a self,
         request: ToolCallRequest,
         context: ToolCallContext<'a>,
+        invocation_metadata: ToolInvocationMetadata,
+        capabilities: ToolProtocolCapabilities,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallOutcome> + Send + 'a>> {
+        self.call_tool_with_invocation_metadata_and_return_timing(
+            request,
+            context,
+            invocation_metadata,
+            capabilities,
+            super::return_timing::ToolReturnTimingPolicy::unconstrained(),
+        )
+    }
+
+    fn call_tool_with_invocation_metadata_and_return_timing<'a>(
+        &'a self,
+        request: ToolCallRequest,
+        context: ToolCallContext<'a>,
         mut invocation_metadata: ToolInvocationMetadata,
         capabilities: ToolProtocolCapabilities,
+        return_timing: super::return_timing::ToolReturnTimingPolicy,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallOutcome> + Send + 'a>> {
         // MCP enters the kernel here directly rather than through
         // call_tool_with_context, so give it the same bounded adapter future.
         Box::pin(async move {
             let telemetry =
                 ModelErgonomicsTimer::start_with_arguments(&request.tool_name, &request.arguments);
+            let tool_name = request.tool_name.clone();
             let mut control = invocation_metadata
                 .control
                 .take()
@@ -321,6 +358,7 @@ impl ToolRuntime {
                     context,
                     invocation_metadata,
                     capabilities,
+                    return_timing,
                     &mut control,
                 )
                 .await;
@@ -328,6 +366,17 @@ impl ToolRuntime {
                 control.decorate(&mut outcome);
             }
             outcome.model_ergonomics = telemetry.map(ModelErgonomicsTimer::finish);
+            if let (Some(completion), Some(result)) =
+                (&mut outcome.model_ergonomics, &outcome.result)
+            {
+                completion.job_convergence = self.job_convergence_record(
+                    &tool_name,
+                    result,
+                    &outcome.correlation,
+                    context.auth,
+                    context.window,
+                );
+            }
             outcome
         })
     }
@@ -338,6 +387,7 @@ impl ToolRuntime {
         context: ToolCallContext<'_>,
         invocation_metadata: ToolInvocationMetadata,
         capabilities: ToolProtocolCapabilities,
+        return_timing: super::return_timing::ToolReturnTimingPolicy,
         control: &mut Option<super::control_sidecar::ControlExecution>,
     ) -> ToolCallOutcome {
         if let Some(control) = control.as_ref() {
@@ -999,6 +1049,7 @@ impl ToolRuntime {
                     memory_surface: capabilities.memory_surface,
                 },
                 capabilities,
+                return_timing,
             )
             .await;
         if result.success {

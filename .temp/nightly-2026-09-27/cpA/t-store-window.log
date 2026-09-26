@@ -1,0 +1,40 @@
+   Compiling syn v2.0.117
+   Compiling getrandom v0.4.2
+   Compiling cc v1.2.62
+   Compiling num-traits v0.2.19
+   Compiling getrandom v0.3.4
+   Compiling tracing-core v0.1.36
+   Compiling serde_json v1.0.150
+   Compiling tokio v1.52.3
+   Compiling smallvec v1.15.1
+   Compiling tempfile v3.27.0
+   Compiling uuid v1.23.1
+   Compiling libsqlite3-sys v0.30.1
+   Compiling serde_derive v1.0.228
+   Compiling tracing-attributes v0.1.31
+   Compiling tracing v0.1.44
+   Compiling serde v1.0.228
+   Compiling serde_norway v0.9.42
+   Compiling schemars v1.2.2
+   Compiling chrono v0.4.44
+   Compiling webcodex-core v0.4.3 (/home/vincenty/Projects/webcodex-nightly-2026-09-27/crates/webcodex-core)
+   Compiling rusqlite v0.32.1
+   Compiling webcodex-store v0.4.3 (/home/vincenty/Projects/webcodex-nightly-2026-09-27/crates/webcodex-store)
+    Finished `test` profile [unoptimized] target(s) in 9.95s
+     Running unittests src/lib.rs (target/debug/deps/webcodex_store-c1b9f64b449ad339)
+
+running 10 tests
+test communication_tests::mcp_app_endpoint_recovery_replay_respects_retired_window_continuity ... ok
+test window_activity::tests::window_activity_projects_safe_job_identity_from_audit_ids ... ok
+test window_activity::tests::window_session_queries_are_many_to_many_and_principal_bounded ... ok
+test communication_tests::expired_mcp_app_endpoint_recovery_is_concurrent_idempotent_and_window_fenced ... ok
+test agent_task_tests::consumed_endpoint_active_turn_proof_renews_repeated_bounded_windows ... ok
+test schema::action_event_window_migration_tests::code_mode_observability_views_flatten_current_and_historical_rows ... ok
+test window_collaboration_tests::operator_durability_replay_identity_isolation_and_read_only_history ... ok
+test agent_task_tests::coding_run_binding_survives_restart_without_endpoint_or_window_state ... ok
+test schema::action_event_window_migration_tests::legacy_action_events_upgrade_additively_and_remain_readable ... ok
+test window_collaboration_tests::window_transcript_merges_both_peer_directions_with_operator_context_and_bounds_retention ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 214 filtered out; finished in 0.23s
+
+EXIT=0

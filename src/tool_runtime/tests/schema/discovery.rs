@@ -1822,6 +1822,18 @@ async fn code_mode_exact_manifest_projects_canonical_stage_callable_contracts() 
             projection["constraints"]["validation_after_successful_known_mutation"],
             policy.validation_after_mutation
         );
+        assert!(
+            projection["constraints"]
+                .get("nested_sync_wait_max_secs")
+                .is_none(),
+            "{entry_tool} must not expose internal return timing"
+        );
+        assert!(
+            !projection["examples"]
+                .to_string()
+                .contains("sync_wait_secs"),
+            "{entry_tool} examples must not teach hidden compatibility timing"
+        );
         let projected_names = projection["tools"]
             .as_array()
             .expect("projected callable tools")
@@ -1840,6 +1852,10 @@ async fn code_mode_exact_manifest_projects_canonical_stage_callable_contracts() 
             let input_properties = input["properties"]
                 .as_object()
                 .unwrap_or_else(|| panic!("{tool_name} projected input properties"));
+            assert!(
+                !input_properties.contains_key("sync_wait_secs"),
+                "{tool_name} callable projection must keep legacy sync_wait_secs hidden"
+            );
             assert!(
                 input_properties
                     .keys()
@@ -1865,6 +1881,12 @@ async fn code_mode_exact_manifest_projects_canonical_stage_callable_contracts() 
                     <= crate::tool_runtime::surface::CODE_MODE_OUTPUT_FIELDS_PER_TOOL_MAX,
                 "{tool_name} output projection exceeded its per-tool field bound: {}",
                 output_fields.len()
+            );
+            assert!(
+                output_fields.iter().all(|field| field
+                    .as_str()
+                    .is_none_or(|field| !field.contains("job_attention"))),
+                "{tool_name} nested callable projection must not advertise outer-only job_attention"
             );
             assert_eq!(
                 input["additionalProperties"], canonical.input_schema["additionalProperties"],
@@ -2079,13 +2101,12 @@ async fn tool_manifest_exact_tool_returns_input_contract_without_output_schema()
     assert!(contract["description"].as_str().is_some());
     assert_eq!(contract["input_schema"]["type"], "object");
     assert!(contract["input_schema"]["properties"]["package"].is_object());
-    let sync_wait = &contract["input_schema"]["properties"]["sync_wait_secs"];
-    assert_eq!(sync_wait["type"], "integer");
-    assert_eq!(sync_wait["minimum"], 1);
-    assert!(sync_wait.get("maximum").is_none());
-    assert!(sync_wait["description"]
-        .as_str()
-        .is_some_and(|description| description.to_ascii_lowercase().contains("clamp")));
+    assert!(
+        contract["input_schema"]["properties"]
+            .get("sync_wait_secs")
+            .is_none(),
+        "tool_manifest must not re-expose legacy sync_wait_secs tuning"
+    );
     assert!(contract["annotations"].is_object());
     let specs = registered_tool_specs();
     let manifest_spec = spec_named(&specs, "tool_manifest");

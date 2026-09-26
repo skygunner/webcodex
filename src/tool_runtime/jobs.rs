@@ -1,7 +1,7 @@
 use serde_json::{json, Value};
 use webcodex_core::runner_job_lifecycle::RunnerJobLifecycle;
 use webcodex_core::runtime_contract::{
-    MAX_JOB_OBSERVATION_WAIT_SECS, MODEL_JOB_CONTINUATION_WAIT_SECS,
+    DEFAULT_JOB_CONTINUATION_WAIT_SECS, MAX_JOB_OBSERVATION_WAIT_SECS,
 };
 use webcodex_core::workflow_session_contract::is_validation_like_execution_purpose;
 
@@ -844,6 +844,103 @@ impl ToolRuntime {
         summary
     }
 
+    pub(crate) fn passive_job_validation_projection(
+        &self,
+        job: &ShellJobInfo,
+        output: Option<&webcodex_runner_registry::JobValidationOutput>,
+    ) -> Option<Value> {
+        let metadata = job.validation.as_ref();
+        let generic_validation = job
+            .structured_execution
+            .as_ref()
+            .and_then(|metadata| metadata.validation_identity.as_deref())
+            .is_some()
+            && job
+                .purpose
+                .as_deref()
+                .is_some_and(is_validation_like_execution_purpose);
+        if metadata.is_none() && !generic_validation {
+            return None;
+        }
+
+        let tool = metadata
+            .map(|metadata| metadata.tool.as_str())
+            .or_else(|| {
+                job.structured_execution
+                    .as_ref()
+                    .and_then(|metadata| metadata.validation_tool.as_deref())
+            })
+            .unwrap_or_else(|| {
+                job.structured_execution
+                    .as_ref()
+                    .map(|metadata| metadata.execution_source.as_str())
+                    .unwrap_or(job.kind.as_str())
+            });
+        let kind = metadata
+            .map(|metadata| metadata.kind.as_str())
+            .or_else(|| {
+                super::validation_profile::validation_adapter_for_tool(tool)
+                    .map(|adapter| adapter.validation_kind())
+            })
+            .or(job.purpose.as_deref());
+        let mut validation = validation_job_projection_with_policy(
+            Some(tool),
+            kind,
+            &job.status,
+            job.exit_code.map(i64::from),
+            output.map(|output| output.stdout.as_str()).unwrap_or(""),
+            output.map(|output| output.stderr.as_str()).unwrap_or(""),
+            output.is_none_or(|output| output.truncated),
+            job.test_count_evidence.as_ref(),
+            metadata.and_then(|metadata| metadata.minimum_tests),
+            metadata.and_then(|metadata| metadata.require_tests),
+            metadata.and_then(|metadata| metadata.no_run),
+        )?;
+        // Preserve negative test-count assertions. Exit zero alone cannot turn
+        // incomplete parser/Runner evidence into a proven validation pass.
+        if validation["passed"] == true
+            && kind == Some("test")
+            && metadata.and_then(|metadata| metadata.no_run) != Some(true)
+            && validation["tests_run_count"].is_null()
+        {
+            validation["passed"] = Value::Null;
+        }
+        let diagnostics = validation.as_object_mut()?.remove("diagnostics");
+        if validation["passed"] != true {
+            if let Some(diagnostics) = diagnostics {
+                validation["diagnostics"] =
+                    super::job_attention::bounded_failure_diagnostics(diagnostics);
+            }
+        }
+        for field in [
+            "warnings_count",
+            "errors_count",
+            "tests_passed",
+            "tests_failed",
+            "truncated",
+        ] {
+            validation.as_object_mut()?.remove(field);
+        }
+        if let Some(target_id) =
+            metadata.and_then(|metadata| metadata.validation_target_id.as_deref())
+        {
+            validation["validation_target_id"] = json!(target_id);
+        }
+
+        let source_state = match job.project_id.as_deref().filter(|value| !value.is_empty()) {
+            Some(project) => self.validation_sources.observe(
+                project,
+                metadata.and_then(|metadata| metadata.source_fence.as_ref()),
+            ),
+            None => webcodex_core::validation_source::ValidationSourceState::default(),
+        };
+        validation["source_state"] = json!({
+            "freshness": source_state.freshness,
+            "observed_mutation_fence": source_state.observed_mutation_fence,
+        });
+        Some(validation)
+    }
+
     #[cfg(test)]
     pub(crate) fn model_job_summary_value_for_test(&self, job: &ShellJobInfo) -> Value {
         self.model_job_summary_value(job)
@@ -867,15 +964,27 @@ pub(crate) fn observe_job_continuation(job_id: &str, observation_token: Option<&
         "observe_jobs",
         json!({
             "items": [item],
-            "wait_secs": MODEL_JOB_CONTINUATION_WAIT_SECS,
+            "wait_secs": DEFAULT_JOB_CONTINUATION_WAIT_SECS,
             "wake_on": "terminal",
         }),
     )
     .to_value()
 }
 
-/// Keep the internal handoff receipt intact for recording, then project the
-/// exact observe call as the sole observation-token carrier on normal handoff.
+pub(crate) fn observe_job_details_call(job_id: &str) -> Value {
+    super::SuggestedToolCall::new(
+        "observe_jobs",
+        json!({
+            "items": [{"job_id": job_id}],
+        }),
+    )
+    .to_value()
+}
+
+/// Keep the internal handoff receipt intact for recording, then collapse a
+/// normal successful same-execution handoff to one generic pending marker plus
+/// its exact fallback continuation. The continuation retains durable identity;
+/// Job lifecycle/bookkeeping stays in canonical Session/registry state.
 pub(super) fn sparsify_job_handoff_model_result(result: &mut ToolResult) {
     if !result.success {
         return;
@@ -904,18 +1013,10 @@ pub(super) fn sparsify_job_handoff_model_result(result: &mut ToolResult) {
     if call["arguments"]["items"][0]["after_observation_token"].as_str() != token {
         return;
     }
-    output.remove("observation_token");
-    output.remove("continuation_semantics");
-    if output.get("promoted_to_job").and_then(Value::as_bool) == Some(true) {
-        output.remove("promoted_to_job");
-    }
-    if output
-        .get("async_handoff_available")
-        .and_then(Value::as_bool)
-        == Some(true)
-    {
-        output.remove("async_handoff_available");
-    }
+    let continuation = call.clone();
+    output.clear();
+    output.insert("execution_state".to_string(), json!("pending"));
+    output.insert("continuation".to_string(), continuation);
 }
 
 fn list_jobs_recovery_suggested_call(project: Option<&str>) -> Value {

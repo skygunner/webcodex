@@ -2234,7 +2234,9 @@ fn observe_jobs_canonical_continuation_is_parser_ready_with_or_without_baseline(
         assert!(matches!(
             parsed,
             ToolCall::ObserveJobs {
-                wait_secs: Some(webcodex_core::runtime_contract::MODEL_JOB_CONTINUATION_WAIT_SECS),
+                wait_secs: Some(
+                    webcodex_core::runtime_contract::DEFAULT_JOB_CONTINUATION_WAIT_SECS
+                ),
                 wake_on: ObserveJobsWakeOn::Terminal,
 
                 summary_only: false,
@@ -2415,7 +2417,7 @@ async fn observe_jobs_generic_failed_test_identity_survives_small_model_tail() {
         let request = wait_for_patch_agent_request(&runtime, client).await;
         let handoff = task.await.unwrap();
         assert!(handoff.success, "{handoff:?}");
-        let job = handoff.output["job_id"].as_str().unwrap();
+        let job = assert_sparse_pending_job_handoff(&handoff.output);
         let stdout = "running 1 test\ntest cases::outside_tail ... FAILED\n".to_string()
             + &"retained diagnostic padding\n".repeat(400)
             + "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.1s\n";

@@ -1,0 +1,26 @@
+    Finished `test` profile [unoptimized] target(s) in 0.12s
+     Running unittests src/lib.rs (target/debug/deps/webcodex-6d8eb26a05169913)
+
+running 12 tests
+test tool_runtime::peer_collaboration::keyed_peer_persistence_error_projects_outcome_unknown_retry_same ... ok
+test tool_runtime::tests::peer_collaboration::ordinary_peer_message_is_projected_once_on_the_next_tool_result ... ok
+test tool_runtime::tests::peer_collaboration::peer_message_input_is_trimmed_deduplicated_and_empty_rejected ... ok
+test tool_runtime::tests::peer_collaboration::oversized_result_rolls_back_one_shot_peer_projection ... ok
+test tool_runtime::tests::peer_collaboration::peer_route_requires_retained_discovery_or_message_state ... ok
+test tool_runtime::tests::peer_collaboration::peer_identity_is_principal_scoped_and_does_not_cross_subjects ... ok
+test tool_runtime::tests::peer_collaboration::specialized_mcp_structured_content_receives_peer_projection_without_rewrapping ... ok
+test tool_runtime::tests::peer_collaboration::operator_attention_only_model_activity_consumes_and_acknowledges ... ok
+test tool_runtime::tests::peer_collaboration::peer_discovery_is_same_project_but_contact_survives_project_change ... ok
+test tool_runtime::tests::peer_collaboration::ack_required_peer_message_repeats_on_omission_and_current_ack_suppresses_it ... ok
+test tool_runtime::tests::peer_collaboration::newly_unprojected_message_is_not_starved_by_old_ack_reminders ... ok
+test tool_runtime::tests::peer_collaboration::control_communication_peer_message_uses_canonical_replay_path ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 2936 filtered out; finished in 0.10s
+
+     Running unittests src/bin/webcodex-server.rs (target/debug/deps/webcodex_server-cacb6d6d7bff816a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+EXIT=0

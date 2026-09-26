@@ -526,12 +526,10 @@ impl ModelFacingProjectionPlan {
             | ToolCall::ReadAgentWait { .. }
             | ToolCall::CancelAgentWait { .. } => ModelFacingProjection::AgentWait,
             ToolCall::ApplyTextEdits { .. } => ModelFacingProjection::ApplyTextEdits,
-            ToolCall::RunJob { .. }
-            | ToolCall::RunProcess { .. }
+            ToolCall::RunProcess { .. }
             | ToolCall::RunSkillResource { .. }
             | ToolCall::RunScript { .. }
             | ToolCall::RunShell { .. }
-            | ToolCall::RunDetachedProcess { .. }
             | ToolCall::CargoFmt { .. }
             | ToolCall::CargoCheck { .. }
             | ToolCall::CargoTest { .. }
@@ -1195,6 +1193,7 @@ impl ToolRuntime {
             context_request,
             material_capabilities,
             super::kernel::ToolProtocolCapabilities::default(),
+            super::return_timing::ToolReturnTimingPolicy::unconstrained(),
         )
         .await;
         projection.project(&mut result);
@@ -1226,6 +1225,7 @@ impl ToolRuntime {
         context_request: Vec<String>,
         material_capabilities: super::context_projection::ContextMaterialCapabilities,
         protocol_capabilities: super::kernel::ToolProtocolCapabilities,
+        return_timing: super::return_timing::ToolReturnTimingPolicy,
     ) -> (
         ToolResult,
         ModelFacingProjectionPlan,
@@ -1251,10 +1251,12 @@ impl ToolRuntime {
                 context_request.clone(),
                 material_capabilities,
                 protocol_capabilities,
+                return_timing,
                 &mut correlation,
                 &mut result_projection,
             )
             .await;
+        super::mcp_timing::normalize_result_timing(&mut result, transport, self.mcp_host_policy);
         // Early project/session/auth failures can return before the normal
         add_run_process_expectation_projection(
             immediate_tool_name,
@@ -1396,11 +1398,20 @@ impl ToolRuntime {
         context_request: Vec<String>,
         material_capabilities: super::context_projection::ContextMaterialCapabilities,
         protocol_capabilities: super::kernel::ToolProtocolCapabilities,
+        return_timing: super::return_timing::ToolReturnTimingPolicy,
         correlation: &mut super::window_activity::ToolCallCorrelation,
         result_projection: &mut ModelFacingProjectionPlan,
     ) -> ToolResult {
         call = call
             .with_coding_agent_recording_session_id(recorder_metadata.recording_session_id.clone());
+        let effective_return_timing = return_timing.intersect(
+            super::mcp_timing::return_timing_policy(transport, self.mcp_host_policy),
+        );
+        super::mcp_timing::normalize_observation_call_timing(
+            &mut call,
+            transport,
+            self.mcp_host_policy,
+        );
         if let ToolCall::PluginTool(plugin) = call {
             return match crate::plugin_gateway::invoke(
                 self,
@@ -1670,6 +1681,15 @@ impl ToolRuntime {
                     _ => "run_process_bash_c_to_run_shell",
                 }
             });
+        }
+        // Apply return-latency policy only after Session execution context and
+        // exact shell recovery have resolved whether this call can use the
+        // Runner-owned durable handoff path. Named SSH run_shell is intentionally
+        // direct-only: an omitted legacy sync_wait_secs must stay omitted, while
+        // an explicitly supplied legacy value is still rejected by the SSH
+        // execution contract below.
+        if ssh_resource.is_none() {
+            super::return_timing::normalize_structured_handoff(&mut call, effective_return_timing);
         }
         if let Some(session_id) = session_id.as_deref() {
             // Lifecycle denial is orthogonal to mode/guards and wins first.

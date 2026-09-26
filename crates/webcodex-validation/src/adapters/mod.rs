@@ -3,6 +3,8 @@
 mod go;
 mod rust;
 
+use webcodex_core::runner_protocol::ShellJobValidationStep;
+use webcodex_core::shell_quote::shell_escape_simple;
 use webcodex_core::validation_evidence::ValidationDiagnostics;
 use webcodex_core::workflow_session_contract::ExecutionPurpose;
 
@@ -24,6 +26,64 @@ pub struct ValidationCommandOptions {
     pub go_packages: Option<Vec<String>>,
 }
 
+/// Adapter-owned, read-only validation plan.
+///
+/// `structured_step` is the canonical execution representation. The command
+/// string is only the compatibility projection required by the existing
+/// synchronous capture path; it is derived from the same typed arguments and
+/// must never be parsed back into execution authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadOnlyValidationPlan {
+    pub compatibility_command: String,
+    pub structured_step: ShellJobValidationStep,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ValidationPlanArg {
+    Literal(&'static str),
+    Value(String),
+}
+
+impl ValidationPlanArg {
+    fn raw(&self) -> String {
+        match self {
+            Self::Literal(value) => (*value).to_string(),
+            Self::Value(value) => value.clone(),
+        }
+    }
+
+    fn rendered(&self) -> String {
+        match self {
+            Self::Literal(value) => (*value).to_string(),
+            Self::Value(value) => shell_escape_simple(value),
+        }
+    }
+}
+
+pub(super) fn read_only_validation_plan(
+    name: &'static str,
+    program: &'static str,
+    args: Vec<ValidationPlanArg>,
+) -> Result<ReadOnlyValidationPlan, String> {
+    let structured_step = ShellJobValidationStep {
+        name: name.to_string(),
+        program: program.to_string(),
+        args: args.iter().map(ValidationPlanArg::raw).collect(),
+        env: Vec::new(),
+    };
+    if !structured_step.is_canonical() {
+        return Err("structured validation step is not canonical".to_string());
+    }
+    let compatibility_command = std::iter::once(program.to_string())
+        .chain(args.iter().map(ValidationPlanArg::rendered))
+        .collect::<Vec<_>>()
+        .join(" ");
+    Ok(ReadOnlyValidationPlan {
+        compatibility_command,
+        structured_step,
+    })
+}
+
 pub struct ValidationFailureEvidence<'a> {
     pub success: bool,
     pub reported_failure_kind: Option<&'a str>,
@@ -38,7 +98,15 @@ pub trait ValidationAdapter: Sync {
 
     fn tool_identity(&self) -> &'static str;
 
-    fn build_command(&self, options: ValidationCommandOptions) -> Result<String, String>;
+    fn build_readonly_plan(
+        &self,
+        options: ValidationCommandOptions,
+    ) -> Result<ReadOnlyValidationPlan, String>;
+
+    fn build_command(&self, options: ValidationCommandOptions) -> Result<String, String> {
+        self.build_readonly_plan(options)
+            .map(|plan| plan.compatibility_command)
+    }
 
     fn parse(
         &self,

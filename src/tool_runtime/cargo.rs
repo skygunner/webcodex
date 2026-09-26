@@ -998,8 +998,8 @@ impl ToolRuntime {
             no_run: request.no_run,
             go_packages: request.go_packages,
         };
-        let command = match adapter.build_command(options.clone()) {
-            Ok(command) => command,
+        let plan = match adapter.build_readonly_plan(options.clone()) {
+            Ok(plan) => plan,
             Err(e) => {
                 return ToolResult::err(command_rejected_message(
                     e,
@@ -1011,6 +1011,8 @@ impl ToolRuntime {
                 ))
             }
         };
+        let command = plan.compatibility_command;
+        let step = plan.structured_step;
         let requires_multi_package_cargo_check = tool_name == "cargo_check"
             && crate::runner_protocol::normalize_cargo_packages(
                 options.package.as_deref(),
@@ -1083,7 +1085,7 @@ impl ToolRuntime {
                 cwd.as_deref(),
                 &command,
                 adapter,
-                options,
+                step,
                 purpose,
                 timeout_secs,
                 sync_wait_secs,
@@ -1157,7 +1159,7 @@ impl ToolRuntime {
         cwd: Option<&str>,
         command: &str,
         adapter: &'static dyn ValidationAdapter,
-        options: ValidationCommandOptions,
+        step: ShellJobValidationStep,
         purpose: ExecutionPurpose,
         timeout_secs: u64,
         sync_wait_secs: u64,
@@ -1183,19 +1185,9 @@ impl ToolRuntime {
         let resolved_cwd = super::helpers::project_relative_runner_cwd(config, &effective_cwd)
             .unwrap_or_else(|_| ".".to_string());
         let actual_shell = "configured";
-        // The validation step is derived from the same options the tool would
-        // have run synchronously, so the promoted Job executes the identical
-        // command (not a re-constructed string). Passing the step in the job
-        // metadata makes the request kind `start_validation_job`, so the
-        // Runner runs the cargo program+argv directly (never the raw command
-        // through a shell).
-        let step = validation_step(tool_name, &options);
-        let Ok(step) = step else {
-            return ToolResult::err(command_rejected_message(
-                "could not encode structured validation step",
-                "fix the structured validation argument format, then retry.",
-            ));
-        };
+        // The adapter owns the canonical read-only execution plan. The same
+        // structured step that produced the compatibility command text is
+        // carried into the Job, so sync and promoted paths cannot drift.
         let dispatched_command = match serde_json::to_string(std::slice::from_ref(&step)) {
             Ok(command) => command,
             Err(_) => {
@@ -1816,117 +1808,6 @@ fn validation_handoff_failure_result(
     result
 }
 
-/// Build the canonical structured validation step for a read-only validation tool
-/// from the same options the synchronous adapter would have used.
-fn validation_step(
-    tool_name: &str,
-    options: &ValidationCommandOptions,
-) -> Result<ShellJobValidationStep, String> {
-    if tool_name != "go_test" && options.go_packages.is_some() {
-        return Err("only go_test accepts Go package patterns".to_string());
-    }
-    let (name, program, args) = match tool_name {
-        "cargo_fmt" => (
-            "format",
-            "cargo",
-            vec!["fmt".to_string(), "--".to_string(), "--check".to_string()],
-        ),
-        "cargo_check" => {
-            let packages = crate::runner_protocol::normalize_cargo_packages(
-                options.package.as_deref(),
-                options.cargo_packages.as_deref(),
-            )
-            .map_err(|reason| format!("packages {reason}"))?;
-            let mut args = vec!["check".to_string()];
-            if options.all_targets.unwrap_or(true) {
-                args.push("--all-targets".to_string());
-            }
-            if options.all_features.unwrap_or(false) {
-                args.push("--all-features".to_string());
-            }
-            if options.no_default_features.unwrap_or(false) {
-                args.push("--no-default-features".to_string());
-            }
-            push_paired_arg(&mut args, "--features", options.features.as_deref())?;
-            for package in packages.into_iter().flatten() {
-                push_paired_arg(&mut args, "-p", Some(&package))?;
-            }
-            ("check", "cargo", args)
-        }
-        "cargo_test" => {
-            if options.cargo_packages.is_some() {
-                return Err("cargo_test does not accept cargo_check packages".to_string());
-            }
-            let mut args = vec!["test".to_string()];
-            if let Some(filter) = options.filter.as_deref() {
-                // Whitespace-only filter means "no filter", matching the
-                // synchronous path. Option-like filters are rejected by the
-                // shared filter contract before any argv is built.
-                if let Some(normalized) =
-                    crate::runner_protocol::normalize_rust_test_filter(filter)?
-                {
-                    args.push(normalized);
-                }
-            }
-            if options.lib.unwrap_or(false) {
-                args.push("--lib".to_string());
-            }
-            if options.all_targets.unwrap_or(false) {
-                args.push("--all-targets".to_string());
-            }
-            if options.all_features.unwrap_or(false) {
-                args.push("--all-features".to_string());
-            }
-            if options.no_default_features.unwrap_or(false) {
-                args.push("--no-default-features".to_string());
-            }
-            push_paired_arg(&mut args, "--features", options.features.as_deref())?;
-            push_paired_arg(&mut args, "-p", options.package.as_deref())?;
-            if options.no_run.unwrap_or(false) {
-                args.push("--no-run".to_string());
-            }
-            ("test", "cargo", args)
-        }
-        "go_test" => {
-            let packages =
-                crate::runner_protocol::normalize_go_test_packages(options.go_packages.as_deref())
-                    .map_err(|reason| format!("packages {reason}"))?;
-            let mut args = vec!["test".to_string(), "-json".to_string()];
-            args.extend(packages);
-            ("test", "go", args)
-        }
-        _ => return Err("unknown validation tool".to_string()),
-    };
-    let step = ShellJobValidationStep {
-        name: name.to_string(),
-        program: program.to_string(),
-        args,
-        env: Vec::new(),
-    };
-    if !step.is_canonical() {
-        return Err("structured validation step is not canonical".to_string());
-    }
-    Ok(step)
-}
-
-/// Append a value-taking Cargo flag with its already-normalized value.
-/// Normalization is the shared `normalize_cargo_value` contract (a single
-/// trim, non-empty, not `-`-prefixed, NUL/control-free, bounded), so the
-/// structured argv matches what the synchronous path would have built. Values
-/// are normalized here and written normalized into argv, never passed through
-/// raw.
-fn push_paired_arg(args: &mut Vec<String>, flag: &str, value: Option<&str>) -> Result<(), String> {
-    let Some(value) = value else {
-        return Ok(());
-    };
-    let Some(normalized) = crate::runner_protocol::normalize_cargo_value(value)? else {
-        return Ok(());
-    };
-    args.push(flag.to_string());
-    args.push(normalized);
-    Ok(())
-}
-
 fn apply_validation_projection_fields(payload: &mut Value, projection: &Value) {
     for field in [
         "passed",
@@ -2090,14 +1971,12 @@ mod structured_cargo_arg_parity_tests {
         }
     }
 
-    /// The structured Job argv builder must normalize a value-taking Cargo
-    /// argument identically to the synchronous command builder, so the same
-    /// request produces the same effective arguments no matter how long it
-    /// runs. Whitespace-padded inputs are normalized in both paths; invalid
-    /// values fail closed before any argv is produced.
+    /// One adapter-owned plan must preserve both the legacy command projection
+    /// and the canonical Job argv. Exact expected values stay independent of
+    /// the planner so a shared producer bug cannot make this test self-fulfilling.
     #[test]
-    fn job_and_sync_paths_produce_the_same_normalized_values() {
-        for (tool_name, options) in [
+    fn read_only_plan_preserves_exact_command_and_structured_argv() {
+        for (tool_name, options, expected_command, expected_args) in [
             (
                 "cargo_check",
                 ValidationCommandOptions {
@@ -2108,6 +1987,17 @@ mod structured_cargo_arg_parity_tests {
                     package: Some("  my-crate  ".to_string()),
                     ..ValidationCommandOptions::default()
                 },
+                "cargo check --all-targets --all-features --no-default-features --features 'serde' -p 'my-crate'",
+                vec![
+                    "check",
+                    "--all-targets",
+                    "--all-features",
+                    "--no-default-features",
+                    "--features",
+                    "serde",
+                    "-p",
+                    "my-crate",
+                ],
             ),
             (
                 "cargo_test",
@@ -2122,86 +2012,59 @@ mod structured_cargo_arg_parity_tests {
                     no_run: Some(true),
                     ..ValidationCommandOptions::default()
                 },
+                "cargo test 'module::nested::test' --lib --all-targets --all-features --no-default-features --features 'a  b' -p 'my-crate' --no-run",
+                vec![
+                    "test",
+                    "module::nested::test",
+                    "--lib",
+                    "--all-targets",
+                    "--all-features",
+                    "--no-default-features",
+                    "--features",
+                    "a  b",
+                    "-p",
+                    "my-crate",
+                    "--no-run",
+                ],
             ),
         ] {
-            // Sync path: build_command normalizes via the shared contract and
-            // shell-escapes. The parsed argv words after `cargo <sub>` must
-            // contain the normalized values.
             let adapter = validation_adapter_for_tool(tool_name).unwrap();
-            let sync = adapter
-                .build_command(options.clone())
-                .unwrap_or_else(|error| panic!("{tool_name} sync build: {error}"));
-            assert!(
-                sync.contains("serde") || sync.contains("a  b"),
-                "{tool_name} sync command missing normalized feature: {sync}"
+            let plan = adapter
+                .build_readonly_plan(options)
+                .unwrap_or_else(|error| panic!("{tool_name} plan build: {error}"));
+            assert_eq!(plan.compatibility_command, expected_command, "{tool_name}");
+            assert_eq!(
+                plan.structured_step.args,
+                expected_args
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>(),
+                "{tool_name}"
             );
-            assert!(sync.contains("my-crate"), "{tool_name} sync: {sync}");
-            if tool_name == "cargo_test" {
-                assert!(
-                    sync.contains("module::nested::test"),
-                    "cargo_test sync missing normalized filter: {sync}"
-                );
-                assert!(
-                    sync.contains("--lib"),
-                    "cargo_test sync missing --lib: {sync}"
-                );
-                assert!(
-                    sync.contains("--all-targets") && sync.contains("--no-run"),
-                    "cargo_test sync must preserve native lib/all-targets/no-run composition: {sync}"
-                );
-            }
-
-            // Job path: validation_step writes normalized values into the
-            // structured argv, never the raw padded strings.
-            let step = validation_step(tool_name, &options).unwrap();
-            let joined = step.args.join(" ");
-            assert!(
-                !joined.contains("  serde") && !joined.contains("serde  "),
-                "{tool_name} job argv must contain normalized feature: {joined:?}"
-            );
-            assert!(
-                joined.contains("serde") || joined.contains("a  b"),
-                "{tool_name} job argv missing feature: {joined:?}"
-            );
-            assert!(
-                !joined.contains("  my-crate") && !joined.contains("my-crate  "),
-                "{tool_name} job argv must contain normalized package: {joined:?}"
-            );
-            assert!(joined.contains("my-crate"), "{tool_name} job: {joined:?}");
-            if tool_name == "cargo_test" {
-                assert!(
-                    step.args.iter().any(|arg| arg == "module::nested::test"),
-                    "cargo_test job argv must contain the normalized filter: {joined:?}"
-                );
-                assert!(step.args.iter().any(|arg| arg == "--lib"));
-                assert!(step.args.iter().any(|arg| arg == "--all-targets"));
-                assert!(step.args.iter().any(|arg| arg == "--no-run"));
-            }
-            assert!(step.is_canonical(), "{tool_name} step must be canonical");
+            assert!(plan.structured_step.is_canonical(), "{tool_name} step must be canonical");
         }
     }
 
     #[test]
-    fn cargo_test_lib_false_and_omission_are_command_equivalent() {
+    fn cargo_test_lib_false_and_omission_share_one_plan() {
         let adapter = validation_adapter_for_tool("cargo_test").unwrap();
-        let omitted = ValidationCommandOptions::default();
-        let explicit_false = ValidationCommandOptions {
-            lib: Some(false),
-            ..ValidationCommandOptions::default()
-        };
+        let omitted = adapter
+            .build_readonly_plan(ValidationCommandOptions::default())
+            .unwrap();
+        let explicit_false = adapter
+            .build_readonly_plan(ValidationCommandOptions {
+                lib: Some(false),
+                ..ValidationCommandOptions::default()
+            })
+            .unwrap();
 
-        assert_eq!(
-            adapter.build_command(omitted.clone()).unwrap(),
-            adapter.build_command(explicit_false.clone()).unwrap()
-        );
-        let omitted_step = validation_step("cargo_test", &omitted).unwrap();
-        let false_step = validation_step("cargo_test", &explicit_false).unwrap();
-        assert_eq!(omitted_step.args, false_step.args);
-        assert!(!omitted_step.args.iter().any(|arg| arg == "--lib"));
+        assert_eq!(omitted, explicit_false);
+        assert_eq!(omitted.compatibility_command, "cargo test");
+        assert_eq!(omitted.structured_step.args, vec!["test"]);
     }
 
     #[test]
-    fn go_test_job_and_sync_paths_share_normalized_package_scope() {
+    fn go_test_read_only_plan_preserves_package_projection() {
         let options = ValidationCommandOptions {
             go_packages: Some(vec![
                 "./internal/control".to_string(),
@@ -2210,24 +2073,24 @@ mod structured_cargo_arg_parity_tests {
             ..ValidationCommandOptions::default()
         };
         let adapter = validation_adapter_for_tool("go_test").unwrap();
+        let plan = adapter.build_readonly_plan(options).unwrap();
         assert_eq!(
-            adapter.build_command(options.clone()).unwrap(),
+            plan.compatibility_command,
             "go test -json './internal/control' './internal/node'"
         );
-        let step = validation_step("go_test", &options).unwrap();
-        assert_eq!(step.name, "test");
-        assert_eq!(step.program, "go");
+        assert_eq!(plan.structured_step.name, "test");
+        assert_eq!(plan.structured_step.program, "go");
         assert_eq!(
-            step.args,
+            plan.structured_step.args,
             vec!["test", "-json", "./internal/control", "./internal/node"]
         );
-        assert!(step.env.is_empty());
-        assert!(step.is_structured_go_test_json());
-        assert!(step.is_canonical());
+        assert!(plan.structured_step.env.is_empty());
+        assert!(plan.structured_step.is_structured_go_test_json());
+        assert!(plan.structured_step.is_canonical());
     }
 
     #[test]
-    fn invalid_cargo_values_fail_closed_on_both_paths() {
+    fn invalid_cargo_values_fail_before_a_read_only_plan_exists() {
         for (tool_name, invalid) in [
             (
                 "cargo_check",
@@ -2272,23 +2135,21 @@ mod structured_cargo_arg_parity_tests {
                 },
             ),
         ] {
-            // Sync path: build_command must reject before any command string.
             let adapter = validation_adapter_for_tool(tool_name).unwrap();
             assert!(
-                adapter.build_command(invalid.clone()).is_err(),
-                "{tool_name} sync must reject {invalid:?}"
+                adapter.build_readonly_plan(invalid.clone()).is_err(),
+                "{tool_name} plan must reject {invalid:?}"
             );
-            // Job path: validation_step must reject before any argv is built.
             assert!(
-                validation_step(tool_name, &invalid).is_err(),
-                "{tool_name} job must reject {invalid:?}"
+                adapter.build_command(invalid.clone()).is_err(),
+                "{tool_name} compatibility command must reject {invalid:?}"
             );
         }
     }
 
     #[test]
-    fn whitespace_only_values_mean_option_omitted_on_both_paths() {
-        for (tool_name, options) in [
+    fn whitespace_only_values_are_omitted_from_both_plan_projections() {
+        for (tool_name, options, expected_command, expected_args) in [
             (
                 "cargo_check",
                 ValidationCommandOptions {
@@ -2296,6 +2157,8 @@ mod structured_cargo_arg_parity_tests {
                     package: Some("   ".to_string()),
                     ..ValidationCommandOptions::default()
                 },
+                "cargo check --all-targets",
+                vec!["check", "--all-targets"],
             ),
             (
                 "cargo_test",
@@ -2304,24 +2167,25 @@ mod structured_cargo_arg_parity_tests {
                     features: Some("   ".to_string()),
                     ..ValidationCommandOptions::default()
                 },
+                "cargo test",
+                vec!["test"],
             ),
         ] {
             let adapter = validation_adapter_for_tool(tool_name).unwrap();
-            let sync = adapter.build_command(options.clone()).unwrap();
-            assert!(
-                !sync.contains("--features") && !sync.contains(" -p "),
-                "{tool_name} whitespace-only values must be omitted: {sync}"
+            let plan = adapter.build_readonly_plan(options).unwrap();
+            assert_eq!(plan.compatibility_command, expected_command, "{tool_name}");
+            assert_eq!(
+                plan.structured_step.args,
+                expected_args
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>(),
+                "{tool_name}"
             );
-            let step = validation_step(tool_name, &options).unwrap();
             assert!(
-                !step
-                    .args
-                    .iter()
-                    .any(|arg| arg == "--features" || arg == "-p"),
-                "{tool_name} whitespace-only values must be omitted: {:?}",
-                step.args
+                plan.structured_step.is_canonical(),
+                "{tool_name} step must be canonical"
             );
-            assert!(step.is_canonical(), "{tool_name} step must be canonical");
         }
     }
 }

@@ -300,9 +300,9 @@ fn is_canonical_cargo_test_args(args: &[&str]) -> bool {
 }
 
 /// Normalize and validate one value-taking Cargo argument (`--features`,
-/// `-p`). This is the single shared contract used by the synchronous command
-/// builders and the structured long-Job argv builder, so a given request runs
-/// identical arguments no matter how long it takes.
+/// `-p`). This is the single shared normalization contract used by validation
+/// planning and Runner-side canonical-step validation, so command-text and
+/// structured-argv projections preserve identical argument semantics.
 ///
 /// Applies exactly one leading/trailing whitespace trim, then rejects values
 /// that are NUL/control-containing, longer than [`CARGO_VALUE_MAX_BYTES`],
@@ -523,9 +523,9 @@ fn node_script_allowed(kind: &str, script: &str) -> bool {
 
 /// Normalize and validate the single argv value that may follow `cargo test`:
 /// a libtest name substring, never a Cargo option. This is the shared contract
-/// used by the planner (`safe_rust_filter`), the synchronous command builder,
-/// and the structured long-Job argv builder, so a given filter runs identically
-/// regardless of runtime path.
+/// used by the recipe planner (`safe_rust_filter`), adapter-owned validation
+/// planning, and Runner-side canonical-step validation, so a given filter keeps
+/// identical semantics regardless of runtime path.
 ///
 /// Applies exactly one leading/trailing trim and rejects control bytes,
 /// over-long values, and anything that begins with `-` after trimming, so a

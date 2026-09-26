@@ -4669,8 +4669,8 @@ mod filter_canonical_tests {
 
     #[test]
     fn cargo_value_contract_normalizes_exactly_once_and_fails_closed() {
-        // The shared normalization contract used by both the synchronous
-        // command builders and the structured Job argv builder.
+        // The shared normalization contract used by adapter-owned validation
+        // plans and Runner-side canonical-step validation.
         assert_eq!(
             normalize_cargo_value("serde").unwrap(),
             Some("serde".to_string())

@@ -1,6 +1,8 @@
-use super::{ValidationAdapter, ValidationCommandOptions, ValidationFailureEvidence};
+use super::{
+    read_only_validation_plan, ReadOnlyValidationPlan, ValidationAdapter, ValidationCommandOptions,
+    ValidationFailureEvidence, ValidationPlanArg,
+};
 use webcodex_core::runner_protocol::normalize_go_test_packages;
-use webcodex_core::shell_quote::shell_escape_simple;
 use webcodex_core::validation_evidence::{parse_go_test_diagnostics, ValidationDiagnostics};
 
 struct GoTestValidationAdapter;
@@ -20,7 +22,10 @@ impl ValidationAdapter for GoTestValidationAdapter {
         "go_test"
     }
 
-    fn build_command(&self, options: ValidationCommandOptions) -> Result<String, String> {
+    fn build_readonly_plan(
+        &self,
+        options: ValidationCommandOptions,
+    ) -> Result<ReadOnlyValidationPlan, String> {
         if options.check
             || options.filter.is_some()
             || options.lib.is_some()
@@ -33,14 +38,20 @@ impl ValidationAdapter for GoTestValidationAdapter {
         {
             return Err("go_test does not accept Cargo validation command options".to_string());
         }
-        let Some(packages) = options.go_packages.as_deref() else {
-            return Ok("go test -json ./...".to_string());
-        };
-        let packages = normalize_go_test_packages(Some(packages))
+        let explicit_packages = options.go_packages.is_some();
+        let packages = normalize_go_test_packages(options.go_packages.as_deref())
             .map_err(|reason| format!("packages {reason}"))?;
-        let mut command = vec!["go".to_string(), "test".to_string(), "-json".to_string()];
-        command.extend(packages.iter().map(|package| shell_escape_simple(package)));
-        Ok(command.join(" "))
+        let mut args = vec![
+            ValidationPlanArg::Literal("test"),
+            ValidationPlanArg::Literal("-json"),
+        ];
+        if explicit_packages {
+            args.extend(packages.into_iter().map(ValidationPlanArg::Value));
+        } else {
+            debug_assert_eq!(packages.as_slice(), ["./..."]);
+            args.push(ValidationPlanArg::Literal("./..."));
+        }
+        read_only_validation_plan("test", "go", args)
     }
 
     fn parse(

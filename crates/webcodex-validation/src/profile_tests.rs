@@ -71,6 +71,32 @@ fn rust_profile_selects_cargo_fmt_adapter_and_preserves_command() {
 }
 
 #[test]
+fn cargo_fmt_read_only_plan_excludes_mutating_format() {
+    let adapter = validation_adapter_for_tool("cargo_fmt").expect("cargo_fmt adapter");
+    let readonly = adapter
+        .build_readonly_plan(ValidationCommandOptions {
+            check: true,
+            ..ValidationCommandOptions::default()
+        })
+        .unwrap();
+    assert_eq!(readonly.compatibility_command, "cargo fmt -- --check");
+    assert_eq!(readonly.structured_step.name, "format");
+    assert_eq!(readonly.structured_step.program, "cargo");
+    assert_eq!(readonly.structured_step.args, ["fmt", "--", "--check"]);
+    assert!(readonly.structured_step.is_canonical());
+
+    assert!(adapter
+        .build_readonly_plan(ValidationCommandOptions::default())
+        .is_err());
+    assert_eq!(
+        adapter
+            .build_command(ValidationCommandOptions::default())
+            .unwrap(),
+        "cargo fmt"
+    );
+}
+
+#[test]
 fn rust_profile_selects_cargo_check_adapter_and_preserves_command() {
     let adapter = validation_adapter_for_tool("cargo_check").expect("cargo_check adapter");
     assert_eq!(adapter.tool_identity(), "cargo_check");

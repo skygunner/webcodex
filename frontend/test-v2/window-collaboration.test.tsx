@@ -94,11 +94,20 @@ describe("Window collaboration", () => {
     view.unmount();
   });
 
-  it("retains the exact uncertain payload across retries and context changes", async () => {
+  it.each([
+    { ok: false, status: 0, data: null },
+    { ok: false, status: 500, data: null },
+    { ok: false, status: 502, data: null },
+    { ok: false, status: 503, data: null },
+    { ok: false, status: 504, data: null },
+    { ok: true, status: 200, data: null },
+    { ok: true, status: 200, data: { message_id: 123 } },
+    null,
+  ])("retains the exact uncertain payload across retries and context changes: %j", async response => {
     const writes: unknown[] = [];
     const post = vi.fn(async (path: string, payload: unknown) => {
       if (path === "window-collaboration") return { ok: true, status: 200, data: transcript };
-      writes.push(payload); return { ok: false, status: 503, data: null };
+      writes.push(payload); return response;
     });
     const client = { post } as unknown as RuntimeV2Client;
     const onUnauthorized = vi.fn();

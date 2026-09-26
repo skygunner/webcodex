@@ -42,7 +42,7 @@ export function useWindowCollaboration(client: RuntimeV2Client, windowKey: strin
       const response = await postWindowCollaboration(client, pending.current);
       if (!alive.current) return false;
       if (response?.status === 401) onUnauthorized();
-      if (response?.ok && response.data?.message_id) {
+      if (response?.ok && typeof response.data?.message_id === "string" && response.data.message_id.length > 0) {
         pending.current = null;
         setSendState("idle");
         setSendError(null);
@@ -50,7 +50,10 @@ export function useWindowCollaboration(client: RuntimeV2Client, windowKey: strin
         return true;
       }
       const failureKind = response?.data?.output?.failure_kind;
-      const uncertain = response?.status === 0 || response?.status === 503 || failureKind === "outcome_unknown";
+      // A gateway error or missing receipt does not prove the write was rejected.
+      // Retain the exact payload/key so an explicit retry can deduplicate it.
+      const uncertain = !response || response.status === 0 || response.status >= 500
+        || response.ok || failureKind === "outcome_unknown";
       if (uncertain) {
         setSendState("uncertain");
         setSendError(null);

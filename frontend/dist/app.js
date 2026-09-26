@@ -31742,10 +31742,10 @@ function gP(e, i, a) {
       try {
         const A = await vP(e, b.current);
         if (!g.current) return !1;
-        if (A?.status === 401 && a(), A?.ok && A.data?.message_id)
+        if (A?.status === 401 && a(), A?.ok && typeof A.data?.message_id == "string" && A.data.message_id.length > 0)
           return b.current = null, p("idle"), y(null), await C(), !0;
         const E = A?.data?.output?.failure_kind;
-        return A?.status === 0 || A?.status === 503 || E === "outcome_unknown" ? (p("uncertain"), y(null), !1) : (b.current = null, p("error"), A?.status === 409 || E === "conflict" ? y("conflict") : E === "invalid_context" ? y("context") : A?.status === 401 || A?.status === 403 || A?.status === 404 || E === "unavailable" ? (y("unavailable"), (A?.status === 403 || A?.status === 404) && l(null)) : y("failed"), !1);
+        return !A || A.status === 0 || A.status >= 500 || A.ok || E === "outcome_unknown" ? (p("uncertain"), y(null), !1) : (b.current = null, p("error"), A?.status === 409 || E === "conflict" ? y("conflict") : E === "invalid_context" ? y("context") : A?.status === 401 || A?.status === 403 || A?.status === 404 || E === "unavailable" ? (y("unavailable"), (A?.status === 403 || A?.status === 404) && l(null)) : y("failed"), !1);
       } catch {
         return g.current && (p("uncertain"), y(null)), !1;
       }

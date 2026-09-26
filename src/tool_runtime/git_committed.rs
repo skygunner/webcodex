@@ -86,7 +86,7 @@ pub(crate) fn committed_git_scope_command(base: &str, head: &str) -> String {
         committed_git_isolated_view_setup(head, "printf 'status=git_view_unavailable\\n'; exit 0");
     let head_q = shell_escape_simple(head);
     let stats_producer = format!(
-        "git --no-pager -c core.quotePath=false -c attr.tree={head_q} diff --no-ext-diff --no-textconv --find-renames --numstat \"$merge_base\" {head_q}"
+        "git --no-pager -c core.quotePath=false diff --no-ext-diff --no-textconv --find-renames --numstat \"$merge_base\" {head_q}"
     );
     let stats_pipeline = checked_git_pipeline_to_file(
         &stats_producer,

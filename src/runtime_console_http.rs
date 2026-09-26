@@ -67,6 +67,8 @@ const DEFAULT_WINDOW_SESSION_LIMIT: usize = DEFAULT_MAX_SESSIONS;
 const MAX_WINDOW_SESSION_LIMIT: usize = DEFAULT_MAX_SESSIONS;
 const MAX_WINDOW_JOB_LIMIT: usize = 32;
 const MAX_WINDOW_KEY_CHARS: usize = 128;
+const PRIMARY_WINDOW_ACTIVITY_SCAN_MULTIPLIER: usize = 4;
+const PRIMARY_WINDOW_ACTIVITY_SCAN_FLOOR: usize = 64;
 
 pub(crate) fn routes() -> Router {
     use crate::route_metadata::{api_path, RouteId};
@@ -245,6 +247,14 @@ struct WindowsInput {
     project: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum WindowDetailLevel {
+    Primary,
+    #[default]
+    Full,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WindowInput {
@@ -253,6 +263,8 @@ struct WindowInput {
     activity_limit: Option<usize>,
     #[serde(default)]
     session_limit: Option<usize>,
+    #[serde(default)]
+    detail_level: WindowDetailLevel,
 }
 
 #[derive(Debug, Deserialize)]
@@ -361,6 +373,8 @@ struct RuntimeConsoleWindowSummary {
     source: String,
     last_seen_at_ms: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    first_seen_at_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     last_tool_call_at_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     last_meaningful_activity_at_ms: Option<i64>,
@@ -378,8 +392,11 @@ struct RuntimeConsoleWindowSummary {
 #[derive(Debug, Serialize)]
 struct RuntimeConsoleWindowDetail {
     client_window_key: String,
+    detail_level: WindowDetailLevel,
     source: String,
     last_seen_at_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    first_seen_at_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     last_tool_call_at_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1814,13 +1831,15 @@ fn window_summary_internal_tool(tool: Option<&str>) -> bool {
     )
 }
 
-async fn visible_window_summary_for_auth(
+async fn visible_window_summary_for_auth_bounded(
     runtime: &ToolRuntime,
     auth: &AuthContext,
     principal: Option<(&str, &str)>,
     window_key: &str,
     visibility_cache: &mut HashMap<String, bool>,
     project_filter: Option<&str>,
+    activity_scan_limit: usize,
+    include_relation_count: bool,
 ) -> Result<Option<RuntimeConsoleWindowSummary>, RuntimeConsoleError> {
     let db = runtime
         .window_activity_db
@@ -1830,10 +1849,10 @@ async fn visible_window_summary_for_auth(
     let events = db.list_window_activity_events_with_code_mode_composition(
         window_key,
         principal,
-        MAX_WINDOW_ACTIVITY_LIMIT,
+        activity_scan_limit,
     );
     #[cfg(not(feature = "experimental-code-mode"))]
-    let events = db.list_window_activity_events(window_key, principal, MAX_WINDOW_ACTIVITY_LIMIT);
+    let events = db.list_window_activity_events(window_key, principal, activity_scan_limit);
     let events = events.map_err(|_| RuntimeConsoleError::Internal)?;
     let caller_principal = if principal.is_none() && !auth.is_admin_caller() {
         crate::tool_runtime::runtime_observation_principal(Some(auth)).ok()
@@ -1843,6 +1862,7 @@ async fn visible_window_summary_for_auth(
     let caller_principal_ref = window_principal_ref(&caller_principal);
     let mut source = None;
     let mut last_seen_at_ms = None;
+    let mut first_seen_at_ms = None;
     let mut last_tool_call_at_ms = None;
     let mut last_meaningful_activity_at_ms = None;
     let mut recorder_gap_count = 0usize;
@@ -1872,6 +1892,7 @@ async fn visible_window_summary_for_auth(
         }
         source = Some(event.client_window_source.clone());
         last_seen_at_ms = Some(last_seen_at_ms.unwrap_or(i64::MIN).max(event.ended_at_ms));
+        first_seen_at_ms = Some(first_seen_at_ms.unwrap_or(i64::MAX).min(event.ended_at_ms));
         if event.action_name == "toolsCall" {
             last_tool_call_at_ms = Some(
                 last_tool_call_at_ms
@@ -1908,24 +1929,26 @@ async fn visible_window_summary_for_auth(
     // the cardinality only from the latest activity-page events: a busy Window
     // may have >500 later calls while an older authoritative Session relation
     // remains part of its many-to-many history.
-    let relation_rows = db
-        .list_window_workflow_sessions(window_key, principal, MAX_WINDOW_SESSION_LIMIT)
-        .map_err(|_| RuntimeConsoleError::Internal)?;
     let mut linked_session_count = 0usize;
-    for link in relation_rows {
-        if project_filter.is_some_and(|project| link.project.as_deref() != Some(project)) {
-            continue;
-        }
-        if console_window_project_visible_cached(
-            runtime,
-            auth,
-            principal,
-            visibility_cache,
-            link.project.as_deref(),
-        )
-        .await
-        {
-            linked_session_count = linked_session_count.saturating_add(1);
+    if include_relation_count {
+        let relation_rows = db
+            .list_window_workflow_sessions(window_key, principal, MAX_WINDOW_SESSION_LIMIT)
+            .map_err(|_| RuntimeConsoleError::Internal)?;
+        for link in relation_rows {
+            if project_filter.is_some_and(|project| link.project.as_deref() != Some(project)) {
+                continue;
+            }
+            if console_window_project_visible_cached(
+                runtime,
+                auth,
+                principal,
+                visibility_cache,
+                link.project.as_deref(),
+            )
+            .await
+            {
+                linked_session_count = linked_session_count.saturating_add(1);
+            }
         }
     }
 
@@ -1956,6 +1979,11 @@ async fn visible_window_summary_for_auth(
                 .unwrap_or(i64::MIN)
                 .max(request.started_at_ms),
         );
+        first_seen_at_ms = Some(
+            first_seen_at_ms
+                .unwrap_or(i64::MAX)
+                .min(request.started_at_ms),
+        );
         if request.started_at_ms >= latest_active_started_at {
             if request.project.is_some() {
                 last_project = request.project.clone();
@@ -1979,6 +2007,11 @@ async fn visible_window_summary_for_auth(
         last_project,
         source: source.unwrap_or_default(),
         last_seen_at_ms,
+        first_seen_at_ms: if include_relation_count {
+            first_seen_at_ms
+        } else {
+            None
+        },
         last_tool_call_at_ms,
         last_meaningful_activity_at_ms,
         last_activity_name,
@@ -1988,6 +2021,34 @@ async fn visible_window_summary_for_auth(
         linked_session_count,
         recorder_gap_count,
     }))
+}
+
+async fn visible_window_summary_for_auth(
+    runtime: &ToolRuntime,
+    auth: &AuthContext,
+    principal: Option<(&str, &str)>,
+    window_key: &str,
+    visibility_cache: &mut HashMap<String, bool>,
+    project_filter: Option<&str>,
+) -> Result<Option<RuntimeConsoleWindowSummary>, RuntimeConsoleError> {
+    visible_window_summary_for_auth_bounded(
+        runtime,
+        auth,
+        principal,
+        window_key,
+        visibility_cache,
+        project_filter,
+        MAX_WINDOW_ACTIVITY_LIMIT,
+        true,
+    )
+    .await
+}
+
+fn primary_window_activity_scan_limit(activity_limit: usize) -> usize {
+    activity_limit
+        .saturating_mul(PRIMARY_WINDOW_ACTIVITY_SCAN_MULTIPLIER)
+        .max(PRIMARY_WINDOW_ACTIVITY_SCAN_FLOOR)
+        .min(MAX_WINDOW_ACTIVITY_LIMIT)
 }
 
 async fn windows_for_auth(
@@ -2028,6 +2089,7 @@ async fn windows_for_auth(
                     last_project: None,
                     source: summary.client_window_source,
                     last_seen_at_ms: summary.last_seen_at_ms,
+                    first_seen_at_ms: Some(summary.first_seen_at_ms),
                     last_tool_call_at_ms: summary.last_tool_call_at_ms,
                     last_meaningful_activity_at_ms: summary.last_meaningful_activity_at_ms,
                     last_activity_name: None,
@@ -2057,6 +2119,7 @@ async fn windows_for_auth(
                         last_project: None,
                         source: live.client_window_source,
                         last_seen_at_ms: summary.last_seen_at_ms.max(live.last_started_at_ms),
+                        first_seen_at_ms: Some(summary.first_seen_at_ms),
                         last_tool_call_at_ms: summary.last_tool_call_at_ms,
                         last_meaningful_activity_at_ms: summary.last_meaningful_activity_at_ms,
                         last_activity_name: None,
@@ -2076,6 +2139,7 @@ async fn windows_for_auth(
                         last_project: None,
                         source: live.client_window_source,
                         last_seen_at_ms: live.last_started_at_ms,
+                        first_seen_at_ms: Some(live.last_started_at_ms),
                         last_tool_call_at_ms: None,
                         last_meaningful_activity_at_ms: None,
                         last_activity_name: None,
@@ -2280,12 +2344,21 @@ async fn window_for_auth(
         .ok_or(RuntimeConsoleError::Internal)?;
     let principal = window_principal_filter(auth)?;
     let principal_ref = window_principal_ref(&principal);
+    let durable_first_seen_at_ms = if auth.is_admin_caller() {
+        db.get_window_activity_summary(&input.client_window_key, principal_ref)
+            .map_err(|_| RuntimeConsoleError::Internal)?
+            .map(|summary| summary.first_seen_at_ms)
+    } else {
+        None
+    };
     let caller_principal = if principal.is_none() && !auth.is_admin_caller() {
         crate::tool_runtime::runtime_observation_principal(Some(auth)).ok()
     } else {
         None
     };
     let caller_principal_ref = window_principal_ref(&caller_principal);
+    let detail_level = input.detail_level;
+    let primary_detail = detail_level == WindowDetailLevel::Primary;
     let activity_limit = input
         .activity_limit
         .unwrap_or(DEFAULT_WINDOW_ACTIVITY_LIMIT)
@@ -2296,15 +2369,46 @@ async fn window_for_auth(
         .clamp(1, MAX_WINDOW_SESSION_LIMIT);
 
     let mut visibility_cache = HashMap::new();
-    let summary = visible_window_summary_for_auth(
-        runtime,
-        auth,
-        principal_ref,
-        &input.client_window_key,
-        &mut visibility_cache,
-        None,
-    )
-    .await?;
+    let summary = if primary_detail {
+        let primary_scan_limit = primary_window_activity_scan_limit(activity_limit);
+        let quick = visible_window_summary_for_auth_bounded(
+            runtime,
+            auth,
+            principal_ref,
+            &input.client_window_key,
+            &mut visibility_cache,
+            None,
+            primary_scan_limit,
+            false,
+        )
+        .await?;
+        if quick.is_some() {
+            quick
+        } else {
+            // A bounded primary scan can land entirely on currently-hidden Project
+            // history. Fall back to the canonical full authority scan rather than
+            // turning a performance optimization into a false 404/existence signal.
+            visible_window_summary_for_auth(
+                runtime,
+                auth,
+                principal_ref,
+                &input.client_window_key,
+                &mut visibility_cache,
+                None,
+            )
+            .await?
+        }
+    } else {
+        visible_window_summary_for_auth(
+            runtime,
+            auth,
+            principal_ref,
+            &input.client_window_key,
+            &mut visibility_cache,
+            None,
+        )
+        .await?
+    };
     let mut active_requests = Vec::new();
     let now_ms = chrono::Utc::now().timestamp_millis();
     for request in runtime
@@ -2336,7 +2440,9 @@ async fn window_for_auth(
     let active_count = active_requests.len();
     active_requests.truncate(crate::tool_runtime::MAX_ACTIVE_REQUESTS_PER_WINDOW);
 
-    let activity_scan_limit = if auth.is_admin_caller() {
+    let activity_scan_limit = if primary_detail {
+        primary_window_activity_scan_limit(activity_limit)
+    } else if auth.is_admin_caller() {
         activity_limit
             .saturating_add(1)
             .min(MAX_WINDOW_ACTIVITY_LIMIT)
@@ -2389,45 +2495,64 @@ async fn window_for_auth(
     let activity_truncated = activity.len() > activity_limit || raw_activity_at_cap;
     activity.truncate(activity_limit);
 
-    let (jobs, jobs_truncated) = window_jobs_for_auth(runtime, auth, &activity).await;
-
-    let session_scan_limit = if auth.is_admin_caller() {
-        session_limit
-            .saturating_add(1)
-            .min(MAX_WINDOW_SESSION_LIMIT)
+    let (jobs, jobs_truncated) = if primary_detail {
+        (Vec::new(), false)
     } else {
-        MAX_WINDOW_SESSION_LIMIT
+        window_jobs_for_auth(runtime, auth, &activity).await
     };
-    let raw_sessions = db
-        .list_window_workflow_sessions(&input.client_window_key, principal_ref, session_scan_limit)
-        .map_err(|_| RuntimeConsoleError::Internal)?;
-    let raw_sessions_at_cap = raw_sessions.len() == session_scan_limit;
-    let mut linked_sessions = Vec::new();
-    for link in raw_sessions {
-        let Some(project) = link.project.as_deref() else {
-            continue;
+
+    let (linked_sessions, sessions_truncated) = if primary_detail {
+        // Activity rows already carry exact Workflow Session links, which is
+        // sufficient for immediate Session chips/filtering. Titles/lifecycle and
+        // canonical relation history are hydrated by the full follow-up request.
+        (Vec::new(), false)
+    } else {
+        let session_scan_limit = if auth.is_admin_caller() {
+            session_limit
+                .saturating_add(1)
+                .min(MAX_WINDOW_SESSION_LIMIT)
+        } else {
+            MAX_WINDOW_SESSION_LIMIT
         };
-        if authorize_exact_project(runtime, auth, project)
-            .await
-            .is_err()
-        {
-            continue;
+        let raw_sessions = db
+            .list_window_workflow_sessions(
+                &input.client_window_key,
+                principal_ref,
+                session_scan_limit,
+            )
+            .map_err(|_| RuntimeConsoleError::Internal)?;
+        let raw_sessions_at_cap = raw_sessions.len() == session_scan_limit;
+        let mut linked_sessions = Vec::new();
+        for link in raw_sessions {
+            let Some(project) = link.project.as_deref() else {
+                continue;
+            };
+            if authorize_exact_project(runtime, auth, project)
+                .await
+                .is_err()
+            {
+                continue;
+            }
+            let detail = runtime.workflow_session_console_detail(
+                project,
+                &link.workflow_session_id,
+                Some(1),
+            );
+            linked_sessions.push(RuntimeConsoleWindowSession {
+                workflow_session_id: link.workflow_session_id,
+                project: link.project,
+                first_linked_at_ms: link.first_linked_at_ms,
+                last_linked_at_ms: link.last_linked_at_ms,
+                relations: link.relations,
+                relation_count: link.relation_count,
+                title: detail.as_ref().map(|detail| detail.title.clone()),
+                lifecycle: detail.as_ref().map(|detail| detail.lifecycle.clone()),
+            });
         }
-        let detail =
-            runtime.workflow_session_console_detail(project, &link.workflow_session_id, Some(1));
-        linked_sessions.push(RuntimeConsoleWindowSession {
-            workflow_session_id: link.workflow_session_id,
-            project: link.project,
-            first_linked_at_ms: link.first_linked_at_ms,
-            last_linked_at_ms: link.last_linked_at_ms,
-            relations: link.relations,
-            relation_count: link.relation_count,
-            title: detail.as_ref().map(|detail| detail.title.clone()),
-            lifecycle: detail.as_ref().map(|detail| detail.lifecycle.clone()),
-        });
-    }
-    let sessions_truncated = linked_sessions.len() > session_limit || raw_sessions_at_cap;
-    linked_sessions.truncate(session_limit);
+        let sessions_truncated = linked_sessions.len() > session_limit || raw_sessions_at_cap;
+        linked_sessions.truncate(session_limit);
+        (linked_sessions, sessions_truncated)
+    };
 
     if summary.is_none()
         && active_requests.is_empty()
@@ -2454,8 +2579,14 @@ async fn window_for_auth(
         .unwrap_or_else(|| "openai-session".to_string());
     Ok(RuntimeConsoleWindowDetail {
         client_window_key: input.client_window_key,
+        detail_level,
         source,
         last_seen_at_ms,
+        first_seen_at_ms: durable_first_seen_at_ms.or_else(|| {
+            summary
+                .as_ref()
+                .and_then(|summary| summary.first_seen_at_ms)
+        }),
         last_tool_call_at_ms: summary
             .as_ref()
             .and_then(|summary| summary.last_tool_call_at_ms),
@@ -4781,6 +4912,7 @@ mod tests {
                 client_window_key: client_window.key().to_string(),
                 activity_limit: None,
                 session_limit: None,
+                detail_level: WindowDetailLevel::Full,
             },
         )
         .await
@@ -4853,6 +4985,7 @@ mod tests {
                 client_window_key: client_window.key().to_string(),
                 activity_limit: None,
                 session_limit: None,
+                detail_level: WindowDetailLevel::Full,
             },
         )
         .await
@@ -4955,8 +5088,102 @@ mod tests {
             .unwrap();
         assert_eq!(row.last_activity_name.as_deref(), Some("read_files"));
         assert_eq!(row.last_seen_at_ms, 1_001);
+        assert_eq!(row.first_seen_at_ms, Some(1_001));
         assert_eq!(row.last_tool_call_at_ms, Some(1_001));
         assert_eq!(row.last_project.as_deref(), Some(project));
+    }
+
+    #[tokio::test]
+    async fn window_primary_detail_is_bounded_and_defers_secondary_hydration() {
+        let (_tmp, db, runtime) = test_runtime_with_window_db();
+        let auth = crate::auth::shared_key_context("window-primary-detail");
+        let project = "agent:window-primary-detail:webcodex";
+        register_project(
+            &runtime,
+            "window-primary-detail",
+            "webcodex",
+            "/private/window-primary-detail",
+            Some(&auth),
+        )
+        .await;
+        let session = runtime.sessions.start_session(
+            Some(project.to_string()),
+            Some("Primary detail hydration".to_string()),
+        );
+        let window_key = "8".repeat(64);
+
+        record_window_event_with_activity(
+            &db,
+            &auth,
+            &window_key,
+            Some(project),
+            Some((&session.session_id, project)),
+            1_000,
+            "work_on_project",
+            true,
+        );
+        for (index, tool) in [
+            "read_files",
+            "run_shell",
+            "search_project_texts",
+            "cargo_test",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            record_window_event_with_activity(
+                &db,
+                &auth,
+                &window_key,
+                Some(project),
+                None,
+                2_000 + index as i64 * 1_000,
+                tool,
+                true,
+            );
+        }
+
+        let primary = window_for_auth(
+            &runtime,
+            &auth,
+            WindowInput {
+                client_window_key: window_key.clone(),
+                activity_limit: Some(2),
+                session_limit: Some(20),
+                detail_level: WindowDetailLevel::Primary,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(primary.detail_level, WindowDetailLevel::Primary);
+        assert_eq!(primary.activity.len(), 2);
+        assert!(primary.activity_truncated);
+        assert!(primary.linked_sessions.is_empty());
+        assert_eq!(primary.sessions_returned, 0);
+        assert!(primary.jobs.is_empty());
+
+        let full = window_for_auth(
+            &runtime,
+            &auth,
+            WindowInput {
+                client_window_key: window_key,
+                activity_limit: Some(20),
+                session_limit: Some(20),
+                detail_level: WindowDetailLevel::Full,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(full.detail_level, WindowDetailLevel::Full);
+        assert_eq!(full.first_seen_at_ms, Some(1_001));
+        assert_eq!(full.activity.len(), 5);
+        assert!(!full.activity_truncated);
+        assert_eq!(full.linked_sessions.len(), 1);
+        assert_eq!(
+            full.linked_sessions[0].workflow_session_id,
+            session.session_id
+        );
+        assert_eq!(full.linked_sessions[0].project.as_deref(), Some(project));
     }
 
     #[tokio::test]
@@ -5043,6 +5270,7 @@ mod tests {
                 client_window_key: activity_window_key,
                 activity_limit: Some(20),
                 session_limit: Some(20),
+                detail_level: WindowDetailLevel::Full,
             },
         )
         .await
@@ -5226,6 +5454,7 @@ mod tests {
                 client_window_key: window_a.clone(),
                 activity_limit: Some(20),
                 session_limit: Some(20),
+                detail_level: WindowDetailLevel::Full,
             },
         )
         .await
@@ -5253,6 +5482,7 @@ mod tests {
                         client_window_key: hidden_key.clone(),
                         activity_limit: Some(20),
                         session_limit: Some(20),
+                        detail_level: WindowDetailLevel::Full,
                     },
                 )
                 .await
@@ -5371,6 +5601,7 @@ mod tests {
                 client_window_key: window_key,
                 activity_limit: Some(20),
                 session_limit: Some(20),
+                detail_level: WindowDetailLevel::Full,
             },
         )
         .await
@@ -5425,6 +5656,7 @@ mod tests {
                 client_window_key: window_key,
                 activity_limit: Some(20),
                 session_limit: Some(20),
+                detail_level: WindowDetailLevel::Full,
             },
         )
         .await
@@ -5546,6 +5778,7 @@ mod tests {
                 client_window_key: window_key,
                 activity_limit: Some(20),
                 session_limit: Some(20),
+                detail_level: WindowDetailLevel::Full,
             },
         )
         .await

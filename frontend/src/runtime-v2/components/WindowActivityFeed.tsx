@@ -63,14 +63,14 @@ export function WindowActivityFeed({
       observedJobIds: [] as string[],
     })),
   ].sort((a, b) => a.startedAt - b.startedAt);
-  const activeSessionId = callEvidenceSessions.has(selectedSessionId) ? selectedSessionId : "";
+  const activeSessionId = selectedSessionId;
   const focusedKeys = focusedWindowCallKeys(calls, activeSessionId);
   const visibleCalls = activeSessionId ? calls.filter((call) => focusedKeys.has(call.key)) : calls;
   const selectedTone = activeSessionId ? (sessionOrder.get(activeSessionId) ?? 0) % 8 : 0;
 
   return (
     <section className="window-detail-section window-workflow-section" aria-label={t("Window activity")}>
-      {filterSessions.length > 0 && (
+      {(filterSessions.length > 0 || activeSessionId) && (
         <div className="window-session-focus">
           <span>{t("Session")}</span>
           <div className="window-session-focus-select" data-session-tone={selectedTone} data-active={Boolean(activeSessionId)}>
@@ -81,6 +81,9 @@ export function WindowActivityFeed({
               onChange={(event) => onSelectSession?.(event.currentTarget.value)}
             >
               <option value="">{t("All calls")}</option>
+              {activeSessionId && !filterSessions.some(session => session.workflow_session_id === activeSessionId) && (
+                <option value={activeSessionId}>{t("Session")} · {shortId(activeSessionId, 14, 6)}</option>
+              )}
               {filterSessions.map((session, index) => (
                 <option key={session.workflow_session_id} value={session.workflow_session_id}>
                   {(session.title || t("Work Session") + " " + (index + 1)) + " · " + shortId(session.workflow_session_id, 14, 6)}
@@ -91,6 +94,7 @@ export function WindowActivityFeed({
           <small>{visibleCalls.length}/{calls.length}</small>
         </div>
       )}
+      {detail.active_count > detail.active_requests.length && <div className="inventory-note">{t("Some running calls are not shown.")} {detail.active_requests.length}/{detail.active_count}</div>}
       {detail.activity_truncated && <div className="inventory-note">{t("Earlier calls are not available in this view. Showing retained activity from oldest to newest.")}</div>}
       <div className="window-workflow-list">
         {visibleCalls.map((call) => {
@@ -171,11 +175,15 @@ export function WindowActivityFeed({
                 {call.running ? (
                   <span className="window-call-live-time">{t("Running")} · <strong>{durationText(call.duration)}</strong></span>
                 ) : (
-                  <span>
-                    <time dateTime={new Date(call.startedAt).toISOString()} title={absoluteTime(call.startedAt)}>{clockTime(call.startedAt)}</time>
-                    <span aria-hidden="true"> · </span>
-                    <strong>{durationText(call.duration)}</strong>
-                  </span>
+                  <>
+                    <span className="window-call-clock">
+                      <time dateTime={new Date(call.startedAt).toISOString()} title={absoluteTime(call.startedAt)}>{clockTime(call.startedAt)}</time>
+                    </span>
+                    <span className="window-call-duration">
+                      <small>{t("Duration")}</small>
+                      <strong>{durationText(call.duration)}</strong>
+                    </span>
+                  </>
                 )}
               </div>
             </article>

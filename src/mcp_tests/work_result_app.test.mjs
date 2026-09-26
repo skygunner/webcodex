@@ -2,62 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { app, flush, toolResult } from "./app_test_support.mjs";
 
-const project = "agent:special:demo";
-const session_id = `wc_sess_${"1".repeat(32)}`;
-const input = { project, session_id };
-const baseState = {
-  version: 2,
-  project,
-  session_id,
-  state_version: `wr2_${"a".repeat(64)}`,
-  workspace: {
-    git_available: true,
-    clean: false,
-    branch: "feature/work",
-    counts: {
-      modified: 1, added: 0, deleted: 0, renamed: 0, copied: 0,
-      untracked: 0, conflicted: 0, staged: 0, unstaged: 1,
-    },
-    files_total: 1,
-    files: [{ path: "src/a.rs", status: "modified", kind: "tracked", staged: false, unstaged: true, additions: 4, deletions: 1 }],
-    additions: 4,
-    deletions: 1,
-    line_stats_partial: false,
-    truncated: false,
-  },
-  validation: {
-    status: "passed", latest_status: "passed", current_status: "passed", history_partial: false,
-    successes: 3, failures: 0, unresolved_failures: 0, evidence_gaps: 0,
-  },
-  review: {
-    available: true, total: 1, history_partial: false, read_only_inspection_count: 0, search_count: 0,
-    diff_review_count: 1, workspace_review_count: 1, hygiene_review_count: 0,
-    tools: ["show_changes"],
-  },
-  session: {
-    lifecycle: "active", events_total: 7, events_returned: 7, history_partial: false,
-    updated_at: 1789812000, title: "Work Result test",
-    latest_activity: {
-      tool: "show_changes", kind: "tool_call_finished", timestamp: 1789812000,
-      status: "completed", duration_ms: 42,
-    },
-  },
-  activity: {
-    available: true, scope: "window", active: false, current: null,
-    last: { label: "Reviewed changes", kind: "review", at_ms: 1_999_999_990_000 },
-    last_meaningful_activity_at_ms: 1_999_999_990_000, coverage_partial: false,
-  },
-  window_activity: {
-    available: true, active: false, active_requests: [],
-    events_returned: 2, events_observed: 2, truncated: false,
-    last_activity_at_ms: 1_999_999_990_000,
-    events: [
-      { label: "Reviewed changes", kind: "review", status: "success", meaningful: true, started_at_ms: 1_999_999_989_000, ended_at_ms: 1_999_999_990_000, duration_ms: 1000 },
-      { label: "Observed Runtime status", kind: null, status: "success", meaningful: false, started_at_ms: 1_999_999_980_000, ended_at_ms: 1_999_999_980_100, duration_ms: 100 },
-    ],
-  },
-  collaboration: { available: true, can_send: true, messages: [] },
-};
+import { project, session_id, input, baseState } from "./work_result_app_fixture.mjs";
 
 const nextState = {
   ...baseState,
@@ -292,6 +237,7 @@ test("Window messages render sender delivery state but not inbound peer delivery
         { message_id: "wc_msg_sent", created_at_ms: 1_999_999_997_000, message: "sent", source: "operator", direction: "inbound", requires_ack: true, first_projected_at_ms: null, first_ack_observed_at_ms: null },
         { message_id: "wc_msg_seen", created_at_ms: 1_999_999_998_000, message: "seen", source: "operator", direction: "inbound", requires_ack: true, first_projected_at_ms: 1_999_999_999_000, first_ack_observed_at_ms: null },
         { message_id: "wc_msg_handled", created_at_ms: 1_999_999_999_000, message: "acknowledged", source: "operator", direction: "inbound", requires_ack: true, first_projected_at_ms: 1_999_999_999_000, first_ack_observed_at_ms: 2_000_000_000_000 },
+        { message_id: "wc_msg_window_reply", created_at_ms: 1_999_999_999_500, message: "window reply", source: "window", direction: "outbound", reply_to_message_id: "wc_msg_handled", requires_ack: false, first_projected_at_ms: null, first_ack_observed_at_ms: null },
         { message_id: "wc_msg_peer_in", created_at_ms: 2_000_000_000_000, message: "peer inbound", source: "peer", direction: "inbound", peer_id: `wc_peer_${"2".repeat(32)}`, requires_ack: false, first_projected_at_ms: 2_000_000_000_000, first_ack_observed_at_ms: null },
         { message_id: "wc_msg_peer_out", created_at_ms: 2_000_000_001_000, message: "peer outbound", source: "peer", direction: "outbound", peer_id: `wc_peer_${"3".repeat(32)}`, requires_ack: false, first_projected_at_ms: 2_000_000_001_000, first_ack_observed_at_ms: null },
       ],
@@ -302,11 +248,13 @@ test("Window messages render sender delivery state but not inbound peer delivery
   await view.initialize();
   const rows = view.nodes.messages.children;
   const lastMeta = row => row.children[1].children.at(-1).textContent;
-  assert.equal(lastMeta(rows[0]), "Sent");
-  assert.equal(lastMeta(rows[1]), "Delivered");
+  assert.equal(lastMeta(rows[0]), "Saved");
+  assert.equal(lastMeta(rows[1]), "Included in tool result");
   assert.equal(lastMeta(rows[2]), "Acknowledged");
-  assert.doesNotMatch(lastMeta(rows[3]), /Sent|Delivered|Acknowledged/);
-  assert.equal(lastMeta(rows[4]), "Delivered");
+  assert.doesNotMatch(lastMeta(rows[3]), /Saved|Included in tool result|Acknowledged/);
+  assert.equal(rows[3].children[1].children[0].textContent, "This Window");
+  assert.doesNotMatch(lastMeta(rows[4]), /Saved|Included in tool result|Acknowledged/);
+  assert.equal(lastMeta(rows[5]), "Included in tool result");
 });
 
 test("card composer retries uncertain delivery with the same payload across context changes", async () => {
@@ -357,7 +305,7 @@ test("card composer retries uncertain delivery with the same payload across cont
   };
   await view.reply(view.calls("work_result_state")[0], contentOnly(toolResult({ work_result: refreshed })));
   assert.equal(view.nodes.messageInput.value, "");
-  assert.equal(view.nodes.messages.children[0].children[1].children.at(-1).textContent, "Sent");
+  assert.equal(view.nodes.messages.children[0].children[1].children.at(-1).textContent, "Saved");
 });
 
 test("card conflict is deterministic and the next explicit send gets a new delivery key", async () => {
@@ -542,7 +490,7 @@ test("user Refresh performs one exact state read and updates the snapshot", asyn
   assert.equal(view.nodes.refresh.textContent, "Refreshing…");
   await view.reply(view.calls("work_result_state")[0], toolResult({ work_result: nextState }));
   assert.equal(view.nodes.windowCoverage.textContent, "3 observed events");
-  assert.equal(view.nodes.windowActivity.children.length, 3);
+  assert.equal(view.nodes.windowActivity.children.length, 4);
   assert.equal(view.nodes.status.textContent, "Updated");
   assert.equal(view.nodes.refresh.disabled, false);
 });
@@ -948,8 +896,8 @@ test("Activity and Collaboration tabs preserve Window activity and drafts across
   assert.equal(view.nodes.projectIdentity.textContent, "Window activity");
   assert.equal(view.nodes.sessionIdentity.textContent, "Context · " + session_id.slice(8, 14));
   assert.equal(view.nodes.windowActivity.children.length, 2);
-  assert.equal(view.nodes.windowActivity.children[0].children[0].children[0].textContent, "Reviewed changes");
-  assert.equal(view.nodes.windowActivity.children[1].children[0].children[1].textContent, "Observe · Succeeded");
+  assert.equal(view.nodes.windowActivity.children[1].children[0].children[0].textContent, "Reviewed changes");
+  assert.equal(view.nodes.windowActivity.children[0].children[0].children[1].textContent, "Observe · Succeeded");
   view.nodes.messageInput.value = "Keep my draft";
   view.nodes.tabCollaboration.onclick();
   assert.equal(view.nodes.panelCollaboration.hidden, false);
@@ -962,7 +910,7 @@ test("Activity and Collaboration tabs preserve Window activity and drafts across
   view.nodes.refresh.onclick(); await flush();
   await view.reply(view.calls("work_result_state")[0], toolResult({ work_result: nextState }));
   assert.equal(view.nodes.panelActivity.hidden, false);
-  assert.equal(view.nodes.windowActivity.children.length, 3);
+  assert.equal(view.nodes.windowActivity.children.length, 4);
   assert.equal(view.nodes.messageInput.value, "Keep my draft");
 });
 
@@ -996,4 +944,86 @@ test("Window card sends without a Session and keeps pending context on uncertain
   await flush();
   const retry = view.calls("work_result_send_message")[1];
   assert.deepEqual(retry.params.arguments, first.params.arguments);
+});
+
+test("unrelated activity refresh preserves message nodes and the user's draft", async () => {
+  const collaboration = { available: true, can_send: true, messages: [
+    { message_id: "wc_msg_reading", created_at_ms: 1_999_999_997_000, message: "Keep reading this reply", source: "window", direction: "outbound", requires_ack: false, first_projected_at_ms: null, first_ack_observed_at_ms: null },
+  ] };
+  const view = app("mcp_work_result_app.html");
+  view.toolResult({ work_result: { ...baseState, collaboration } });
+  await view.initialize();
+  const article = view.nodes.messages.children[0];
+  view.nodes.messageInput.value = "My draft";
+  view.nodes.refresh.onclick(); await flush();
+  await view.reply(view.calls("work_result_state")[0], toolResult({ work_result: { ...nextState, collaboration: { ...collaboration, can_send: false } } }));
+  assert.equal(view.nodes.messages.children[0], article);
+  assert.equal(view.nodes.messageInput.value, "My draft");
+  assert.equal(view.nodes.messageInput.disabled, true);
+});
+
+for (const receipt of [{}, toolResult({}), toolResult({ message_id: 42 })]) {
+  test(`missing or invalid message receipt preserves exact retry: ${JSON.stringify(receipt)}`, async () => {
+    const view = app("mcp_work_result_app.html");
+    view.toolResult({ work_result: baseState });
+    await view.initialize();
+    view.nodes.messageInput.value = "Keep this exact message";
+    view.nodes.messageInput.oninput();
+    view.nodes.composer.onsubmit({ preventDefault() {} });
+    await flush();
+    const first = view.calls("work_result_send_message")[0];
+    await view.reply(first, receipt);
+    assert.equal(view.nodes.sendMessage.textContent, "Retry");
+    assert.equal(view.nodes.messageInput.value, "Keep this exact message");
+    assert.equal(view.nodes.messageInput.disabled, true);
+    view.nodes.composer.onsubmit({ preventDefault() {} });
+    await flush();
+    assert.deepEqual(view.calls("work_result_send_message")[1].params.arguments, first.params.arguments);
+  });
+}
+
+test("card renders each concurrent call and reconciles completion by exact trace", async () => {
+  const completed = { ...baseState.window_activity.events[0], tool_name: "read_files", server_trace_id: "trace-completed" };
+  const state = { ...baseState, window_activity: { ...baseState.window_activity,
+    active: true, events: [completed], events_returned: 1, events_observed: 1,
+    active_requests: [
+      { label: "Read files", tool_name: "read_files", server_trace_id: "trace-completed", started_at_ms: completed.started_at_ms },
+      { label: "Read files", tool_name: "read_files", server_trace_id: "trace-2", started_at_ms: completed.started_at_ms },
+      { label: "Read files", tool_name: "read_files", server_trace_id: "trace-3", started_at_ms: completed.started_at_ms },
+    ],
+  } };
+  const view = app("mcp_work_result_app.html");
+  view.toolResult({ work_result: state }); await view.initialize();
+  const rows = view.nodes.windowActivity.children;
+  assert.equal(rows.length, 3);
+  assert(rows.every(row => row.children[0].children[0].textContent === "read_files"));
+  assert.equal(rows.filter(row => row.children[0].children[1].textContent === "Running").length, 2);
+});
+
+test("card keeps repeated fast calls as individual rows and exposes the active display bound", async () => {
+  const event = baseState.window_activity.events[0];
+  const state = { ...baseState, window_activity: { ...baseState.window_activity,
+    events: Array.from({ length: 200 }, (_, i) => ({ ...event, tool_name: "observe_jobs", server_trace_id: "trace-" + i })),
+    events_returned: 200, events_observed: 230, truncated: true,
+    active_requests: Array.from({ length: 8 }, (_, i) => ({ label: "Running", tool_name: "run_shell", server_trace_id: "active-" + i, started_at_ms: event.started_at_ms })),
+  } };
+  const view = app("mcp_work_result_app.html");
+  view.toolResult({ work_result: state }); await view.initialize();
+  assert.equal(view.nodes.windowActivity.children.length, 208);
+  assert.match(view.nodes.windowCoverage.textContent, /Showing 200 of 230/);
+  assert.match(view.nodes.windowCoverage.textContent, /up to 8 active/);
+});
+
+test("long-running calls keep polling and failed automatic reads identify stale snapshots", async () => {
+  const state = { ...baseState, window_activity: { ...baseState.window_activity, active: true,
+    active_requests: [{ label: "Running tests", tool_name: "run_shell", started_at_ms: 1_999_999_990_000 }],
+  } };
+  const view = app("mcp_work_result_app.html");
+  view.toolResult({ work_result: state }); await view.initialize();
+  view.advanceTime(31 * 60 * 1000);
+  await view.fireTimers(2500);
+  assert.equal(view.calls("work_result_state").length, 1);
+  await view.reject(view.calls("work_result_state")[0]);
+  assert.match(view.nodes.status.textContent, /Refresh unavailable.*last snapshot/);
+  assert([...view.timers.values()].some(timer => timer.delay === 2500));
 });

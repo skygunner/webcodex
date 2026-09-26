@@ -123,6 +123,31 @@ keep their detached-process behavior when `--scope` is omitted.
 | `webcodex server logs` | Read the Server service journal |
 | `webcodex server uninstall` | Stop, disable, and remove the managed socket/service pair |
 
+## Controller (WSL/Linux V0)
+
+webcodex controller is the local terminal control plane for WSL/Linux. V0 does not modify Desktop and does not change the lower-level Server, Runner, or OpenAI Tunnel process contracts; the Controller owns and supervises those existing processes as their parent.
+
+    webcodex controller init
+    webcodex controller doctor
+    webcodex controller install
+
+The default configuration is ~/.config/webcodex/controller.toml. A running Controller exposes a local Unix Socket at $XDG_RUNTIME_DIR/webcodex/controller.sock, falling back to a per-user /tmp runtime directory when XDG_RUNTIME_DIR is unavailable.
+
+Common operations:
+
+    webcodex controller start
+    webcodex controller status
+    webcodex controller restart
+    webcodex controller restart server
+    webcodex controller restart runner
+    webcodex controller restart tunnel
+    webcodex controller logs --lines 100
+    webcodex controller stop
+
+V0 uses the local Server as the dependency root, so enabling Runner or Tunnel also requires Server to be enabled. The configured Runner `server_url` must match that Controller-managed loopback Server; remote Server topology is rejected before the Runner starts or any local Server credential is used. The Controller refuses to take ownership when the existing webcodex.service, webcodex.socket, or webcodex-runner.service is already active, avoiding duplicate process ownership.
+
+`controller install` installs a user service at `~/.config/systemd/user/webcodex-controller.service` by default and manages the Controller lifecycle through `systemctl --user`. The optional service environment file defaults to `~/.config/webcodex/controller.env`; when OpenAI Tunnel is enabled for background startup, `CONTROL_PLANE_TUNNEL_ID` and `CONTROL_PLANE_API_KEY` can be placed there. `controller doctor` checks those same two credentials from the process environment or the selected `--environment-file`. Tunnel control-plane credentials are not inherited by the managed Server or Runner children. The Controller service does not install separate Server/Runner services; those lower-level processes remain children owned by the Controller.
+
 On Windows, `server init`, foreground `server run`, and explicit `share` are supported. The managed service lifecycle (`install`, `start`, `stop`, `restart`, `logs`, `uninstall`) remains Linux-only.
 
 `webcodex server init` keeps direct shared-key quick-start local-only by default. Supplying `--public-url` enables the public OAuth issuer but does not enable direct/bridge shared-key authentication. Legacy/trusted hosted shared-key deployments must explicitly add `--allow-remote-shared-key`; prefer managed pairing/PAT/OAuth for Internet-facing Servers.

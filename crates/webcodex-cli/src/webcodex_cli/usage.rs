@@ -6,6 +6,7 @@ Quick trial:\n\
   (no command)                  Interactive Git repo shortcut for `share` on Linux/macOS\n\n\
 Daily self-hosted setup:\n\
   server                        Configure and operate the Server\n\
+  controller                    WSL/Linux terminal control plane for Server, Runner, and Tunnel\n\
   pairing create                Create a one-time login code\n\
   login                         Log the project machine in with that code\n\
   project register              Add an existing project for a stopped/legacy Runner\n\
@@ -32,6 +33,30 @@ Advanced / operator:\n\
 Options:\n\
   -h, --help                    Print help and exit\n\
   -V, --version                 Print version and exit\n"
+}
+
+pub(crate) fn controller_usage() -> &'static str {
+    "Usage: webcodex controller <COMMAND> [OPTIONS]\n\n\
+WSL/Linux terminal control plane for a local WebCodex Server + Runner + optional OpenAI Tunnel.\n\n\
+Commands:\n\
+  init       Create controller.toml with local defaults\n\
+  run        Run the Controller in the foreground and own child processes\n\
+  install    Install and optionally start the systemd user service\n\
+  start      Start the installed systemd user service\n\
+  status     Read live Controller/component state over the Unix socket\n\
+  doctor     Validate configuration, binaries, loopback Server address, and Tunnel credentials\n\
+  stop       Stop the installed systemd user service\n\
+  restart    Restart the Controller service, or one component: server|runner|tunnel\n\
+  logs       Read bounded in-memory Controller/component logs\n\n\
+Common options:\n\
+  --config PATH   Controller config [default: ~/.config/webcodex/controller.toml]\n\
+  --service-file PATH      systemd user unit [default: ~/.config/systemd/user/webcodex-controller.service]\n\
+  --environment-file PATH  optional service environment file [default: ~/.config/webcodex/controller.env]\n\
+  --overwrite     Replace an existing managed Controller unit during install\n\
+  --no-start      Install/enable the unit without starting it\n\
+  --json          Machine-readable output for status/doctor\n\
+  -h, --help      Print help and exit\n\n\
+Controller V0 does not modify Desktop and uses existing Server, Runner, and Tunnel process contracts.\n"
 }
 
 pub(crate) fn connect_usage() -> &'static str {

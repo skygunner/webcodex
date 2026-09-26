@@ -112,6 +112,31 @@ detached-process 行为。
 | `webcodex server logs` | 读取 Server service journal |
 | `webcodex server uninstall` | stop/disable/remove 受管 socket/service pair |
 
+## Controller（WSL/Linux 初版）
+
+webcodex controller 是 WSL/Linux 场景下的本地终端控制平面。V0 不修改 Desktop，也不改变 Server、Runner 或 OpenAI Tunnel 的下层运行契约；Controller 作为父进程启动并监督这些现有组件。
+
+    webcodex controller init
+    webcodex controller doctor
+    webcodex controller install
+
+默认配置位于 ~/.config/webcodex/controller.toml。运行中的 Controller 通过 $XDG_RUNTIME_DIR/webcodex/controller.sock（未设置 XDG_RUNTIME_DIR 时使用当前用户专属的 /tmp runtime 目录）提供本地 Unix Socket 控制接口。
+
+常用操作：
+
+    webcodex controller start
+    webcodex controller status
+    webcodex controller restart
+    webcodex controller restart server
+    webcodex controller restart runner
+    webcodex controller restart tunnel
+    webcodex controller logs --lines 100
+    webcodex controller stop
+
+V0 使用本地 Server 作为依赖根；启用 Runner 或 Tunnel 时必须同时启用 Server。Runner 配置中的 `server_url` 必须与 Controller 管理的 loopback Server 一致；remote Server topology 会在启动 Runner 或使用任何本地 Server credential 之前被拒绝。Controller 不接管已经由 webcodex.service / webcodex.socket / webcodex-runner.service 管理的运行实例，检测到已有服务处于 active 状态时会拒绝启动，避免双重 ownership。
+
+`controller install` 默认安装 user service 到 `~/.config/systemd/user/webcodex-controller.service`，并通过 `systemctl --user` 管理 Controller 的 start/stop/restart 生命周期。默认可选环境文件是 `~/.config/webcodex/controller.env`；启用 OpenAI Tunnel 且需要长期后台启动时，可将 `CONTROL_PLANE_TUNNEL_ID` 与 `CONTROL_PLANE_API_KEY` 放入该文件。`controller doctor` 会从当前进程环境或指定的 `--environment-file` 检查同一对凭据；Tunnel control-plane credential 不会继续传给受管的 Server/Runner 子进程。Controller service 不直接托管独立的 Server/Runner systemd unit，下层进程仍由 Controller 自己作为父进程管理。
+
 Windows 支持 `server init`、前台 `server run` 与显式 `share`。受管 service 生命周期（`install`、`start`、`stop`、`restart`、`logs`、`uninstall`）仍只支持 Linux。
 
 `webcodex server init` 默认只在 local/loopback 场景启用 direct shared-key quick-start。传入 `--public-url` 会启用公网 OAuth issuer，但不会自动启用 direct/bridge shared-key。只有 legacy/受信 hosted shared-key 部署才应显式增加 `--allow-remote-shared-key`；Internet-facing Server 优先使用 managed pairing/PAT/OAuth。

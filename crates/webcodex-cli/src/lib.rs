@@ -36,17 +36,17 @@ use webcodex_cli::{
     base_dir_or_default, client_profile_project_registry_dir, client_profile_runner_config,
     client_profile_runner_token_file, client_profile_runner_token_file_for_scope,
     client_profile_state_dir, client_profile_user_token_file,
-    client_profile_user_token_file_for_scope, connect_usage, current_user_home,
+    client_profile_user_token_file_for_scope, connect_usage, controller_usage, current_user_home,
     default_device_name, default_server_paths, disconnect_usage, discover_internal_binary,
     is_effective_root, login_usage, logout_usage, ops_projects_usage, ops_runner_usage,
     ops_runners_usage, ops_smoke_preflight_usage, ops_status_usage, ops_usage, ops_windows_usage,
     pairing_create_usage, pairing_usage, parse_plugin_command, parse_plugin_init,
     plugin_check_usage, plugin_describe_usage, plugin_init_usage, plugin_list_usage,
     plugin_reload_usage, plugin_usage, project_activate_usage, project_register_usage,
-    read_env_file_value, render_token_generate, run_connect, run_disconnect, run_hosted_log_writer,
-    run_internal_binary, run_login, run_logout, run_ops_command, run_pairing_create,
-    run_plugin_command, run_plugin_init, run_project_activate, run_project_register,
-    run_runner_install_service, run_runner_service, run_runner_status,
+    read_env_file_value, render_token_generate, run_connect, run_controller_command,
+    run_disconnect, run_hosted_log_writer, run_internal_binary, run_login, run_logout,
+    run_ops_command, run_pairing_create, run_plugin_command, run_plugin_init, run_project_activate,
+    run_project_register, run_runner_install_service, run_runner_service, run_runner_status,
     run_runner_token_create_local, run_server_init, run_server_install_service, run_server_service,
     run_server_status, run_server_tunnel, run_status, run_token_create_local,
     runner_config_for_scope, runner_init_usage, runner_install_service_usage,
@@ -54,8 +54,8 @@ use webcodex_cli::{
     server_install_service_usage, server_status_usage, server_tunnel_usage, server_usage,
     service_unit_name, status_usage, system_user_home, system_user_is_root, usage,
     validate_client_profile, validate_service_file_scope, write_connect_result, ConnectAuth,
-    ConnectOptions, DisconnectOptions, LoginOptions, LogoutOptions, OpsCommand, OpsCommonOptions,
-    OpsRunnerOptions, OpsSmokePreflightOptions, OpsWindowsOptions, PluginCommand,
+    ConnectOptions, ControllerCommand, DisconnectOptions, LoginOptions, LogoutOptions, OpsCommand,
+    OpsCommonOptions, OpsRunnerOptions, OpsSmokePreflightOptions, OpsWindowsOptions, PluginCommand,
     PluginInitOptions, ProjectActivateOptions, ProjectRegisterOptions, ServerStatusOptions,
     ServiceControl, StatusOptions, DEFAULT_LOG_LINES, RUNNER_SERVICE_UNIT, SERVER_SERVICE_FILE,
     SERVER_SERVICE_UNIT,
@@ -108,6 +108,7 @@ fn default_runner_service_scope(effective_root: bool) -> ServiceScope {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CliAction {
     Project(Vec<String>),
+    Controller(ControllerCommand),
     ProjectRegister(ProjectRegisterOptions),
     ProjectActivate(ProjectActivateOptions),
     Connect(ConnectOptions),
@@ -350,6 +351,11 @@ where
             }
         }
         "server" => parse_server_subcommand(&args[1..]),
+        "controller" => match webcodex_cli::parse_controller_command(&args[1..]) {
+            Ok(command) => CliAction::Controller(command),
+            Err(error) if error == controller_usage() => exit_help(controller_usage()),
+            Err(error) => exit_error(&error),
+        },
         "pairing" => parse_pairing_subcommand(&args[1..]),
         "client" if args.get(1).map(String::as_str) == Some("enroll") => cli_parse_error(
             "`webcodex client enroll` was removed; use `webcodex login <server-url> --code <code>`"
@@ -2837,6 +2843,21 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         CliAction::Status(opts) => match run_status(opts) {
             Ok(stdout) => {
                 print!("{}", stdout);
+                std::process::exit(0);
+            }
+            Err(stderr) => {
+                eprintln!("{}", stderr);
+                std::process::exit(1);
+            }
+        },
+        CliAction::Controller(command) => match run_controller_command(command).await {
+            Ok(stdout) => {
+                if !stdout.is_empty() {
+                    print!("{}", stdout);
+                    if !stdout.ends_with('\n') {
+                        println!();
+                    }
+                }
                 std::process::exit(0);
             }
             Err(stderr) => {

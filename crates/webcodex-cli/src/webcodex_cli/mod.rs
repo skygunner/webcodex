@@ -1,5 +1,6 @@
 pub(crate) mod connect;
 pub(crate) mod connections;
+pub(crate) mod controller;
 pub(crate) mod env;
 pub(crate) mod http;
 pub(crate) mod login;
@@ -54,6 +55,7 @@ pub(crate) use connect::{
     run_hosted_log_writer, run_local_runner_logs, run_local_runner_service, write_connect_result,
     ConnectAuth, ConnectOptions, DisconnectOptions, LocalRunnerServiceAction,
 };
+pub(crate) use controller::{parse_controller_command, run_controller_command, ControllerCommand};
 pub(crate) use env::is_effective_root;
 #[cfg(test)]
 pub(crate) use env::parse_env_content_value;
@@ -131,14 +133,14 @@ pub(crate) use tokens::{
     hash_local_token, local_token_prefix, render_token_generate, token_prefix,
 };
 pub(crate) use usage::{
-    connect_usage, disconnect_usage, login_usage, logout_usage, ops_projects_usage,
-    ops_runner_usage, ops_runners_usage, ops_smoke_preflight_usage, ops_status_usage, ops_usage,
-    ops_windows_usage, pairing_create_usage, pairing_usage, plugin_check_usage,
-    plugin_describe_usage, plugin_init_usage, plugin_list_usage, plugin_reload_usage, plugin_usage,
-    project_activate_usage, project_register_usage, runner_init_usage,
-    runner_install_service_usage, runner_status_usage, runner_usage, server_init_usage,
-    server_install_service_usage, server_status_usage, server_tunnel_usage, server_usage,
-    status_usage, usage,
+    connect_usage, controller_usage, disconnect_usage, login_usage, logout_usage,
+    ops_projects_usage, ops_runner_usage, ops_runners_usage, ops_smoke_preflight_usage,
+    ops_status_usage, ops_usage, ops_windows_usage, pairing_create_usage, pairing_usage,
+    plugin_check_usage, plugin_describe_usage, plugin_init_usage, plugin_list_usage,
+    plugin_reload_usage, plugin_usage, project_activate_usage, project_register_usage,
+    runner_init_usage, runner_install_service_usage, runner_status_usage, runner_usage,
+    server_init_usage, server_install_service_usage, server_status_usage, server_tunnel_usage,
+    server_usage, status_usage, usage,
 };
 
 #[cfg(test)]

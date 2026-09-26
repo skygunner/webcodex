@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::{
     exact_console_project_for_auth, prepared, render_error, require_communication_read,
     require_project_read, workflow_session_detail_with_windows, workflow_session_locate_for_auth,
-    RuntimeConsoleError,
+    RuntimeConsoleError, RuntimeConsoleLocatedSession, RuntimeConsoleProject,
 };
 
 const GOAL_LIST_LIMIT: usize = 100;
@@ -106,32 +106,87 @@ fn correlation_rows(goal: &Value) -> impl Iterator<Item = (&str, &str)> {
         })
 }
 
-async fn project_ids_for_goal(
-    runtime: &crate::tool_runtime::ToolRuntime,
-    auth: &crate::auth::AuthContext,
-    goal: &Value,
-) -> BTreeSet<String> {
+// One HTTP request and one authority context own these observations. They are
+// discarded after projection; dynamic state is read afresh on the next poll.
+// Bound retained observations to one Goal's correlation capacity, even on a list.
+struct GoalResources<'a> {
+    runtime: &'a crate::tool_runtime::ToolRuntime,
+    auth: &'a crate::auth::AuthContext,
+    sessions: BTreeMap<String, Option<RuntimeConsoleLocatedSession>>,
+    tasks: BTreeMap<String, Option<Value>>,
+    projects: BTreeMap<String, Option<RuntimeConsoleProject>>,
+}
+
+impl<'a> GoalResources<'a> {
+    fn new(
+        runtime: &'a crate::tool_runtime::ToolRuntime,
+        auth: &'a crate::auth::AuthContext,
+    ) -> Self {
+        Self {
+            runtime,
+            auth,
+            sessions: BTreeMap::new(),
+            tasks: BTreeMap::new(),
+            projects: BTreeMap::new(),
+        }
+    }
+
+    async fn session(&mut self, id: &str) -> Option<&RuntimeConsoleLocatedSession> {
+        if !self.sessions.contains_key(id) {
+            let observed = workflow_session_locate_for_auth(self.runtime, self.auth, id)
+                .await
+                .ok();
+            if self.sessions.len() >= webcodex_store::MAX_GOAL_CORRELATIONS as usize {
+                self.sessions.clear();
+            }
+            self.sessions.insert(id.to_string(), observed);
+        }
+        self.sessions.get(id).and_then(Option::as_ref)
+    }
+
+    async fn task(&mut self, id: &str) -> Option<&Value> {
+        if !self.tasks.contains_key(id) {
+            let observed = task_value(self.runtime, self.auth, id).await;
+            if self.tasks.len() >= webcodex_store::MAX_GOAL_CORRELATIONS as usize {
+                self.tasks.clear();
+            }
+            self.tasks.insert(id.to_string(), observed);
+        }
+        self.tasks.get(id).and_then(Option::as_ref)
+    }
+
+    async fn project(&mut self, id: &str) -> Option<&RuntimeConsoleProject> {
+        if !self.projects.contains_key(id) {
+            let observed = exact_console_project_for_auth(self.runtime, self.auth, id)
+                .await
+                .ok();
+            if self.projects.len() >= webcodex_store::MAX_GOAL_CORRELATIONS as usize {
+                self.projects.clear();
+            }
+            self.projects.insert(id.to_string(), observed);
+        }
+        self.projects.get(id).and_then(Option::as_ref)
+    }
+}
+
+async fn project_ids_for_goal(resources: &mut GoalResources<'_>, goal: &Value) -> BTreeSet<String> {
     let mut projects = BTreeSet::new();
     for (kind, reference_id) in correlation_rows(goal) {
         match kind {
             "workflow_session" => {
-                if let Ok(session) =
-                    workflow_session_locate_for_auth(runtime, auth, reference_id).await
-                {
-                    projects.insert(session.project_id);
+                if let Some(session) = resources.session(reference_id).await {
+                    projects.insert(session.project_id.clone());
                 }
             }
             "agent_task" => {
-                if let Some(task) = task_value(runtime, auth, reference_id).await {
+                if let Some(task) = resources.task(reference_id).await {
                     if let Some(project_id) = task
                         .pointer("/summary/referenced_project_id")
                         .and_then(Value::as_str)
+                        .map(str::to_string)
                     {
-                        if exact_console_project_for_auth(runtime, auth, project_id)
-                            .await
-                            .is_ok()
-                        {
-                            projects.insert(project_id.to_string());
+                        if resources.project(&project_id).await.is_some() {
+                            projects.insert(project_id);
                         }
                     }
                 }
@@ -188,12 +243,13 @@ async fn goals_for_auth(
         .and_then(Value::as_array)
         .ok_or(RuntimeConsoleError::Internal)?;
     let mut goals = Vec::new();
+    let mut resources = GoalResources::new(runtime, auth);
     for row in rows {
         let Some(goal_id) = goal_id_from(row) else {
             continue;
         };
         let goal = raw_goal(runtime, auth, &goal_id).await?;
-        let projects = project_ids_for_goal(runtime, auth, &goal).await;
+        let projects = project_ids_for_goal(&mut resources, &goal).await;
         if project.is_some_and(|wanted| !projects.contains(wanted)) {
             continue;
         }
@@ -232,11 +288,12 @@ async fn goal_detail_for_auth(
 ) -> Result<Value, RuntimeConsoleError> {
     let goal = raw_goal(runtime, auth, goal_id).await?;
     let plan = goal_plan(runtime, auth, goal_id).await?;
-    let project_ids = project_ids_for_goal(runtime, auth, &goal).await;
+    let mut resources = GoalResources::new(runtime, auth);
+    let project_ids = project_ids_for_goal(&mut resources, &goal).await;
 
     let mut projects = Vec::new();
     for project_id in &project_ids {
-        if let Ok(project) = exact_console_project_for_auth(runtime, auth, project_id).await {
+        if let Some(project) = resources.project(project_id).await {
             projects
                 .push(serde_json::to_value(project).map_err(|_| RuntimeConsoleError::Internal)?);
         }
@@ -254,9 +311,7 @@ async fn goal_detail_for_auth(
     for (kind, reference_id) in correlation_rows(&goal) {
         match kind {
             "workflow_session" => {
-                let Ok(located) =
-                    workflow_session_locate_for_auth(runtime, auth, reference_id).await
-                else {
+                let Some(located) = resources.session(reference_id).await else {
                     continue;
                 };
                 let project_id = located.project_id.clone();
@@ -318,14 +373,14 @@ async fn goal_detail_for_auth(
                 }
             }
             "agent_task" => {
-                if let Some(task) = task_value(runtime, auth, reference_id).await {
+                if let Some(task) = resources.task(reference_id).await {
                     if let Some(agent_id) = task
                         .pointer("/summary/assignee_agent_id")
                         .and_then(Value::as_str)
                     {
                         agent_ids.insert(agent_id.to_string());
                     }
-                    tasks.push(task);
+                    tasks.push(task.clone());
                 }
             }
             _ => {}
@@ -427,3 +482,7 @@ pub(super) async fn goal_detail_for_auth_test(
 ) -> Result<Value, RuntimeConsoleError> {
     goal_detail_for_auth(runtime, auth, goal_id).await
 }
+
+#[cfg(test)]
+#[path = "goals_tests.rs"]
+mod tests;

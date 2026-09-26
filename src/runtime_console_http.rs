@@ -1154,9 +1154,18 @@ fn scan_runtime_home(
         visible.truncated || visible.projects.len().min(HOME_PROJECT_SCAN_LIMIT) < visible.total;
     let mut session_scan_truncated = running_jobs.truncated;
 
+    let project_ids = visible
+        .projects
+        .iter()
+        .take(HOME_PROJECT_SCAN_LIMIT)
+        .map(|project| project.id.as_str())
+        .collect::<Vec<_>>();
+    let mut lists = runtime
+        .workflow_sessions_console_lists(&project_ids, Some(HOME_SESSIONS_PER_PROJECT_LIMIT));
     for project in visible.projects.iter().take(HOME_PROJECT_SCAN_LIMIT) {
-        let mut list = runtime
-            .workflow_sessions_console_list(&project.id, Some(HOME_SESSIONS_PER_PROJECT_LIMIT));
+        let mut list = lists
+            .remove(&project.id)
+            .expect("visible project has a console list");
         apply_running_jobs_to_list(&mut list, &project.id, running_jobs);
         let aggregate = aggregate_console_list(&list);
         add_console_aggregate(&mut workflow, &aggregate);
@@ -3511,7 +3520,7 @@ mod tests {
         }
     }
 
-    async fn register_project(
+    pub(super) async fn register_project(
         runtime: &ToolRuntime,
         client_id: &str,
         project_id: &str,
@@ -3577,7 +3586,8 @@ mod tests {
         (tmp, db, runtime)
     }
 
-    fn test_runtime_with_goal_db() -> (tempfile::TempDir, Arc<crate::Database>, Arc<ToolRuntime>) {
+    pub(super) fn test_runtime_with_goal_db(
+    ) -> (tempfile::TempDir, Arc<crate::Database>, Arc<ToolRuntime>) {
         let tmp = tempfile::tempdir().unwrap();
         let db = Arc::new(crate::Database::open(&tmp.path().join("goal-console.db")).unwrap());
         let runtime = Arc::new(

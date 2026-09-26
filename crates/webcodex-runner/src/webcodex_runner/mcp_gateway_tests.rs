@@ -28,7 +28,7 @@ fn fake_binary() -> Arc<FakeBinary> {
     if let Some(binary) = cached.upgrade() {
         return binary;
     }
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let output = temp.path().join(format!(
         "webcodex-mcp-bridge-fake{}",
         env::consts::EXE_SUFFIX
@@ -97,7 +97,7 @@ impl Fixture {
         cwd: Option<String>,
         env_from_env: BTreeMap<String, String>,
     ) -> Self {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::tests::executable_tempdir();
         let marker = temp.path().join("marker.log");
         let fake = fake_binary();
         let mut args = vec![scenario.to_string(), marker.to_string_lossy().to_string()];
@@ -603,7 +603,7 @@ fn provider_execution_context_is_explicit_cleared_and_private() {
         .set("GITHUB_TOKEN", "github-provider-secret-value")
         .set("WEBCODEX_MCP_MAPPED_SOURCE", "mapped-provider-secret-value")
         .set("WEBCODEX_MCP_UNLISTED", "must-not-reach-provider");
-    let cwd = tempfile::tempdir().unwrap();
+    let cwd = crate::tests::executable_tempdir();
     let fixture = Fixture::with_execution_context(
         "execution_context",
         TEST_PARALLEL_TIMEOUT_FLOOR_SECS,
@@ -694,7 +694,7 @@ fn sensitive_runner_env_mapping_is_blocked_before_provider_spawn() {
 
 #[test]
 fn unavailable_provider_cwd_fails_before_provider_spawn() {
-    let cwd_parent = tempfile::tempdir().unwrap();
+    let cwd_parent = crate::tests::executable_tempdir();
     let missing = cwd_parent.path().join("missing-provider-cwd");
     let fixture = Fixture::with_execution_context(
         "normal",

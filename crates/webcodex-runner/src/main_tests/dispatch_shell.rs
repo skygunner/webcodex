@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn dispatch_request_run_shell_sends_result_over_sink() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::tests::executable_tempdir();
     let cfg = test_config(tmp.path().join("config/project-registry"));
     let jobs = JobManager::new(max_concurrent_jobs(&cfg));
     let pdir = project_registry_dir(&cfg).unwrap();
@@ -79,7 +79,7 @@ fn dispatch_request_run_shell_sends_result_over_sink() {
 
 #[test]
 fn dispatch_request_detached_process_job_enters_job_manager_without_generic_result() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::tests::executable_tempdir();
     let cfg = test_config(tmp.path().join("config/project-registry"));
     let jobs = JobManager::new(max_concurrent_jobs(&cfg));
     let pdir = project_registry_dir(&cfg).unwrap();
@@ -154,7 +154,7 @@ fn dispatch_request_detached_process_job_enters_job_manager_without_generic_resu
 
 #[test]
 fn dispatch_request_internal_search_uses_posix_runtime_not_configured_shell_parser() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::tests::executable_tempdir();
     let mut cfg = test_config(tmp.path().join("config/project-registry"));
     // The generated search program is POSIX shell. It must not inherit an
     // arbitrary configured shell parser (PowerShell is the Windows production
@@ -241,7 +241,7 @@ fn dispatch_request_internal_search_uses_posix_runtime_not_configured_shell_pars
 #[cfg(unix)]
 #[test]
 fn dispatch_request_internal_posix_script_ignores_configured_shell_parser() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::tests::executable_tempdir();
     let mut cfg = test_config(tmp.path().join("config/project-registry"));
     cfg.shell.program = "/bin/false".to_string();
     cfg.shell.dialect = Some(crate::webcodex_runner::config::ShellDialect::PowerShell);
@@ -318,7 +318,7 @@ fn dispatch_request_internal_posix_script_ignores_configured_shell_parser() {
 
 #[test]
 fn dispatch_request_run_shell_rejects_oversized_wire_command_before_start() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::tests::executable_tempdir();
     let cfg = test_config(tmp.path().join("config/project-registry"));
     let jobs = JobManager::new(max_concurrent_jobs(&cfg));
     let pdir = project_registry_dir(&cfg).unwrap();
@@ -393,7 +393,7 @@ fn dispatch_request_run_shell_rejects_oversized_wire_command_before_start() {
 
 #[test]
 fn dispatch_request_structured_process_uses_typed_argv_and_never_shell_fallback() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::tests::executable_tempdir();
     let helper = tmp.path().join(format!(
         "process-argv-helper{}",
         std::env::consts::EXE_SUFFIX
@@ -550,7 +550,7 @@ fn dispatch_request_structured_process_uses_typed_argv_and_never_shell_fallback(
 #[cfg(unix)]
 #[test]
 fn dispatch_request_structured_script_uses_typed_file_and_never_shell_fallback() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::tests::executable_tempdir();
     let cfg = test_config(tmp.path().join("config/project-registry"));
     let jobs = JobManager::new(max_concurrent_jobs(&cfg));
     let pdir = project_registry_dir(&cfg).unwrap();

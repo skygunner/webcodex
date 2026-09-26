@@ -15,6 +15,22 @@ pub(crate) fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Create a temporary directory on the repository filesystem for fixtures that
+/// must be executed. Hardened hosts may mount the system temp directory with
+/// `noexec`, so executable test fixtures must not assume `tempfile::tempdir()`
+/// can be spawned.
+pub(crate) fn executable_tempdir() -> tempfile::TempDir {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("target")
+        .join("test-executables");
+    std::fs::create_dir_all(&root).expect("create Runner executable test temp root");
+    tempfile::Builder::new()
+        .prefix("webcodex-runner-exec-")
+        .tempdir_in(root)
+        .expect("create Runner executable test temp dir")
+}
+
 /// RAII restore for environment variables mutated by tests: restores the
 /// previous value (or absence) on drop, even when the test panics, so a
 /// failure cannot leak env state into later tests.

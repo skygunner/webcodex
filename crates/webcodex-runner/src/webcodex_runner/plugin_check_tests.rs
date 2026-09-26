@@ -22,7 +22,7 @@ fn fake_binary() -> Arc<FakeBinary> {
     if let Some(binary) = cached.upgrade() {
         return binary;
     }
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let output = temp.path().join(format!(
         "webcodex-plugin-check-fake{}",
         env::consts::EXE_SUFFIX
@@ -61,7 +61,7 @@ struct CheckFixture {
 
 impl CheckFixture {
     fn new(candidate_scenario: &str, timeout_secs: u64) -> Self {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::tests::executable_tempdir();
         let marker = temp.path().join("marker.log");
         let fake = fake_binary();
         let startup_plugins = PluginConfig {

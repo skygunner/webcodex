@@ -91,7 +91,7 @@ impl NavFixture {
     }
 
     fn with_request_timeout(scenario: &str, request_timeout: Duration) -> Self {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::tests::executable_tempdir();
         let root = temp.path().join("project");
         Self::populate_demo_project(&root);
         Self::finish(
@@ -106,7 +106,7 @@ impl NavFixture {
     /// Fixture for any language: writes the given project-relative files
     /// (creating parent directories) and wires the fake server under `kind`.
     fn with_language(scenario: &str, kind: LspServerKind, files: &[(&str, &str)]) -> Self {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::tests::executable_tempdir();
         let root = temp.path().join("project");
         fs::create_dir_all(&root).unwrap();
         for (relative, body) in files {
@@ -645,7 +645,7 @@ fn status_does_not_start_server_and_unavailable_succeeds() {
         "status-only startup probes must not start the fake rust-analyzer"
     );
     // Point supervisor at a missing binary via separate fixture.
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let root = temp.path().join("project");
     fs::create_dir_all(&root).unwrap();
     let project_registry_dir = temp.path().join("project-registry");
@@ -2073,7 +2073,7 @@ fn real_pyright_document_symbols_end_to_end() {
         panic!("pyright-langserver not found; set WEBCODEX_PYRIGHT or install pyright");
     };
 
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let root = temp.path().join("project");
     fs::create_dir_all(root.join("src")).unwrap();
     fs::write(root.join("pyproject.toml"), "[project]\nname = \"demo\"\n").unwrap();
@@ -2194,7 +2194,7 @@ fn real_typescript_document_symbols_end_to_end() {
         panic!("typescript-language-server not found; set WEBCODEX_TYPESCRIPT_LANGUAGE_SERVER");
     };
 
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let root = temp.path().join("project");
     fs::create_dir_all(root.join("src")).unwrap();
     fs::write(
@@ -2301,7 +2301,7 @@ fn real_gopls_navigation_and_call_hierarchy_end_to_end() {
         panic!("gopls not found; set WEBCODEX_GOPLS or preinstall gopls manually");
     };
 
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let root = temp.path().join("project");
     fs::create_dir_all(&root).unwrap();
     fs::write(root.join("go.mod"), "module example.com/demo\n\ngo 1.20\n").unwrap();

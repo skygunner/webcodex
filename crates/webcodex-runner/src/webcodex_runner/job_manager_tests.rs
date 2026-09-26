@@ -667,7 +667,7 @@ fn detached_job_payload_subprocess_entrypoint() {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn detached_recovery_uses_same_inventory_and_observes_terminal_output() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let marker = temp.path().join("runs");
     let store = DetachedJobStore::new(temp.path().join("state"));
     let request = detached_job_request(
@@ -730,7 +730,7 @@ fn detached_recovery_uses_same_inventory_and_observes_terminal_output() {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn detached_recovery_runner_shutdown_preserves_supervisor_ownership() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let store = DetachedJobStore::new(temp.path().join("state"));
     let request = detached_job_request(
         temp.path(),
@@ -785,7 +785,7 @@ fn detached_recovery_runner_shutdown_preserves_supervisor_ownership() {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn detached_recovery_stop_uses_durable_control_without_managed_child() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let pid_marker = temp.path().join("payload.pid");
     let store = DetachedJobStore::new(temp.path().join("state"));
     let request = detached_job_request(
@@ -828,7 +828,7 @@ fn detached_recovery_stop_uses_durable_control_without_managed_child() {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn detached_recovery_observer_start_failure_retains_durable_control_and_stop_routing() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let pid_marker = temp.path().join("payload.pid");
     let store = DetachedJobStore::new(temp.path().join("state"));
     let request = detached_job_request(
@@ -885,7 +885,7 @@ fn detached_recovery_observer_start_failure_retains_durable_control_and_stop_rou
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn detached_recovery_observer_marks_later_supervisor_loss() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let pid_marker = temp.path().join("payload.pid");
     let store = DetachedJobStore::new(temp.path().join("state"));
     let request = detached_job_request(
@@ -949,7 +949,7 @@ fn detached_recovery_observer_marks_later_supervisor_loss() {
 #[cfg(target_os = "linux")]
 #[test]
 fn job_manager_stop_terminates_the_process_group() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let mut command = configured_shell_job_command(
         &ShellConfig::default(),
         "sleep 60 & echo $! > descendant.pid; wait",
@@ -1003,7 +1003,7 @@ fn job_manager_stop_terminates_the_process_group() {
 #[cfg(target_os = "linux")]
 #[test]
 fn job_shutdown_reaps_a_sigterm_responsive_child() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let ready = temp.path().join("ready");
     let mut command = configured_shell_job_command(
         &ShellConfig::default(),
@@ -1044,7 +1044,7 @@ fn job_shutdown_reaps_a_sigterm_responsive_child() {
 #[cfg(target_os = "linux")]
 #[test]
 fn job_shutdown_escalates_ignored_sigterm_for_parent_and_descendant() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let mut command = configured_shell_job_command(
         &ShellConfig::default(),
         "trap '' TERM; sleep 60 & echo $! > descendant.pid; wait",
@@ -1194,7 +1194,7 @@ fn structured_process_helper() -> Arc<StructuredProcessHelper> {
         .get_or_init(|| {
             let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("../../tests/fixtures/process_argv_helper.rs");
-            let temp = tempfile::tempdir().unwrap();
+            let temp = crate::tests::executable_tempdir();
             let output = temp.path().join(format!(
                 "structured-process-helper{}",
                 std::env::consts::EXE_SUFFIX
@@ -1415,7 +1415,7 @@ fn enqueue_detached_process_job(
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn detached_process_jobmanager_initiation_handoffs_once_and_stops_via_durable_control() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let state_root = temp.path().join("detached-state");
     let store = DetachedJobStore::new(state_root.clone());
     let helper = structured_process_helper();
@@ -1663,7 +1663,7 @@ fn assert_gated_job_started_once(job: &GatedStructuredJob) {
 
 #[test]
 fn phase_e2_default_four_gates_fifth_and_promotes_same_job_once() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let helper = structured_process_helper();
     let (sink, _rx) = structured_test_sink("structured-agent", "structured-instance");
     let manager = JobManager::new(DEFAULT_MAX_CONCURRENT_JOBS);
@@ -1747,7 +1747,7 @@ fn phase_e2_default_four_gates_fifth_and_promotes_same_job_once() {
 
 #[test]
 fn runner_job_slots_are_shared_across_runtime_projects() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let helper = structured_process_helper();
     let (sink, _rx) = structured_test_sink("structured-agent", "structured-instance");
     let manager = JobManager::new(1);
@@ -1847,7 +1847,7 @@ fn runner_job_slots_are_shared_across_runtime_projects() {
 
 #[test]
 fn phase_e2_explicit_limit_one_serializes_jobs_strictly() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let helper = structured_process_helper();
     let (sink, _rx) = structured_test_sink("structured-agent", "structured-instance");
     let manager = JobManager::new(1);
@@ -1882,7 +1882,7 @@ fn phase_e2_explicit_limit_one_serializes_jobs_strictly() {
 
 #[test]
 fn phase_e2_explicit_higher_limit_starts_all_eight_children() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let helper = structured_process_helper();
     let (sink, _rx) = structured_test_sink("structured-agent", "structured-instance");
     let manager = JobManager::new(8);
@@ -1913,7 +1913,7 @@ fn phase_e2_explicit_higher_limit_starts_all_eight_children() {
 
 #[test]
 fn phase_e2_single_client_queue_promotes_fifo() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let helper = structured_process_helper();
     let (sink, _rx) = structured_test_sink("structured-agent", "structured-instance");
     let manager = JobManager::new(1);
@@ -1942,7 +1942,7 @@ fn phase_e2_single_client_queue_promotes_fifo() {
 
 #[test]
 fn phase_e2_prestart_structured_failure_releases_slot_for_queued_job() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let helper = structured_process_helper();
     let (sink, _rx) = structured_test_sink("structured-agent", "structured-instance");
     let manager = JobManager::new(1);
@@ -2027,7 +2027,7 @@ fn phase_e2_prestart_structured_failure_releases_slot_for_queued_job() {
 
 #[test]
 fn phase_e2_stopped_queued_job_never_executes_after_slot_release() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let helper = structured_process_helper();
     let (sink, _rx) = structured_test_sink("structured-agent", "structured-instance");
     let manager = JobManager::new(1);
@@ -2068,7 +2068,7 @@ fn phase_e2_stopped_queued_job_never_executes_after_slot_release() {
 fn phase_e2_validation_job_shares_the_same_job_manager_slot_limit() {
     use std::os::unix::fs::PermissionsExt;
 
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let helper = structured_process_helper();
     let (sink, _rx) = structured_test_sink("structured-agent", "structured-instance");
     let manager = JobManager::new(1);
@@ -2160,7 +2160,7 @@ fn phase_e2_validation_job_shares_the_same_job_manager_slot_limit() {
 
 #[test]
 fn structured_process_job_executes_exactly_once_and_reconciles_the_same_job() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let helper = structured_process_helper();
     let gated = GatedStructuredJob::new(temp.path(), "structured-once");
     let (sink, mut rx) = structured_test_sink("structured-agent", "structured-instance");
@@ -2234,7 +2234,7 @@ fn structured_process_job_executes_exactly_once_and_reconciles_the_same_job() {
 #[cfg(unix)]
 #[test]
 fn chatty_job_and_queued_job_progress_while_stream_transport_is_full() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let helper = structured_process_helper();
     let queued_marker = temp.path().join("queued-progressed");
     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
@@ -2430,7 +2430,7 @@ fn output_only_delivery_coalescing_preserves_authoritative_snapshot_invariants()
 
 #[test]
 fn structured_process_job_preserves_large_literal_argv_without_shell_fallback() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let helper = structured_process_helper();
     let shell_marker = temp.path().join("shell-marker");
     let values = vec![
@@ -2470,7 +2470,7 @@ fn structured_process_job_preserves_large_literal_argv_without_shell_fallback() 
 
 #[test]
 fn structured_process_job_terminal_lifecycle_distinguishes_prestart_nonzero_and_timeout() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let helper = structured_process_helper();
     for (job_id, executable, args, timeout_secs, status, state, exit_code) in [
         (
@@ -2561,7 +2561,7 @@ fn structured_process_job_terminal_lifecycle_distinguishes_prestart_nonzero_and_
 
 #[test]
 fn structured_process_job_drains_large_output_without_log_observation_and_runs_once() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let helper = structured_process_helper();
     let marker = temp.path().join("chatty-starts.log");
     let nonce = format!("chatty-{}", uuid::Uuid::new_v4());
@@ -2630,7 +2630,7 @@ fn structured_process_job_drains_large_output_without_log_observation_and_runs_o
 
 #[test]
 fn structured_process_job_stop_after_large_output_is_bounded_and_exact_once() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let helper = structured_process_helper();
     let marker = temp.path().join("chatty-stop-starts.log");
     let ready = temp.path().join("chatty-stop-ready");
@@ -2692,7 +2692,7 @@ fn structured_process_job_stop_after_large_output_is_bounded_and_exact_once() {
 
 #[test]
 fn structured_process_job_timeout_after_large_output_is_bounded_and_exact_once() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let helper = structured_process_helper();
     let marker = temp.path().join("chatty-timeout-starts.log");
     let ready = temp.path().join("chatty-timeout-ready");
@@ -2757,7 +2757,7 @@ fn structured_process_job_timeout_after_large_output_is_bounded_and_exact_once()
 
 #[test]
 fn structured_process_job_shutdown_after_large_output_reaps_the_same_execution() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let helper = structured_process_helper();
     let marker = temp.path().join("chatty-shutdown-starts.log");
     let ready = temp.path().join("chatty-shutdown-ready");
@@ -2815,7 +2815,7 @@ fn structured_process_job_shutdown_after_large_output_reaps_the_same_execution()
 
 #[test]
 fn structured_process_job_handoff_observation_does_not_reset_the_original_total_timeout() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let helper = structured_process_helper();
     let marker = temp.path().join("timeout-started.log");
     let nonce = format!("timeout-{}", uuid::Uuid::new_v4());
@@ -2893,7 +2893,7 @@ fn structured_process_job_handoff_observation_does_not_reset_the_original_total_
 
 #[test]
 fn stop_terminates_a_structured_process_job_without_replacement() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let helper = structured_process_helper();
     let marker = temp.path().join("stop-started.log");
     let nonce = format!("stop-{}", uuid::Uuid::new_v4());
@@ -2935,7 +2935,7 @@ fn stop_terminates_a_structured_process_job_without_replacement() {
 #[cfg(windows)]
 #[test]
 fn phase_f_windows_structured_job_normalizes_oem_stdout_and_stderr() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let helper = structured_process_helper();
     let expected_path = temp.path().join("expected-oem.txt");
     let (sink, mut rx) = structured_test_sink("structured-agent", "structured-instance");
@@ -2971,7 +2971,7 @@ fn phase_f_windows_structured_job_normalizes_oem_stdout_and_stderr() {
 #[cfg(windows)]
 #[test]
 fn phase_f_windows_shell_job_stream_reconstructs_split_utf8_and_oem() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let helper = structured_process_helper();
     let marker = temp.path().join("split-started");
     let (sink, mut rx) = structured_test_sink("structured-agent", "structured-instance");
@@ -3068,7 +3068,7 @@ fn phase_f_windows_shell_job_stream_reconstructs_split_utf8_and_oem() {
 #[cfg(windows)]
 #[test]
 fn phase_f_windows_structured_job_stop_retains_unicode_and_runs_once() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let helper = structured_process_helper();
     let marker = temp.path().join("stop-output-started.log");
     let (sink, mut rx) = structured_test_sink("structured-agent", "structured-instance");
@@ -3107,7 +3107,7 @@ fn phase_f_windows_structured_job_stop_retains_unicode_and_runs_once() {
 #[cfg(unix)]
 #[test]
 fn structured_script_job_keeps_its_temporary_file_until_terminal_then_removes_it() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let marker = temp.path().join("script-started.log");
     let observed_path = temp.path().join("script-path");
     let script = "printf '%s\\n' \"$$\" >> \"$1\"\nprintf '%s' \"$0\" > \"$2\"\nsleep 1\ntest -f \"$0\"\nprintf 'same-script-complete\\n'\n";
@@ -3204,7 +3204,7 @@ fn structured_script_job_keeps_its_temporary_file_until_terminal_then_removes_it
 #[cfg(unix)]
 #[test]
 fn structured_script_job_drains_large_output_without_log_observation_and_runs_once() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let marker = temp.path().join("script-chatty-starts.log");
     let stdout_payload = "x".repeat(4096);
     let stderr_payload = "y".repeat(4096);
@@ -3371,7 +3371,7 @@ fn describe_update(update: &RunnerJobUpdateRequest) -> String {
 fn run_fail_fast_validation_job(attempt: usize) -> FailFastAttempt {
     use std::os::unix::fs::PermissionsExt;
 
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let bin = temp.path().join("bin");
     std::fs::create_dir(&bin).unwrap();
     let cargo = bin.join("cargo");
@@ -3456,7 +3456,7 @@ fn run_fail_fast_validation_job(attempt: usize) -> FailFastAttempt {
 fn cargo_test_terminal_count_evidence_survives_runner_stream_retention() {
     use std::os::unix::fs::PermissionsExt;
 
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let bin = temp.path().join("bin");
     std::fs::create_dir(&bin).unwrap();
     let cargo = bin.join("cargo");
@@ -3560,7 +3560,7 @@ fn cargo_test_terminal_count_evidence_survives_runner_stream_retention() {
 fn validation_job_exposes_activity_during_silent_step_and_clears_terminal() {
     use std::os::unix::fs::PermissionsExt;
 
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let bin = temp.path().join("bin");
     std::fs::create_dir(&bin).unwrap();
     let cargo = bin.join("cargo");
@@ -4000,7 +4000,7 @@ fn activity_only_delivery_coalesces_without_consuming_required_semantic_queue() 
 fn noisy_validation_progress_delivery_stays_ordered_after_transport_backpressure() {
     use std::os::unix::fs::PermissionsExt;
 
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let helper = structured_process_helper();
     let steps_log = temp.path().join("validation-steps.log");
     let bin = temp.path().join("bin");
@@ -4238,7 +4238,7 @@ fn validation_job_progress_is_executor_owned_and_fail_fast() {
 #[cfg(unix)]
 #[test]
 fn validation_spawn_failure_is_infrastructure_without_failed_assertion() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let mut shell = ShellConfig::default();
     shell.env.insert(
         "PATH".to_string(),
@@ -4310,7 +4310,7 @@ fn validation_spawn_failure_is_infrastructure_without_failed_assertion() {
 fn python_module_probe_reports_tool_unavailable_without_running_recipe() {
     use std::os::unix::fs::PermissionsExt;
 
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let python = temp.path().join("python");
     let probe_output = temp.path().join("module");
     std::fs::write(
@@ -4496,7 +4496,7 @@ fn job_tree_helper() -> Arc<JobTreeHelper> {
         .get_or_init(|| {
             let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("../webcodex-process/src/bin/process_tree_helper.rs");
-            let temp = tempfile::tempdir().unwrap();
+            let temp = crate::tests::executable_tempdir();
             let output = temp.path().join(format!(
                 "process-tree-helper{}",
                 std::env::consts::EXE_SUFFIX
@@ -4708,7 +4708,7 @@ fn seed_running_job_tree(
 #[test]
 #[ignore = "runner real-process lane: spawns the JobManager process-tree fixture"]
 fn runner_real_process_job_stop_terminates_whole_tree_including_descendant() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let marker = temp.path().join("stop-grandchild.marker");
     let manager = JobManager::new(1);
     let (tree, stop_requested) = seed_running_job_tree(&manager, "stop-tree-job", &marker);
@@ -4737,7 +4737,7 @@ fn runner_real_process_job_stop_terminates_whole_tree_including_descendant() {
 #[test]
 #[ignore = "runner real-process lane: spawns the JobManager process-tree fixture"]
 fn runner_real_process_job_cleanup_after_parent_exit_terminates_descendant_and_reaches_eof() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let marker = temp.path().join("orphan.marker");
     let helper = job_tree_helper();
     let mut cmd = Command::new(&helper.path);
@@ -4845,7 +4845,7 @@ fn runner_real_process_job_stop_all_terminates_all_trees_and_preserves_completed
         );
     }
 
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let marker_a = temp.path().join("stop-all-a.marker");
     let marker_b = temp.path().join("stop-all-b.marker");
     let (tree_a, _) = seed_running_job_tree(&manager, "running-a", &marker_a);
@@ -4872,7 +4872,7 @@ fn runner_real_process_job_stop_all_terminates_all_trees_and_preserves_completed
 #[test]
 #[ignore = "runner real-process lane: spawns the JobManager process-tree fixture"]
 fn runner_real_process_job_stop_twice_is_idempotent() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let marker = temp.path().join("twice.marker");
     let manager = JobManager::new(1);
     let (tree, _) = seed_running_job_tree(&manager, "twice-job", &marker);
@@ -4918,7 +4918,7 @@ fn runner_real_process_job_stop_after_natural_exit_does_not_panic() {
 #[ignore = "runner real-process lane: spawns the JobManager process-tree fixture"]
 fn runner_real_process_last_job_manager_owner_drop_terminates_running_tree_with_worker_clone_alive()
 {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let marker = temp.path().join("drop.marker");
     let manager = JobManager::new(1);
     let second_owner = manager.clone();
@@ -4962,7 +4962,7 @@ fn runner_real_process_cleanup_managed_tree_on_exited_tree_does_not_panic() {
 #[test]
 #[ignore = "runner real-process lane: spawns the JobManager process-tree fixture"]
 fn runner_real_process_job_stop_racing_shutdown_does_not_panic() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let marker = temp.path().join("race.marker");
     let manager = JobManager::new(1);
     let (tree, _) = seed_running_job_tree(&manager, "race-job", &marker);
@@ -4987,7 +4987,7 @@ fn runner_real_process_job_stop_racing_shutdown_does_not_panic() {
 #[test]
 #[ignore = "runner real-process lane: spawns the JobManager process-tree fixture"]
 fn runner_real_process_job_timeout_terminates_the_whole_tree() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let marker = temp.path().join("timeout-grandchild.marker");
     let helper = job_tree_helper();
     // `sh -c '<helper> spawn-grandchild-keepalive <marker> 3 60 60'` so the
@@ -5104,7 +5104,7 @@ pub(crate) fn shell_job_request(cwd: &Path, command: &str) -> RunnerRequest {
 
 #[test]
 fn runner_recovery_context_rejects_cross_product_go_test_metadata() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let mut request = shell_job_request(temp.path(), "");
     request.kind = "start_validation_job".to_string();
     let cargo_step = ShellJobValidationStep {
@@ -5138,7 +5138,7 @@ fn runner_recovery_context_rejects_cross_product_go_test_metadata() {
 
 #[test]
 fn runner_recovery_context_accepts_server_validation_identity_metadata() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let mut request = shell_job_request(temp.path(), "");
     request.kind = "start_process_job".to_string();
     request.process = Some(runner_protocol::ShellProcessArgv {
@@ -5188,7 +5188,7 @@ fn runner_recovery_context_accepts_server_validation_identity_metadata() {
 
 #[test]
 fn runner_recovery_context_accepts_compact_session_base64url_alphabet() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let mut request = shell_job_request(temp.path(), "printf ok");
     let context = request.job_context.as_mut().unwrap();
     context.runtime_project_id = Some("agent:ws-client:demo".to_string());
@@ -5200,7 +5200,7 @@ fn runner_recovery_context_accepts_compact_session_base64url_alphabet() {
 
 #[test]
 fn runner_recovery_context_accepts_javascript_script_job() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let script = runner_protocol::ShellScriptPayload {
         language: runner_protocol::ShellScriptLanguage::Javascript,
         script: "console.log('recovered');\n".to_string(),
@@ -5239,7 +5239,7 @@ fn runner_recovery_context_accepts_javascript_script_job() {
 
 #[test]
 fn runner_recovery_context_accepts_python_script_job() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let script = runner_protocol::ShellScriptPayload {
         language: runner_protocol::ShellScriptLanguage::Python,
         script: "print('recovered')\n".to_string(),
@@ -5293,7 +5293,7 @@ fn runner_recovery_context_accepts_python_script_job() {
 
 #[test]
 fn runner_recovery_context_accepts_typescript_semantic_identity_only() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let script = runner_protocol::ShellScriptPayload {
         language: runner_protocol::ShellScriptLanguage::Typescript,
         script: "const recovered: string = 'ok';\nvoid recovered;\n".to_string(),
@@ -5367,7 +5367,7 @@ pub(crate) fn ws_sink(
 #[cfg(unix)]
 #[test]
 fn job_manager_stop_all_clears_queue_and_requests_running_stop() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::tests::executable_tempdir();
     let project_registry_dir = tmp.path().join("config/project-registry");
     let policy = RunnerPolicy {
         allow_cwd_anywhere: true,
@@ -5526,7 +5526,7 @@ fn raw_shell_job_lifecycle_distinguishes_terminal_truth_without_error_text_match
 
 #[test]
 fn raw_shell_job_prestart_rejection_is_explicitly_not_started() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let operation = decoded_job_operation(shell_job_request(temp.path(), "printf ok"));
     assert_eq!(
         job_prestart_lifecycle(&operation),
@@ -5536,7 +5536,7 @@ fn raw_shell_job_prestart_rejection_is_explicitly_not_started() {
 
 #[test]
 fn raw_shell_job_post_spawn_interruption_never_reuses_not_started_proof() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let shell = decoded_job_operation(shell_job_request(temp.path(), "printf ok"));
     assert_eq!(
         post_spawn_interruption_lifecycle(&shell),
@@ -5603,7 +5603,7 @@ fn assert_local_job_stdin_isolated(test_name: &str, validation: bool) {
     const FIXTURE_ENV: &str = "WEBCODEX_TEST_JOB_STDIN_FIXTURE";
     const PARENT_INPUT: &str = "parent-liveness-input-must-not-reach-jobs\n";
     if std::env::var(FIXTURE_ENV).as_deref() == Ok(test_name) {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::tests::executable_tempdir();
         let mut shell = ShellConfig::default();
         #[cfg(windows)]
         let probe =
@@ -5693,7 +5693,7 @@ fn assert_local_job_stdin_isolated(test_name: &str, validation: bool) {
 
     // Isolate the inherited input in a subprocess; never replace process-global
     // stdin in the test runner or depend on an interactive terminal / installed Git.
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::tests::executable_tempdir();
     let input = root.path().join("parent-input");
     std::fs::write(&input, PARENT_INPUT).unwrap();
     let mut command = Command::new(std::env::current_exe().unwrap());

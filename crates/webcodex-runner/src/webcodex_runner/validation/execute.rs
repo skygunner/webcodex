@@ -408,7 +408,7 @@ mod tests {
         const ENV: &str = "WEBCODEX_TEST_VALIDATION_EXECUTABLE";
         const MISSING_NAME: &str = "webcodex-validation-executable-that-does-not-exist";
         let _env_lock = crate::tests::test_env_lock();
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::tests::executable_tempdir();
 
         let env = crate::tests::EnvGuard::new().set(ENV, temp.path());
         assert!(resolve_executable(ENV, MISSING_NAME).is_none());
@@ -448,7 +448,7 @@ mod tests {
             .get_or_init(|| {
                 let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .join("src/webcodex_runner/validation/validation_tree_helper.rs");
-                let temp = tempfile::tempdir().unwrap();
+                let temp = crate::tests::executable_tempdir();
                 let output = temp.path().join(format!(
                     "validation-tree-helper{}",
                     std::env::consts::EXE_SUFFIX

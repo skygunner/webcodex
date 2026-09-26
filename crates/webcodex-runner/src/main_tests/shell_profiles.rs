@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn prepared_profile_env_is_available_to_run_shell() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::tests::executable_tempdir();
     let shell = shell_with_profiles(
         Some("test"),
         vec![(
@@ -27,7 +27,7 @@ fn prepared_profile_env_is_available_to_run_shell() {
 
 #[test]
 fn prepared_profile_init_script_export_is_available_to_run_shell() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::tests::executable_tempdir();
     // The profile inherits the platform default shell (`sh -c` on Unix,
     // PowerShell on Windows) and exports a variable its init snippet; the
     // captured environment snapshot must reach later commands.
@@ -58,7 +58,7 @@ fn prepared_profile_init_script_export_is_available_to_run_shell() {
 
 #[test]
 fn prepared_profile_failure_reports_exit_code() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::tests::executable_tempdir();
     let shell = shell_with_profiles(
         Some("test"),
         vec![(
@@ -86,7 +86,7 @@ fn prepared_profile_failure_reports_exit_code() {
 
 #[test]
 fn prepared_profile_init_script_is_project_relative() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::tests::executable_tempdir();
     let project_dir = tmp.path().join("project");
     let project_registry_dir = tmp.path().join("project-registry");
     // Windows virtual environments activate through `.venv/Scripts/
@@ -130,7 +130,7 @@ fn prepared_profile_init_script_is_project_relative() {
 
 #[test]
 fn project_shell_profile_overrides_default_profile() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::tests::executable_tempdir();
     let project_dir = tmp.path().join("project");
     let project_registry_dir = tmp.path().join("project-registry");
     std::fs::create_dir_all(&project_dir).unwrap();
@@ -196,7 +196,7 @@ fn wait_for_job_stdout(
 
 #[test]
 fn prepared_profile_run_shell_and_run_job_see_same_env() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::tests::executable_tempdir();
     let project_dir = tmp.path().join("project");
     let project_registry_dir = tmp.path().join("project-registry");
     std::fs::create_dir_all(&project_dir).unwrap();
@@ -253,7 +253,7 @@ fn prepared_profile_run_shell_and_run_job_see_same_env() {
 
 #[test]
 fn prepared_profile_init_script_runs_once_per_project_profile_generation() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::tests::executable_tempdir();
     let counter = tmp.path().join("prepare-count");
     #[cfg(windows)]
     let init_script = format!(
@@ -346,7 +346,7 @@ fn prepared_profile_init_script_runs_once_per_project_profile_generation() {
 
 #[test]
 fn prepared_profile_init_script_stdout_noise_does_not_break_env_capture() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::tests::executable_tempdir();
     #[cfg(windows)]
     let init_script =
         "Write-Output 'noise before env'\n$env:WEBCODEX_TEST_PROFILE = 'ok'".to_string();
@@ -377,7 +377,7 @@ fn prepared_profile_init_script_stdout_noise_does_not_break_env_capture() {
 #[cfg(unix)]
 #[test]
 fn prepared_profile_prepare_reaps_background_pipe_holder() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::tests::executable_tempdir();
     let pid_file = tmp.path().join("prepare-background-pipe-holder.pid");
     let init_script = format!(
             "sleep 60 & background_pid=$!; printf '%s' \"$background_pid\" > {}; export WEBCODEX_TEST_PROFILE=ready",
@@ -447,7 +447,7 @@ fn prepared_profile_prepare_reaps_background_pipe_holder() {
 
 #[test]
 fn prepared_profile_errors_do_not_leak_init_script_body() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::tests::executable_tempdir();
     let secret = "DO_NOT_LEAK_THIS_INLINE_SCRIPT_BODY";
     #[cfg(windows)]
     let failing_init = format!("$env:SECRET = '{secret}'\nexit 1");
@@ -479,7 +479,7 @@ fn prepared_profile_errors_do_not_leak_init_script_body() {
 #[test]
 fn prepared_profile_filters_webcodex_token_env() {
     let _guard = test_env_lock();
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::tests::executable_tempdir();
     let shell = shell_with_profiles(Some("test"), vec![("test", ShellProfileConfig::default())]);
     // Windows environment names are case-insensitive, so mixed-case spellings
     // must be filtered too; Unix is case-sensitive and only the exact name
@@ -505,7 +505,7 @@ fn prepared_profile_filters_webcodex_token_env() {
 
 #[test]
 fn prepared_profile_missing_marker_is_reported_without_script_body() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::tests::executable_tempdir();
     let secret = "DO_NOT_LEAK_THIS_INLINE_SCRIPT_BODY";
     // Windows: `exit 0` ends the prepare shell successfully before the marker
     // can be written. Unix: redirecting stdout away makes the marker
@@ -542,7 +542,7 @@ fn prepared_profile_missing_marker_is_reported_without_script_body() {
 fn prepared_profile_env_payload_parse_failure_is_reported() {
     use std::os::unix::fs::PermissionsExt;
 
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::tests::executable_tempdir();
     let bin = tmp.path().join("bin");
     std::fs::create_dir(&bin).unwrap();
     let fake_env = bin.join("env");
@@ -577,7 +577,7 @@ fn prepared_profile_env_payload_parse_failure_is_reported() {
 
 #[test]
 fn prepared_profile_program_spawn_failure_mentions_profile() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::tests::executable_tempdir();
     let shell = shell_with_profiles(
         Some("test"),
         vec![(
@@ -606,7 +606,7 @@ fn prepared_profile_program_spawn_failure_mentions_profile() {
 
 #[test]
 fn project_shell_profile_missing_profile_returns_clear_error() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::tests::executable_tempdir();
     let project_dir = tmp.path().join("project");
     let project_registry_dir = tmp.path().join("project-registry");
     std::fs::create_dir_all(&project_dir).unwrap();

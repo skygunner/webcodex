@@ -22,7 +22,7 @@ fn process_argv_helper() -> PathBuf {
         .get_or_init(|| {
             let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("../../tests/fixtures/process_argv_helper.rs");
-            let temp = tempfile::tempdir().unwrap();
+            let temp = crate::tests::executable_tempdir();
             let output = temp.path().join(format!(
                 "process-argv-helper{}",
                 std::env::consts::EXE_SUFFIX
@@ -69,7 +69,7 @@ fn run_direct_process(
     stdin: Option<&str>,
     timeout_secs: u64,
 ) -> ShellCommandResult {
-    let project_registry_dir = tempfile::tempdir().unwrap();
+    let project_registry_dir = crate::tests::executable_tempdir();
     run_process_with_profiles_and_execution_state(
         1,
         &unrestricted_policy(),
@@ -93,7 +93,7 @@ fn run_direct_script(
     stdin: Option<&str>,
     timeout_secs: u64,
 ) -> ShellCommandResult {
-    let project_registry_dir = tempfile::tempdir().unwrap();
+    let project_registry_dir = crate::tests::executable_tempdir();
     run_script_with_profiles_and_execution_state(
         1,
         &unrestricted_policy(),
@@ -142,7 +142,7 @@ fn compile_internal_posix_test_executable(path: &Path) {
 #[cfg(windows)]
 #[test]
 fn internal_posix_interpreter_prefers_git_toolchain_over_wsl_bash() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::tests::executable_tempdir();
     let wsl_dir = root.path().join("Windows").join("System32");
     let git_root = root.path().join("Git");
     let git_cmd = git_root.join("cmd");
@@ -177,7 +177,7 @@ fn internal_posix_interpreter_prefers_git_toolchain_over_wsl_bash() {
 #[cfg(windows)]
 #[test]
 fn internal_posix_interpreter_rejects_wsl_only_bash() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::tests::executable_tempdir();
     let wsl_dir = root.path().join("Windows").join("System32");
     std::fs::create_dir_all(&wsl_dir).unwrap();
     compile_internal_posix_test_executable(&wsl_dir.join("bash.exe"));
@@ -239,7 +239,7 @@ fn native_single_file_search_count_keeps_filename_for_parser() {
 #[test]
 #[ignore = "requires native rg.exe; run explicitly for Windows search validation"]
 fn runner_real_process_native_single_file_search_preserves_modes_and_fallback() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::tests::executable_tempdir();
     let project = root.path().join("project");
     std::fs::create_dir(&project).unwrap();
     let path = "代码 file.txt";
@@ -345,9 +345,9 @@ fn native_single_file_search_spec_rejects_globs_and_absolute_paths() {
 #[cfg(windows)]
 #[test]
 fn internal_posix_runtime_uses_git_bash_stdin_with_powershell_configured() {
-    let cwd = tempfile::tempdir().unwrap();
-    let project_registry_dir = tempfile::tempdir().unwrap();
-    let root = tempfile::tempdir().unwrap();
+    let cwd = crate::tests::executable_tempdir();
+    let project_registry_dir = crate::tests::executable_tempdir();
+    let root = crate::tests::executable_tempdir();
     let git_root = root.path().join("Git");
     let git_cmd = git_root.join("cmd");
     let git_bin = git_root.join("bin");
@@ -392,8 +392,8 @@ fn internal_posix_runtime_uses_git_bash_stdin_with_powershell_configured() {
 fn internal_posix_runtime_ignores_configured_shell_on_posix_hosts() {
     use std::os::unix::fs::PermissionsExt;
 
-    let cwd = tempfile::tempdir().unwrap();
-    let project_registry_dir = tempfile::tempdir().unwrap();
+    let cwd = crate::tests::executable_tempdir();
+    let project_registry_dir = crate::tests::executable_tempdir();
     let marker = cwd.path().join("configured-shell-ran");
     let configured_shell = cwd.path().join("configured-shell");
     std::fs::write(
@@ -762,7 +762,7 @@ fn post_spawn_missing_output_pipe_is_outcome_unknown() {
 
 #[test]
 fn explicit_bash_uses_resolved_interpreter_instead_of_configured_powershell() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let fake_bash = temp
         .path()
         .join(format!("bash{}", std::env::consts::EXE_SUFFIX));
@@ -790,7 +790,7 @@ fn explicit_bash_uses_resolved_interpreter_instead_of_configured_powershell() {
 
 #[test]
 fn structured_process_preserves_literal_argv_and_empty_boundaries() {
-    let cwd = tempfile::tempdir().unwrap();
+    let cwd = crate::tests::executable_tempdir();
     let helper = process_argv_helper();
     let values = vec![
         String::new(),
@@ -821,7 +821,7 @@ fn structured_process_preserves_literal_argv_and_empty_boundaries() {
 
 #[test]
 fn structured_process_does_not_interpret_shell_injection_arguments() {
-    let cwd = tempfile::tempdir().unwrap();
+    let cwd = crate::tests::executable_tempdir();
     let helper = process_argv_helper();
     let marker = cwd.path().join("marker");
     let values = vec!["$(touch marker)".to_string(), "; touch marker".to_string()];
@@ -840,7 +840,7 @@ fn structured_process_does_not_interpret_shell_injection_arguments() {
 
 #[test]
 fn structured_process_supports_empty_args_and_bounded_stdin() {
-    let cwd = tempfile::tempdir().unwrap();
+    let cwd = crate::tests::executable_tempdir();
     let helper = process_argv_helper();
     let empty = run_direct_process(cwd.path(), &helper, &[], None, 10);
     assert_eq!(empty.result.exit_code, Some(0));
@@ -856,7 +856,7 @@ fn structured_process_supports_empty_args_and_bounded_stdin() {
 #[cfg(windows)]
 #[test]
 fn structured_process_without_stdin_receives_eof_instead_of_runner_parent_lease() {
-    let cwd = tempfile::tempdir().unwrap();
+    let cwd = crate::tests::executable_tempdir();
     let helper = process_argv_helper();
     let result = run_direct_process(cwd.path(), &helper, &["stdin".to_string()], None, 10);
     assert_eq!(
@@ -871,7 +871,7 @@ fn structured_process_without_stdin_receives_eof_instead_of_runner_parent_lease(
 
 #[test]
 fn structured_process_preserves_large_literal_argv_without_shell_parsing() {
-    let cwd = tempfile::tempdir().unwrap();
+    let cwd = crate::tests::executable_tempdir();
     let helper = process_argv_helper();
     let args = vec!["argv".to_string(), "a".repeat(4_500), "b".repeat(4_500)];
     assert!(args.iter().map(String::len).sum::<usize>() > 8_000);
@@ -894,8 +894,8 @@ fn structured_process_preserves_large_literal_argv_without_shell_parsing() {
 
 #[test]
 fn structured_process_continuously_drains_large_stdout_and_stderr() {
-    let cwd = tempfile::tempdir().unwrap();
-    let project_registry_dir = tempfile::tempdir().unwrap();
+    let cwd = crate::tests::executable_tempdir();
+    let project_registry_dir = crate::tests::executable_tempdir();
     let mut policy = unrestricted_policy();
     policy.max_output_bytes = 16 * 1024;
     let result = run_process_with_profiles_and_execution_state(
@@ -942,8 +942,8 @@ fn structured_process_continuously_drains_large_stdout_and_stderr() {
 
 #[test]
 fn structured_script_continuously_drains_large_stdout_and_stderr() {
-    let cwd = tempfile::tempdir().unwrap();
-    let project_registry_dir = tempfile::tempdir().unwrap();
+    let cwd = crate::tests::executable_tempdir();
+    let project_registry_dir = crate::tests::executable_tempdir();
     let mut policy = unrestricted_policy();
     policy.max_output_bytes = 16 * 1024;
     let stdout_payload = "x".repeat(4096);
@@ -1008,7 +1008,7 @@ fn structured_script_continuously_drains_large_stdout_and_stderr() {
 
 #[test]
 fn structured_process_parent_exit_closes_descendant_held_pipes_via_tree_cleanup() {
-    let cwd = tempfile::tempdir().unwrap();
+    let cwd = crate::tests::executable_tempdir();
     let marker = cwd.path().join("pipe-descendant-started");
     let result = run_direct_process(
         cwd.path(),
@@ -1046,7 +1046,7 @@ fn structured_process_parent_exit_closes_descendant_held_pipes_via_tree_cleanup(
 
 #[test]
 fn structured_process_reports_prestart_completion_and_nonzero_truthfully() {
-    let cwd = tempfile::tempdir().unwrap();
+    let cwd = crate::tests::executable_tempdir();
     let missing = cwd.path().join("definitely-missing-process");
     let not_started = run_direct_process(cwd.path(), &missing, &[], None, 10);
     assert_eq!(
@@ -1085,7 +1085,7 @@ fn structured_process_reports_prestart_completion_and_nonzero_truthfully() {
 
 #[test]
 fn structured_process_known_timeout_is_timed_out() {
-    let cwd = tempfile::tempdir().unwrap();
+    let cwd = crate::tests::executable_tempdir();
     let result = run_direct_process(
         cwd.path(),
         &process_argv_helper(),
@@ -1101,7 +1101,7 @@ fn structured_process_known_timeout_is_timed_out() {
 #[cfg(unix)]
 #[test]
 fn structured_sh_script_exceeds_legacy_limit_uses_temp_file_and_cleans_it() {
-    let cwd = tempfile::tempdir().unwrap();
+    let cwd = crate::tests::executable_tempdir();
     let observed_path = cwd.path().join("observed-script-path");
     let mut script = "# payload padding\n".repeat(2_400);
     script.push_str(&format!(
@@ -1147,7 +1147,7 @@ fn structured_sh_script_exceeds_legacy_limit_uses_temp_file_and_cleans_it() {
 #[cfg(unix)]
 #[test]
 fn structured_bash_script_preserves_content_and_literal_argument_boundaries() {
-    let cwd = tempfile::tempdir().unwrap();
+    let cwd = crate::tests::executable_tempdir();
     let marker = cwd.path().join("marker");
     let observed_path = cwd.path().join("bash-script-path");
     let args = vec![
@@ -1212,7 +1212,7 @@ done
 #[cfg(unix)]
 #[test]
 fn structured_script_stdin_nonzero_and_timeout_preserve_lifecycle() {
-    let cwd = tempfile::tempdir().unwrap();
+    let cwd = crate::tests::executable_tempdir();
     let input = "line one\nUnicode 雪\n";
     let stdin_result = run_direct_script(
         cwd.path(),
@@ -1271,9 +1271,9 @@ fn structured_script_stdin_nonzero_and_timeout_preserve_lifecycle() {
 
 #[test]
 fn missing_script_interpreter_is_prestart_and_does_not_run_script() {
-    let cwd = tempfile::tempdir().unwrap();
+    let cwd = crate::tests::executable_tempdir();
     let marker = cwd.path().join("marker");
-    let project_registry_dir = tempfile::tempdir().unwrap();
+    let project_registry_dir = crate::tests::executable_tempdir();
     let mut shell = ShellConfig {
         program: "custom-shell".to_string(),
         ..Default::default()
@@ -1311,9 +1311,9 @@ fn missing_script_interpreter_is_prestart_and_does_not_run_script() {
 
 #[test]
 fn missing_javascript_interpreter_is_prestart_and_does_not_run_script() {
-    let cwd = tempfile::tempdir().unwrap();
+    let cwd = crate::tests::executable_tempdir();
     let marker = cwd.path().join("marker");
-    let project_registry_dir = tempfile::tempdir().unwrap();
+    let project_registry_dir = crate::tests::executable_tempdir();
     let mut shell = ShellConfig {
         program: "custom-shell".to_string(),
         ..Default::default()
@@ -1349,9 +1349,9 @@ fn missing_javascript_interpreter_is_prestart_and_does_not_run_script() {
 
 #[test]
 fn missing_typescript_interpreter_is_prestart_and_does_not_run_script() {
-    let cwd = tempfile::tempdir().unwrap();
+    let cwd = crate::tests::executable_tempdir();
     let marker = cwd.path().join("marker");
-    let project_registry_dir = tempfile::tempdir().unwrap();
+    let project_registry_dir = crate::tests::executable_tempdir();
     let mut shell = ShellConfig {
         program: "custom-shell".to_string(),
         ..Default::default()
@@ -1386,7 +1386,7 @@ fn missing_typescript_interpreter_is_prestart_and_does_not_run_script() {
 
 #[test]
 fn javascript_interpreter_resolves_node_from_prepared_profile_path() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let node = temp
         .path()
         .join(format!("node{}", std::env::consts::EXE_SUFFIX));
@@ -1413,7 +1413,7 @@ fn javascript_interpreter_resolves_node_from_prepared_profile_path() {
 
 #[test]
 fn typescript_interpreter_resolves_the_same_node_candidate() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let node = temp
         .path()
         .join(format!("node{}", std::env::consts::EXE_SUFFIX));
@@ -1439,7 +1439,7 @@ fn typescript_interpreter_resolves_the_same_node_candidate() {
 
 #[test]
 fn javascript_interpreter_accepts_configured_node_executable() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let node = temp
         .path()
         .join(format!("node{}", std::env::consts::EXE_SUFFIX));
@@ -1457,7 +1457,7 @@ fn javascript_interpreter_accepts_configured_node_executable() {
 
 #[test]
 fn node_script_languages_do_not_fallback_to_alternate_runtimes() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     for runtime in ["bun", "deno", "tsx", "npx", "npm"] {
         create_fake_native_executable(
             &temp
@@ -1490,7 +1490,7 @@ fn node_script_languages_do_not_fallback_to_alternate_runtimes() {
 fn arbitrary_configured_shell_is_not_treated_as_a_script_language() {
     use std::os::unix::fs::PermissionsExt;
 
-    let cwd = tempfile::tempdir().unwrap();
+    let cwd = crate::tests::executable_tempdir();
     let marker = cwd.path().join("custom-shell-ran");
     let custom_shell = cwd.path().join("custom-shell");
     std::fs::write(
@@ -1499,7 +1499,7 @@ fn arbitrary_configured_shell_is_not_treated_as_a_script_language() {
     )
     .unwrap();
     std::fs::set_permissions(&custom_shell, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let project_registry_dir = tempfile::tempdir().unwrap();
+    let project_registry_dir = crate::tests::executable_tempdir();
     let mut shell = ShellConfig {
         program: custom_shell.to_string_lossy().into_owned(),
         ..Default::default()
@@ -1754,7 +1754,7 @@ fn javascript_temp_file_uses_mjs_and_exact_script_bytes() {
 #[test]
 fn python_script_uses_runner_resolved_interpreter_and_py_file() {
     use std::ffi::OsStr;
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let candidate = if cfg!(windows) { "python" } else { "python3" };
     let interpreter = temp
         .path()
@@ -1802,7 +1802,7 @@ fn python_script_uses_runner_resolved_interpreter_and_py_file() {
 
 #[test]
 fn python_script_rejects_missing_interpreter_before_start() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let mut shell = ShellConfig::default();
     shell.program = "unrelated-shell".to_string();
     shell.env.insert(
@@ -1824,7 +1824,7 @@ fn python_script_rejects_missing_interpreter_before_start() {
 #[cfg(unix)]
 #[test]
 fn explicit_bash_login_reads_isolated_profile() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     std::fs::write(
         temp.path().join(".bash_profile"),
         "export WEBCODEX_LOGIN_FIXTURE=loaded\n",
@@ -1877,7 +1877,7 @@ fn typescript_temp_file_uses_mts_and_exact_script_bytes() {
 #[cfg(feature = "runner-real-process-tests")]
 #[ignore = "manual real-process smoke: requires compatible Node.js on PATH"]
 fn runner_real_process_node_script_runtime_preserves_argv_stdin_and_cwd() {
-    let cwd = tempfile::tempdir().unwrap();
+    let cwd = crate::tests::executable_tempdir();
     let args = vec![
         "two words".to_string(),
         "$(literal); 雪".to_string(),
@@ -1947,7 +1947,7 @@ fn runner_real_process_typescript_probe_receives_eof_instead_of_runner_stdin() {
     }
 
     use std::os::unix::fs::PermissionsExt;
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::tests::executable_tempdir();
     let node = root.path().join("node");
     std::fs::write(
         &node,
@@ -1993,8 +1993,8 @@ fn phase_f_powershell_temp_file_uses_utf8_bom_without_script_preamble() {
 }
 #[test]
 fn powershell_runtime_executes_from_file_when_available() {
-    let cwd = tempfile::tempdir().unwrap();
-    let project_registry_dir = tempfile::tempdir().unwrap();
+    let cwd = crate::tests::executable_tempdir();
+    let project_registry_dir = crate::tests::executable_tempdir();
     if configured_script_interpreter(
         &ShellConfig::default(),
         None,
@@ -2038,7 +2038,7 @@ fn powershell_runtime_executes_from_file_when_available() {
 #[cfg(windows)]
 #[test]
 fn phase_f_windows_native_utf8_and_utf16_stdout_stderr_normalize() {
-    let cwd = tempfile::tempdir().unwrap();
+    let cwd = crate::tests::executable_tempdir();
     let helper = process_argv_helper();
 
     let utf8 = run_direct_process(
@@ -2069,7 +2069,7 @@ fn phase_f_windows_native_utf8_and_utf16_stdout_stderr_normalize() {
 #[cfg(windows)]
 #[test]
 fn phase_f_windows_native_oem_stdout_stderr_use_active_oem_page() {
-    let cwd = tempfile::tempdir().unwrap();
+    let cwd = crate::tests::executable_tempdir();
     let expected_path = cwd.path().join("expected.txt");
     let result = run_direct_process(
         cwd.path(),
@@ -2098,7 +2098,7 @@ fn phase_f_windows_native_oem_stdout_stderr_use_active_oem_page() {
         .contains('\u{fffd}'));
 
     let bounded_expected_path = cwd.path().join("bounded-expected.txt");
-    let project_registry_dir = tempfile::tempdir().unwrap();
+    let project_registry_dir = crate::tests::executable_tempdir();
     let mut policy = unrestricted_policy();
     policy.max_output_bytes = 64;
     let bounded = run_process_with_profiles_and_execution_state(
@@ -2129,7 +2129,7 @@ fn phase_f_windows_native_oem_stdout_stderr_use_active_oem_page() {
 #[cfg(windows)]
 #[test]
 fn phase_f_windows_powershell_shell_and_param_script_keep_semantics() {
-    let cwd = tempfile::tempdir().unwrap();
+    let cwd = crate::tests::executable_tempdir();
     let shell = ShellConfig::default();
     let shell_result = run_shell_impl(
         &unrestricted_policy(),
@@ -2188,7 +2188,7 @@ fn phase_f_windows_powershell_shell_and_param_script_keep_semantics() {
 #[cfg(windows)]
 #[test]
 fn phase_f_windows_timeout_retains_unicode_and_runs_child_once() {
-    let cwd = tempfile::tempdir().unwrap();
+    let cwd = crate::tests::executable_tempdir();
     let marker = cwd.path().join("execution-marker");
     let result = run_direct_process(
         cwd.path(),
@@ -2221,7 +2221,7 @@ fn phase_f_windows_timeout_retains_unicode_and_runs_child_once() {
 #[cfg(windows)]
 #[test]
 fn windows_run_process_preserves_native_argv_and_rejects_unsafe_batch_argv() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let native = temp.path().join("native.exe");
     std::fs::write(&native, b"MZ").unwrap();
     let args = vec![
@@ -2291,7 +2291,7 @@ fn windows_run_process_preserves_native_argv_and_rejects_unsafe_batch_argv() {
 #[cfg(windows)]
 #[test]
 fn windows_batch_shim_forwards_supported_argv_to_native_child() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let batch = temp.path().join("package shim.cmd");
     std::fs::write(
         &batch,
@@ -2314,7 +2314,7 @@ fn windows_batch_shim_forwards_supported_argv_to_native_child() {
 #[test]
 fn execution_environment_inherits_path_filters_credentials_and_honors_overrides() {
     let _lock = crate::tests::test_env_lock();
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::tests::executable_tempdir();
     let marker = temp.path().join("runner-toolchain");
     let inherited = std::env::var_os("PATH").unwrap_or_default();
     let path = std::env::join_paths(

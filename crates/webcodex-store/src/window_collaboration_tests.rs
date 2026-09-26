@@ -169,6 +169,27 @@ fn window_transcript_merges_both_peer_directions_with_operator_context_and_bound
         ("operator", "outbound", "inbound")
     );
     assert_eq!(rows[1].context_project.as_deref(), Some("project"));
+    assert_eq!(
+        rows[1].context_session_id.as_deref(),
+        Some("wc_sess_context")
+    );
+    // Sender provenance is retained for its own outbound history, not shared
+    // merely because the other Window can receive a peer message.
+    assert!(rows[2].context_project.is_none());
+    assert!(rows[2].context_session_id.is_none());
+    let inbound = serde_json::to_value(&rows[2]).unwrap();
+    assert!(inbound.get("context_project").is_none());
+    assert!(inbound.get("context_session_id").is_none());
+    let (other_rows, _) = db
+        .window_collaboration_transcript("managed_user", "alice", &"b".repeat(64), 3)
+        .unwrap();
+    assert!(other_rows[0].context_project.is_none());
+    assert!(other_rows[0].context_session_id.is_none());
+    assert_eq!(other_rows[1].context_project.as_deref(), Some("project"));
+    assert_eq!(
+        other_rows[1].context_session_id.as_deref(),
+        Some("wc_sess_context")
+    );
     let (rows, truncated) = db
         .window_collaboration_transcript("managed_user", "alice", &"a".repeat(64), 2)
         .unwrap();

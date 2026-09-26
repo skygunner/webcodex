@@ -174,7 +174,9 @@ impl Database {
         let mut stmt = conn.prepare("SELECT message_id, 'peer',
             CASE WHEN recipient_window_key=?3 THEN 'inbound' ELSE 'outbound' END,
             CASE WHEN recipient_window_key=?3 THEN sender_peer_id ELSE recipient_peer_id END,
-            message, created_at_ms, sender_session_id, sender_project, requires_ack,
+            message, created_at_ms,
+            CASE WHEN sender_window_key=?3 THEN sender_session_id ELSE NULL END,
+            CASE WHEN sender_window_key=?3 THEN sender_project ELSE NULL END, requires_ack,
             first_projected_at_ms, first_ack_observed_at_ms FROM window_peer_messages
             WHERE principal_kind=?1 AND principal_id=?2 AND (recipient_window_key=?3 OR sender_window_key=?3)
             ORDER BY created_at_ms DESC, message_id DESC LIMIT ?4")?;

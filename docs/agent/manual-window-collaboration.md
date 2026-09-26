@@ -65,6 +65,9 @@ Peer transport is deliberately bounded rather than a permanent task queue. Old r
 
 The sender's current Workflow Session and Project may be persisted as analysis context when they are already trusted runtime facts, but they are not part of the recipient projection and never become routing authority. Peer ids are resolved only inside the same authenticated principal; knowing another principal's `wc_peer_*` value does not cross that boundary.
 
+The Window transcript retains this context for the sender's own outbound history.
+Inbound peer transcript rows omit it, just as model-facing peer delivery does.
+
 ## Canonical coordinator -> worker flow
 
 1. **Coordinator posts one bounded todo to `C`.** Use `post_session_message(kind="todo")`. Include the objective, scope, prohibitions, exact stable identifiers, and expected answer shape.

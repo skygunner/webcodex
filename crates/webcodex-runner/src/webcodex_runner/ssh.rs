@@ -1491,6 +1491,50 @@ mod tests {
     use std::sync::{Mutex, OnceLock};
     use std::time::{Duration, Instant};
 
+    /// The remote program contract is POSIX shell text, and a real sshd
+    /// session interprets it with the connecting account's login shell.
+    /// Integration tests that assert exact POSIX program behavior therefore
+    /// need a login shell that actually implements POSIX constructs.
+    #[cfg(target_os = "linux")]
+    fn local_login_shell_is_posix() -> bool {
+        let Ok(user) = Command::new("id").args(["-un"]).output() else {
+            return false;
+        };
+        if !user.status.success() {
+            return false;
+        }
+        let user = String::from_utf8_lossy(&user.stdout).trim().to_string();
+        if user.is_empty() {
+            return false;
+        }
+        let Ok(passwd) = Command::new("getent").arg("passwd").arg(&user).output() else {
+            return false;
+        };
+        if !passwd.status.success() {
+            return false;
+        }
+        let passwd_line = String::from_utf8_lossy(&passwd.stdout).trim().to_string();
+        let Some(shell) = passwd_line
+            .rsplit(':')
+            .next()
+            .filter(|shell| !shell.is_empty())
+        else {
+            return false;
+        };
+        let Ok(probe) = Command::new(shell)
+            .args(["-c", "if true; then printf posix-ok; fi"])
+            .output()
+        else {
+            return false;
+        };
+        probe.status.success() && probe.stdout == b"posix-ok"
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn local_login_shell_is_posix() -> bool {
+        true
+    }
+
     #[test]
     fn session_id_validation_uses_canonical_compact_alphabet() {
         assert!(super::is_safe_session_id("wc_sess_AAAAAAAA-AAAAAA_"));
@@ -2137,6 +2181,10 @@ mod tests {
 
     #[test]
     fn config_generation_change_does_not_interrupt_active_remote_channel() {
+        if !local_login_shell_is_posix() {
+            eprintln!("skipping SSH integration test because the local login shell cannot execute POSIX remote programs");
+            return;
+        }
         let Some(server) = TestSshServer::start() else {
             eprintln!("skipping SSH integration test because sshd is unavailable");
             return;
@@ -2200,6 +2248,10 @@ mod tests {
 
     #[test]
     fn reuses_session_transport_but_not_remote_shell_state_and_reconnects() {
+        if !local_login_shell_is_posix() {
+            eprintln!("skipping SSH integration test because the local login shell cannot execute POSIX remote programs");
+            return;
+        }
         let Some(server) = TestSshServer::start() else {
             eprintln!("skipping SSH integration test because sshd is unavailable");
             return;
@@ -2393,6 +2445,10 @@ mod tests {
 
     #[test]
     fn remote_async_jobs_stream_output_and_stop_through_the_existing_lifecycle() {
+        if !local_login_shell_is_posix() {
+            eprintln!("skipping SSH integration test because the local login shell cannot execute POSIX remote programs");
+            return;
+        }
         let Some(server) = TestSshServer::start() else {
             eprintln!("skipping SSH integration test because sshd is unavailable");
             return;

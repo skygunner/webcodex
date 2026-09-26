@@ -691,6 +691,27 @@ impl Database {
                 ON wc_agent_task_attempts(task_id, attempt_number DESC);
             CREATE INDEX IF NOT EXISTS idx_wc_agent_task_attempts_assignee
                 ON wc_agent_task_attempts(assignee_agent_id, state, lease_expires_at_unix_ms);
+
+            -- Model-facing selector only. Rows are immutable: a newer Attempt,
+            -- assignee, fence, or controller generation inserts a new index and
+            -- never rewrites an older one. The stored fence is the same proof
+            -- start already issued; this row is not authority.
+            CREATE TABLE IF NOT EXISTS wc_agent_task_attempt_references (
+                principal_kind TEXT NOT NULL,
+                principal_digest TEXT NOT NULL,
+                ref_index INTEGER NOT NULL CHECK(ref_index >= 1),
+                task_id TEXT NOT NULL,
+                attempt_id TEXT NOT NULL,
+                assignee_agent_id TEXT NOT NULL,
+                attempt_fence TEXT NOT NULL,
+                attempt_controller_generation INTEGER NOT NULL CHECK(attempt_controller_generation >= 1),
+                created_at_unix_ms INTEGER NOT NULL,
+                PRIMARY KEY(principal_kind, principal_digest, ref_index),
+                UNIQUE(
+                    principal_kind, principal_digest, task_id, attempt_id, assignee_agent_id,
+                    attempt_fence, attempt_controller_generation
+                )
+            );
             ",
         )?;
         Ok(())

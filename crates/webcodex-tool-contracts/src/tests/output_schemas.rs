@@ -515,6 +515,26 @@ fn job_terminal_continuation_output_schemas_are_sparse_and_private_app_payload_i
 }
 
 #[test]
+fn start_agent_task_attempt_schema_returns_ref_without_replacing_fence() {
+    let schema = output_schema_for_tool("start_agent_task_attempt");
+    let properties = schema["properties"]["output"]["properties"]
+        .as_object()
+        .unwrap();
+    assert!(properties.contains_key("attempt_fence"));
+    assert!(properties.contains_key("attempt_ref"));
+    assert!(properties["attempt_ref"]["description"]
+        .as_str()
+        .unwrap()
+        .contains("Not a credential"));
+    let read = output_schema_for_tool("read_agent_task");
+    let latest_attempt = &read["properties"]["output"]["properties"]["task"]["properties"]
+        ["summary"]["properties"]["latest_attempt"]["anyOf"][0];
+    let read_properties = latest_attempt["properties"].as_object().unwrap();
+    assert!(!read_properties.contains_key("attempt_ref"));
+    assert!(!read_properties.contains_key("attempt_fence"));
+}
+
+#[test]
 fn generic_agent_task_read_schema_never_exposes_attempt_fence_or_active_turn_token() {
     let schema = output_schema_for_tool("read_agent_task");
     let latest_attempt = &schema["properties"]["output"]["properties"]["task"]["properties"]

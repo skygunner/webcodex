@@ -26,6 +26,7 @@ pub use external_observations::{
     ExternalObservation, ExternalObservationError, MAX_EXTERNAL_OBSERVATIONS_PER_SESSION,
 };
 mod agent_continuation_reference;
+mod agent_task_attempt_reference;
 mod goal;
 mod goal_plan;
 #[cfg(test)]
@@ -61,6 +62,7 @@ pub use self::agent_task::{
     AgentTaskMutation, AgentTaskPage, AgentTaskState, AgentTaskSummary, NewAgentTask,
     MAX_AGENT_TASK_LIST_LIMIT, MAX_AGENT_TASK_TERMINAL_TEXT_BYTES,
 };
+pub use self::agent_task_attempt_reference::AgentTaskAttemptReferenceRecord;
 pub use self::agent_wait::{
     AgentWaitDetail, AgentWaitEventSelector, AgentWaitMatchRecord, AgentWaitMode,
     AgentWaitMutation, AgentWaitSourceRecord, AgentWaitState, NewAgentWait,
@@ -175,6 +177,8 @@ impl Database {
 mod agent_attention_tests;
 #[cfg(test)]
 mod agent_continuation_reference_tests;
+#[cfg(test)]
+mod agent_task_attempt_reference_tests;
 #[cfg(test)]
 mod agent_task_tests;
 #[cfg(test)]

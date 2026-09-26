@@ -780,8 +780,14 @@ backend-response uncertainty.
 ### A4b — TaskAttempt -> Agent Endpoint continuation (implemented)
 
 A4b is implemented through `start_agent_task_endpoint_continuation`. The model supplies
-only the exact `task_id`, `attempt_id`, `assignee_agent_id`, `attempt_fence`, and
-`attempt_controller_generation`; startup never selects an Endpoint. The Store records
+either a server-issued `attempt_ref` or the exact `task_id`, `attempt_id`,
+`assignee_agent_id`, `attempt_fence`, and `attempt_controller_generation`. The ref is a
+communication-principal index pinned to that tuple, including the fence and controller
+generation. It is not a credential. Lookup runs only for the caller, then the existing
+owner, lease, fence, and generation checks run again. A later takeover, expiry,
+replacement, or controller generation change leaves the old ref pinned to the old tuple.
+Heartbeat, completion, and CodingAgent dispatch still take the explicit tuple. Startup
+never selects an Endpoint. The Store records
 one concrete `wc_agent_task_endpoint_executions` row plus one durable
 `agent_task_attempt` Wake. Its Endpoint id/generation are nullable until an existing
 wake-capable carrier later claims the Wake. Attempt controller generation remains

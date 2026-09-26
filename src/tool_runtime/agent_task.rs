@@ -19,6 +19,35 @@ use webcodex_core::coding_agent::{
 };
 
 const DEFAULT_AGENT_TASK_LIST_LIMIT: usize = 50;
+const AGENT_TASK_ATTEMPT_REF_PREFIX: &str = "~ta";
+
+fn format_agent_task_attempt_ref(index: u64) -> String {
+    format!("{AGENT_TASK_ATTEMPT_REF_PREFIX}{index}")
+}
+
+fn parse_agent_task_attempt_ref(raw: &str) -> Option<u64> {
+    let digits = raw.strip_prefix(AGENT_TASK_ATTEMPT_REF_PREFIX)?;
+    if digits.is_empty()
+        || digits.len() > 19
+        || !digits.bytes().all(|byte| byte.is_ascii_digit())
+        || (digits.len() > 1 && digits.starts_with('0'))
+    {
+        return None;
+    }
+    let index = digits.parse::<u64>().ok()?;
+    (index > 0).then_some(index)
+}
+
+fn attempt_selector_error(error_kind: &str, message: &str) -> ToolResult {
+    ToolResult::err_with_output(
+        message,
+        json!({
+            "error_kind": error_kind,
+            "state_changed": false,
+        }),
+    )
+    .with_recovery(RecoveryKind::FixInput)
+}
 
 fn task_principal(
     auth: Option<&AuthContext>,
@@ -455,8 +484,162 @@ impl ToolRuntime {
             &assignee_agent_id,
             &idempotency_key,
         ) {
-            Ok(result) => serialized_task_success(result),
+            Ok(result) => {
+                // A keyed start replay names the original start operation, whose
+                // Attempt controller generation is always 1. The current Attempt
+                // snapshot may report a later replacement generation, but silently
+                // upgrading the selector would violate start idempotency and turn a
+                // stale ref into a different continuation identity.
+                let reference_generation = if result.replayed {
+                    1
+                } else {
+                    result.attempt.attempt_controller_generation
+                };
+                let attempt_ref = self.issue_agent_task_attempt_ref(
+                    &principal,
+                    &task_id,
+                    &result.attempt.attempt_id,
+                    &assignee_agent_id,
+                    &result.attempt_fence,
+                    reference_generation,
+                );
+                let mut output = match to_value(&result) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        return ToolResult::err_with_output(
+                            format!("Failed to serialize durable AgentTask result: {error}"),
+                            json!({
+                                "error_kind": "agent_task_result_serialization_failed",
+                                "state_changed": false,
+                            }),
+                        )
+                        .with_recovery(RecoveryKind::NoAction)
+                    }
+                };
+                if let Some(attempt_ref) = attempt_ref {
+                    if let Some(object) = output.as_object_mut() {
+                        object.insert("attempt_ref".to_string(), Value::String(attempt_ref));
+                    }
+                }
+                ToolResult::ok(output)
+            }
             Err(error) => agent_task_error(error, RecoveryKind::RetrySame),
+        }
+    }
+
+    fn issue_agent_task_attempt_ref(
+        &self,
+        principal: &crate::db::CommunicationPrincipal,
+        task_id: &str,
+        attempt_id: &str,
+        assignee_agent_id: &str,
+        attempt_fence: &str,
+        attempt_controller_generation: i64,
+    ) -> Option<String> {
+        let db = self.communication_db.as_ref()?;
+        match db.get_or_create_agent_task_attempt_reference(
+            principal,
+            task_id,
+            attempt_id,
+            assignee_agent_id,
+            attempt_fence,
+            attempt_controller_generation,
+            chrono::Utc::now().timestamp_millis(),
+        ) {
+            Ok(record) => Some(format_agent_task_attempt_ref(record.ref_index)),
+            Err(error) => {
+                tracing::warn!(
+                    error_kind = error.code(),
+                    "agent task attempt ref was not issued"
+                );
+                None
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn start_agent_task_endpoint_continuation_with_selector(
+        &self,
+        auth: Option<&AuthContext>,
+        attempt_ref: Option<String>,
+        task_id: Option<String>,
+        attempt_id: Option<String>,
+        assignee_agent_id: Option<String>,
+        attempt_fence: Option<String>,
+        attempt_controller_generation: Option<i64>,
+    ) -> ToolResult {
+        let tuple_supplied = task_id.is_some()
+            || attempt_id.is_some()
+            || assignee_agent_id.is_some()
+            || attempt_fence.is_some()
+            || attempt_controller_generation.is_some();
+        if let Some(attempt_ref) = attempt_ref {
+            if tuple_supplied {
+                return attempt_selector_error(
+                    "ambiguous_agent_task_attempt_selector",
+                    "Pass attempt_ref or the exact task_id, attempt_id, assignee_agent_id, attempt_fence, and attempt_controller_generation, not both.",
+                );
+            }
+            let ref_index = match parse_agent_task_attempt_ref(&attempt_ref) {
+                Some(index) => index,
+                None => {
+                    return attempt_selector_error(
+                        "invalid_agent_task_attempt_ref",
+                        "attempt_ref must be a server-issued ~ta selector from start_agent_task_attempt.",
+                    )
+                }
+            };
+            let principal = match task_principal(auth) {
+                Ok(principal) => principal,
+                Err(result) => return result,
+            };
+            let Some(db) = self.communication_db.as_ref() else {
+                return agent_task_store_unavailable();
+            };
+            let record = match db.lookup_agent_task_attempt_reference(&principal, ref_index) {
+                Ok(record) => record,
+                Err(error) => return agent_task_error(error, RecoveryKind::UserAction),
+            };
+            let Some(record) = record else {
+                return attempt_selector_error(
+                    "unknown_agent_task_attempt_ref",
+                    "attempt_ref does not name an Attempt for this caller. Call start_agent_task_attempt again.",
+                );
+            };
+            return self.start_agent_task_endpoint_continuation(
+                auth,
+                record.task_id,
+                record.attempt_id,
+                record.assignee_agent_id,
+                record.attempt_fence,
+                record.attempt_controller_generation,
+            );
+        }
+        match (
+            task_id,
+            attempt_id,
+            assignee_agent_id,
+            attempt_fence,
+            attempt_controller_generation,
+        ) {
+            (
+                Some(task_id),
+                Some(attempt_id),
+                Some(assignee_agent_id),
+                Some(attempt_fence),
+                Some(attempt_controller_generation),
+            ) => self.start_agent_task_endpoint_continuation(
+                auth,
+                task_id,
+                attempt_id,
+                assignee_agent_id,
+                attempt_fence,
+                attempt_controller_generation,
+            ),
+            _ => attempt_selector_error(
+                "incomplete_agent_task_attempt_selector",
+                "Pass attempt_ref or all of task_id, attempt_id, assignee_agent_id, attempt_fence, and attempt_controller_generation.",
+            ),
         }
     }
 

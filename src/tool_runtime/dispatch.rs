@@ -2686,13 +2686,15 @@ impl ToolRuntime {
             } => self.start_agent_task_attempt(auth, task_id, assignee_agent_id, idempotency_key),
 
             ToolCall::StartAgentTaskEndpointContinuation {
+                attempt_ref,
                 task_id,
                 attempt_id,
                 assignee_agent_id,
                 attempt_fence,
                 attempt_controller_generation,
-            } => self.start_agent_task_endpoint_continuation(
+            } => self.start_agent_task_endpoint_continuation_with_selector(
                 auth,
+                attempt_ref,
                 task_id,
                 attempt_id,
                 assignee_agent_id,

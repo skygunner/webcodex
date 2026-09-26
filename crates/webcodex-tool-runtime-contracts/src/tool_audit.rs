@@ -557,16 +557,17 @@ fn typed_agent_task_request_audit(kind: AgentTaskRequestAudit, arguments: &Value
             );
         }
         AgentTaskRequestAudit::StartEndpointContinuation => {
-            copy_keys(
-                obj,
-                &mut out,
-                &[
-                    "task_id",
-                    "attempt_id",
-                    "assignee_agent_id",
-                    "attempt_controller_generation",
-                ],
-            );
+            for key in [
+                "attempt_ref",
+                "task_id",
+                "attempt_id",
+                "assignee_agent_id",
+                "attempt_controller_generation",
+            ] {
+                if let Some(value) = obj.get(key).filter(|value| !value.is_null()) {
+                    out.insert((*key).to_string(), value.clone());
+                }
+            }
             out.insert(
                 "attempt_fence_present".to_string(),
                 Value::Bool(obj.get("attempt_fence").and_then(Value::as_str).is_some()),
@@ -2486,6 +2487,79 @@ mod computer_privacy_tests {
         }
         .session_log_arguments();
         assert!(!activation_request.to_string().contains(PRIVATE_KEY));
+    }
+
+    #[test]
+    fn agent_task_attempt_ref_audit_keeps_canonical_ids_and_omits_fence() {
+        const PRIVATE_FENCE: &str = "wc_agent_task_fence_PRIVATE_FENCE_MUST_NOT_PERSIST";
+        let by_ref = session_log_arguments_for_tool_request(
+            "start_agent_task_endpoint_continuation",
+            &json!({
+                "attempt_ref": "~ta4",
+                "attempt_fence": PRIVATE_FENCE,
+            }),
+        );
+        assert_eq!(by_ref["attempt_ref"], "~ta4");
+        assert_eq!(by_ref["attempt_fence_present"], true);
+        assert!(by_ref.get("task_id").is_none());
+        assert!(!by_ref.to_string().contains(PRIVATE_FENCE));
+
+        let typed = ToolCall::StartAgentTaskEndpointContinuation {
+            attempt_ref: Some("~ta4".to_string()),
+            task_id: None,
+            attempt_id: None,
+            assignee_agent_id: None,
+            attempt_fence: Some(PRIVATE_FENCE.to_string()),
+            attempt_controller_generation: None,
+        }
+        .session_log_arguments();
+        assert_eq!(typed["attempt_ref"], "~ta4");
+        assert_eq!(typed["attempt_fence_present"], true);
+        assert!(typed.get("task_id").is_none());
+        assert!(!typed.to_string().contains(PRIVATE_FENCE));
+
+        let by_tuple = ToolCall::StartAgentTaskEndpointContinuation {
+            attempt_ref: None,
+            task_id: Some("wc_agent_task_iavN7wEjRWeJq83v".to_string()),
+            attempt_id: Some("wc_agent_task_attempt_iavN7wEjRWeJq83v".to_string()),
+            assignee_agent_id: Some("wc_dagent_iavN7wEjRWeJq83v".to_string()),
+            attempt_fence: Some(PRIVATE_FENCE.to_string()),
+            attempt_controller_generation: Some(2),
+        }
+        .session_log_arguments();
+        assert_eq!(by_tuple["task_id"], "wc_agent_task_iavN7wEjRWeJq83v");
+        assert_eq!(
+            by_tuple["attempt_id"],
+            "wc_agent_task_attempt_iavN7wEjRWeJq83v"
+        );
+        assert_eq!(by_tuple["attempt_controller_generation"], 2);
+        assert_eq!(by_tuple["attempt_fence_present"], true);
+        assert!(by_tuple.get("attempt_ref").is_none());
+        assert!(!by_tuple.to_string().contains(PRIVATE_FENCE));
+
+        let result = session_log_result_for_tool(
+            "start_agent_task_endpoint_continuation",
+            &json!({
+                "execution": {
+                    "task_id": "wc_agent_task_iavN7wEjRWeJq83v",
+                    "attempt_id": "wc_agent_task_attempt_iavN7wEjRWeJq83v",
+                    "wake_id": "wc_wake_iavN7wEjRWeJq83v",
+                    "wake_state": "pending",
+                    "endpoint_id": null,
+                    "endpoint_controller_generation": null
+                },
+                "attempt_fence": PRIVATE_FENCE,
+                "replayed": false,
+                "state_changed": true
+            }),
+        );
+        assert_eq!(result["task_id"], "wc_agent_task_iavN7wEjRWeJq83v");
+        assert_eq!(
+            result["attempt_id"],
+            "wc_agent_task_attempt_iavN7wEjRWeJq83v"
+        );
+        assert_eq!(result["wake_id"], "wc_wake_iavN7wEjRWeJq83v");
+        assert!(!result.to_string().contains(PRIVATE_FENCE));
     }
 
     #[test]
@@ -4564,6 +4638,7 @@ impl ToolCallAuditProjection for ToolCall {
                 }),
             ),
             Self::StartAgentTaskEndpointContinuation {
+                attempt_ref,
                 task_id,
                 attempt_id,
                 assignee_agent_id,
@@ -4572,6 +4647,7 @@ impl ToolCallAuditProjection for ToolCall {
             } => typed_agent_task_request_audit(
                 AgentTaskRequestAudit::StartEndpointContinuation,
                 &serde_json::json!({
+                    "attempt_ref": attempt_ref,
                     "task_id": task_id,
                     "attempt_id": attempt_id,
                     "assignee_agent_id": assignee_agent_id,

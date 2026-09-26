@@ -25,6 +25,8 @@ pub(super) fn compact_tool(tool: &mut Value) {
             "wait_for_job_terminal" => "Arm a bounded one-shot terminal wait for one exact existing Job. Reuse the keyed wait and returned continuation; never redispatch the Job. Continue independent work, or follow the offered Host continuation when only terminal completion blocks progress.",
             "stop_job" => "Stop one existing Job by exact job_id with confirm=true. Preserves Project and Session ownership. Use observe_jobs to inspect output or wait_for_job_terminal to wait without stopping.",
             "present_agent_continuation" => "Present one exact Agent/Endpoint generation as the persistent MCP App continuation card. Pass agent_continuation_ref or the exact tuple. New window setup: create_agent_identity -> rotate_agent_continuation_endpoint -> present_agent_continuation, then yield/end promptly. Presentation success is not wake readiness; later verify list_agent_identities.production_auto_resume_available.",
+            "start_agent_task_attempt" => "Create one leased fenced Attempt for the explicit current assignee. Returns attempt_id, attempt_fence, and attempt_ref. Exact keyed retry returns that same Attempt. Does not dispatch CodingAgent, Job, Wake, or Endpoint work.",
+            "start_agent_task_endpoint_continuation" => "Select the Endpoint continuation for one exact live AgentTaskAttempt. Pass attempt_ref or task, attempt, assignee, fence, and controller generation. Does not choose an Endpoint or grant CodingAgent authority. A stale ref fails closed and is not rewritten onto a later attempt or generation.",
             _ => description,
         };
         tool["description"] =

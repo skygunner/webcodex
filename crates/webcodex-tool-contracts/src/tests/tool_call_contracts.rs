@@ -167,6 +167,81 @@ fn apply_text_edits_shorthand_normalizes_once_to_canonical_call() {
 }
 
 #[test]
+fn start_agent_task_endpoint_continuation_parses_ref_or_explicit_tuple() {
+    let by_ref = ToolCall::from_tool_name(
+        "start_agent_task_endpoint_continuation",
+        json!({"attempt_ref": "~ta1"}),
+    )
+    .unwrap();
+    assert!(matches!(
+        by_ref,
+        ToolCall::StartAgentTaskEndpointContinuation {
+            attempt_ref: Some(ref selector),
+            task_id: None,
+            attempt_id: None,
+            assignee_agent_id: None,
+            attempt_fence: None,
+            attempt_controller_generation: None,
+        } if selector == "~ta1"
+    ));
+    let by_tuple = ToolCall::from_tool_name(
+        "start_agent_task_endpoint_continuation",
+        json!({
+            "task_id": "wc_agent_task_ERERERERERERERER",
+            "attempt_id": "wc_agent_task_attempt_IiIiIiIiIiIiIiIi",
+            "assignee_agent_id": "wc_dagent_MzMzMzMzMzMzMzMz",
+            "attempt_fence": "wc_agent_task_fence_RERERERERERERERERERERA",
+            "attempt_controller_generation": 1
+        }),
+    )
+    .unwrap();
+    assert!(matches!(
+        by_tuple,
+        ToolCall::StartAgentTaskEndpointContinuation {
+            attempt_ref: None,
+            task_id: Some(_),
+            attempt_id: Some(_),
+            assignee_agent_id: Some(_),
+            attempt_fence: Some(_),
+            attempt_controller_generation: Some(1),
+        }
+    ));
+    assert!(ToolCall::from_tool_name(
+        "start_agent_task_endpoint_continuation",
+        json!({
+            "attempt_ref": "~ta1",
+            "task_id": "wc_agent_task_ERERERERERERERER"
+        }),
+    )
+    .is_ok());
+    assert!(ToolCall::from_tool_name(
+        "start_agent_task_endpoint_continuation",
+        json!({"task_id": "wc_agent_task_ERERERERERERERER"}),
+    )
+    .is_ok());
+    assert!(ToolCall::from_tool_name(
+        "start_agent_task_endpoint_continuation",
+        json!({
+            "attempt_ref": "~ta1",
+            "session_id": "wc_sess_0123456789abcdef0123456789abcdef"
+        }),
+    )
+    .is_err());
+    assert!(ToolCall::from_tool_name(
+        "heartbeat_agent_task_attempt",
+        json!({
+            "attempt_ref": "~ta1",
+            "task_id": "wc_agent_task_ERERERERERERERER",
+            "attempt_id": "wc_agent_task_attempt_IiIiIiIiIiIiIiIi",
+            "assignee_agent_id": "wc_dagent_MzMzMzMzMzMzMzMz",
+            "attempt_fence": "wc_agent_task_fence_RERERERERERERERERERERA",
+            "attempt_controller_generation": 1
+        }),
+    )
+    .is_err());
+}
+
+#[test]
 fn heartbeat_agent_task_attempt_parses_optional_active_turn_proof() {
     let base = json!({
         "task_id": "wc_agent_task_ERERERERERERERER".to_string(),

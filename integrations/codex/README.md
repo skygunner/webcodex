@@ -4,8 +4,8 @@ This integration records bounded **external reports** in an explicitly selected
 WebCodex Workflow Session. It does not install Hooks, change trust, create a
 Session/Goal, execute commands, or migrate a conversation. The Server now projects
 these claims read-only in `session_handoff_summary`. The optional read-only local
-consumer below can inspect that brief; automatic entry, export and Goal linkage
-remain follow-up work. This does not establish real
+consumer and optional automatic entry below can inspect that brief; export and
+Goal linkage remain follow-up work. This does not establish real
 two-sided UI acceptance.
 
 ## Server contract
@@ -134,11 +134,64 @@ unknown operations before continuing. The command does not select a Session by
 directory or recency, bind the new local conversation, mark work complete, replay
 an operation, install a Hook, or write a handoff file.
 
-This is a deliberate recovery command, not automatic SessionStart injection.
+`read_handoff.py` itself remains a deliberate recovery command.
 It requires an already selected Workflow Session and the normal authorized
 credential; a new local Codex conversation must not inherit an old conversation's
 write binding merely because it can read the brief. Real client and MCP roundtrip
 acceptance is still required before general rollout.
+
+## Optional automatic recovery entry
+
+`session_recovery.py` offers the same read-only evidence on `SessionStart` and
+`UserPromptSubmit`. Register this command for those two events through the
+client's supported Hook configuration and trust UI:
+
+```text
+python3 /absolute/path/session_recovery.py --registry /private/operator/recovery.json hook
+```
+
+Prepare a private registry (mode 0600), authorization file (0600, containing the
+complete Authorization value), and existing private state directory (0700), all
+outside the projects they serve:
+
+```json
+{
+  "version": 1,
+  "server_url": "http://127.0.0.1:18880",
+  "authorization_file": "/private/operator/authorization",
+  "state_dir": "/private/operator/recovery-state",
+  "bindings": []
+}
+```
+
+After the user confirms the project and work, the local Agent can discover
+existing Sessions and establish a read association without asking the user to
+copy identifiers or install per-project Hooks:
+
+```text
+python3 /absolute/path/session_recovery.py --registry /private/operator/recovery.json discover --project-root /absolute/project
+python3 /absolute/path/session_recovery.py --registry /private/operator/recovery.json associate --project-root /absolute/project --session wc_sess_SELECTED --entry-root /absolute/project
+```
+
+Discovery returns exact-root candidates; it does not choose the newest Session,
+create one, or bind a writer. Match the user's work intent and ask only if it is
+ambiguous. Additional `--entry-root` values allow explicitly confirmed alternate
+local checkouts to read the same remote work. `--local-session` restricts an
+association to one local conversation; otherwise a new conversation at the same
+entry can recover it. Several matching Sessions require selection; an explicit
+conversation association takes precedence. Root canonical paths and filesystem
+identities are checked, nested repositories do not inherit a parent entry, and each
+recovery rechecks that the current Server Project still maps the associated canonical
+Project id to that exact root.
+
+Each entry rereads the server. A changed brief is offered as Hook context; an
+unchanged prompt gets a short snapshot reference. `SessionStart` reintroduces the
+brief after compaction. Large briefs use a bounded private snapshot instead of
+filling model context. Snapshots prove that evidence was offered, not that the
+Host or Agent consumed it. Offline and invalid responses remain failures and do
+not present cached evidence as current. Unknown outcomes and incomplete coverage
+are preserved. No observations, Goals, business operations or historical events
+are written or replayed by this entry.
 
 ## Verification boundary
 

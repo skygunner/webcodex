@@ -576,6 +576,8 @@ impl ToolRuntime {
         for client in clients {
             let browser_observe = client.supports(RunnerFeature::BrowserObserve);
             let browser_control = client.supports(RunnerFeature::BrowserControl);
+            let browser_element_action_admission =
+                client.supports(RunnerFeature::BrowserElementActionAdmission);
             let browser_launch = client.supports(RunnerFeature::BrowserLaunch);
             if !browser_observe && !browser_control && !browser_launch {
                 continue;
@@ -592,6 +594,7 @@ impl ToolRuntime {
                 "capabilities": {
                     "browser_observe": browser_observe,
                     "browser_control": browser_control,
+                    "browser_element_action_admission": browser_element_action_admission,
                     "browser_launch": browser_launch,
                 }
             }));
@@ -625,6 +628,15 @@ impl ToolRuntime {
                 None,
             );
         }
+        let requires_element_action_admission = matches!(
+            kind,
+            "browser_snapshot"
+                | "browser_click"
+                | "browser_input_text"
+                | "browser_select_option"
+                | "browser_set_value"
+                | "browser_upload_file"
+        );
         let required_feature = match kind {
             "browser_list_browsers"
             | "browser_list_pages"
@@ -681,6 +693,20 @@ impl ToolRuntime {
                 &format!(
                     "target Runner does not advertise {}",
                     required_feature.as_wire_name()
+                ),
+                "not_started",
+                false,
+                None,
+            );
+        }
+        if requires_element_action_admission
+            && !client.supports(RunnerFeature::BrowserElementActionAdmission)
+        {
+            return browser_error(
+                "capability_unavailable",
+                &format!(
+                    "target Runner does not advertise {}",
+                    RunnerFeature::BrowserElementActionAdmission.as_wire_name()
                 ),
                 "not_started",
                 false,

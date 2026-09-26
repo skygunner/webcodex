@@ -314,6 +314,7 @@ pub fn generated_runner_config_toml(opts: &RunnerInitOptions) -> Result<String, 
             // Generated config must not claim Browser capabilities.
             browser_observe: false,
             browser_control: false,
+            browser_element_action_admission: false,
             browser_launch: false,
             // Desktop observation is a runtime/platform capability and is never
             // claimed by generated static config.

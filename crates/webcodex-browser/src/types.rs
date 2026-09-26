@@ -101,6 +101,118 @@ pub struct PageSummary {
     pub url: String,
 }
 
+/// Admitted Browser effects for one resolved control.
+///
+/// `actions` on a snapshot node is this set in canonical order. AX role alone
+/// does not populate it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct ControlCapability {
+    pub(crate) pointer_click: bool,
+    pub(crate) text_input: bool,
+    pub(crate) select_option: bool,
+    pub(crate) exact_value: bool,
+    pub(crate) file_upload: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AdmittedBrowserAction {
+    Click,
+    InputText,
+    SelectOption,
+    SetValue,
+    UploadFile,
+}
+
+impl ControlCapability {
+    pub(crate) const fn click() -> Self {
+        Self {
+            pointer_click: true,
+            text_input: false,
+            select_option: false,
+            exact_value: false,
+            file_upload: false,
+        }
+    }
+
+    pub(crate) const fn text_input() -> Self {
+        Self {
+            pointer_click: true,
+            text_input: true,
+            select_option: false,
+            exact_value: false,
+            file_upload: false,
+        }
+    }
+
+    pub(crate) const fn select_option() -> Self {
+        Self {
+            pointer_click: false,
+            text_input: false,
+            select_option: true,
+            exact_value: false,
+            file_upload: false,
+        }
+    }
+
+    pub(crate) const fn exact_value() -> Self {
+        Self {
+            pointer_click: false,
+            text_input: false,
+            select_option: false,
+            exact_value: true,
+            file_upload: false,
+        }
+    }
+
+    pub(crate) const fn file_upload() -> Self {
+        Self {
+            pointer_click: false,
+            text_input: false,
+            select_option: false,
+            exact_value: false,
+            file_upload: true,
+        }
+    }
+
+    pub(crate) const fn admits_any(self) -> bool {
+        self.pointer_click
+            || self.text_input
+            || self.select_option
+            || self.exact_value
+            || self.file_upload
+    }
+
+    pub(crate) const fn admits(self, action: AdmittedBrowserAction) -> bool {
+        match action {
+            AdmittedBrowserAction::Click => self.pointer_click,
+            AdmittedBrowserAction::InputText => self.text_input,
+            AdmittedBrowserAction::SelectOption => self.select_option,
+            AdmittedBrowserAction::SetValue => self.exact_value,
+            AdmittedBrowserAction::UploadFile => self.file_upload,
+        }
+    }
+
+    pub(crate) fn action_names(self) -> Vec<String> {
+        let mut names = Vec::new();
+        if self.pointer_click {
+            names.push("click".to_string());
+        }
+        if self.text_input {
+            names.push("input_text".to_string());
+        }
+        if self.select_option {
+            names.push("select_option".to_string());
+        }
+        if self.exact_value {
+            names.push("set_value".to_string());
+        }
+        if self.file_upload {
+            names.push("upload_file".to_string());
+        }
+        names
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SemanticNode {
     pub role: String,
@@ -128,6 +240,9 @@ pub struct SemanticNode {
     pub read_only: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub element_id: Option<String>,
+    /// Canonical `browser_act` effects this node admits. Empty for semantic-only nodes.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<String>,
     pub actionable: bool,
 }
 

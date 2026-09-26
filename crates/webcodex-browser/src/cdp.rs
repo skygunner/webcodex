@@ -1,7 +1,7 @@
 use crate::types::{
-    clip_bytes, BrowserError, BrowserKey, BrowserResult, BrowserStability, LAUNCH_TIMEOUT,
-    MAX_NODE_TEXT_BYTES, MAX_PAGES_PER_BROWSER, MAX_SNAPSHOT_BYTES, MAX_SNAPSHOT_NODES,
-    REQUEST_TIMEOUT,
+    clip_bytes, BrowserError, BrowserKey, BrowserResult, BrowserStability, ControlCapability,
+    LAUNCH_TIMEOUT, MAX_NODE_TEXT_BYTES, MAX_PAGES_PER_BROWSER, MAX_SNAPSHOT_BYTES,
+    MAX_SNAPSHOT_NODES, REQUEST_TIMEOUT,
 };
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -17,6 +17,7 @@ use webcodex_process::ManagedChild;
 
 const MAX_CDP_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_CDP_LIST_BYTES: usize = 256 * 1024;
+const DOM_CONTROL_INDEX_DEPTH: i32 = 32;
 
 pub(crate) trait BackendFactory: Send + Sync {
     fn available(&self) -> bool;
@@ -98,7 +99,7 @@ pub(crate) struct BackendNode {
     pub(crate) disabled: Option<bool>,
     pub(crate) read_only: Option<bool>,
     pub(crate) backend_node_id: Option<i64>,
-    pub(crate) actionable: bool,
+    pub(crate) capability: ControlCapability,
 }
 
 #[derive(Debug)]
@@ -770,7 +771,20 @@ impl BrowserBackend for CdpBackend {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        let (nodes, truncated) = parse_ax_snapshot_nodes(&raw_nodes);
+        // DOM classification is required for structured controls. A failed
+        // document does not grant legacy click to descendants of browser-private
+        // form controls. Nodes omitted from a successful index admit nothing.
+        let dom_root = self
+            .page_call_until(
+                target_id,
+                "DOM.getDocument",
+                json!({ "depth": DOM_CONTROL_INDEX_DEPTH, "pierce": true }),
+                false,
+                deadline,
+            )
+            .ok()
+            .and_then(|document| document.get("root").cloned());
+        let (nodes, truncated) = project_ax_nodes(&raw_nodes, dom_root.as_ref());
         Ok(BackendSnapshot {
             document_id,
             nodes,
@@ -1401,7 +1415,6 @@ fn parse_ax_snapshot_nodes(raw_nodes: &[Value]) -> (Vec<BackendNode>, bool) {
         let disabled = ax_property_bool(raw, "disabled");
         let read_only = ax_property_bool(raw, "readonly");
         let backend_node_id = raw.get("backendDOMNodeId").and_then(Value::as_i64);
-        let actionable = is_actionable(&role) && backend_node_id.is_some();
         estimated_bytes = estimated_bytes
             .saturating_add(role.len())
             .saturating_add(name.as_deref().map(str::len).unwrap_or(0))
@@ -1428,11 +1441,403 @@ fn parse_ax_snapshot_nodes(raw_nodes: &[Value]) -> (Vec<BackendNode>, bool) {
             disabled,
             read_only,
             backend_node_id,
-            actionable,
+            capability: ControlCapability::default(),
         });
     }
     let truncated = nodes.len() > MAX_SNAPSHOT_NODES || estimated_bytes > MAX_SNAPSHOT_BYTES;
     (nodes, truncated)
+}
+
+fn project_ax_nodes(raw_nodes: &[Value], dom_root: Option<&Value>) -> (Vec<BackendNode>, bool) {
+    let (mut nodes, truncated) = parse_ax_snapshot_nodes(raw_nodes);
+    apply_dom_capabilities(&mut nodes, raw_nodes, dom_root);
+    (nodes, truncated)
+}
+
+#[derive(Debug)]
+struct DomControlFacts {
+    local_name: String,
+    input_type: Option<String>,
+    in_native_control_shadow: bool,
+    host_backend_node_id: Option<i64>,
+    host_local_name: Option<String>,
+    host_input_type: Option<String>,
+    host_label: Option<String>,
+    host_value: Option<String>,
+}
+
+struct ShadowHost {
+    backend_node_id: Option<i64>,
+    local_name: String,
+    input_type: Option<String>,
+    label: Option<String>,
+    value: Option<String>,
+}
+
+fn apply_dom_capabilities(
+    nodes: &mut Vec<BackendNode>,
+    raw_nodes: &[Value],
+    dom_root: Option<&Value>,
+) {
+    let index = dom_root.map(index_dom_controls);
+    let private_descendants = browser_private_control_descendants(raw_nodes);
+    let known_ids = nodes
+        .iter()
+        .filter_map(|node| node.backend_node_id)
+        .collect::<HashSet<_>>();
+    for node in nodes.iter_mut() {
+        node.capability = capability_for_ax_node(node, index.as_ref(), &private_descendants);
+    }
+    // Promote only when the DOM index proves the owner and the accessibility
+    // tree did not already expose that owner. The added node uses the owner's
+    // role, label, and value; the shadow part keeps its own identity.
+    let Some(index) = index.as_ref() else {
+        return;
+    };
+    let mut promotions: Vec<(i64, usize, u8, ControlCapability)> = Vec::new();
+    for (index_in_snapshot, node) in nodes.iter().enumerate() {
+        let rank = shadow_owner_promotion_rank(&node.role);
+        if rank == u8::MAX {
+            continue;
+        }
+        let Some(backend_node_id) = node.backend_node_id else {
+            continue;
+        };
+        let Some(facts) = index.get(&backend_node_id) else {
+            continue;
+        };
+        if !facts.in_native_control_shadow {
+            continue;
+        }
+        let Some(host_backend_node_id) = facts.host_backend_node_id else {
+            continue;
+        };
+        if known_ids.contains(&host_backend_node_id) {
+            continue;
+        }
+        let host_capability = capability_for_element(
+            facts.host_local_name.as_deref().unwrap_or(""),
+            facts.host_input_type.as_deref(),
+            "",
+        );
+        if !host_capability.admits_any() || host_projection(facts, host_capability).is_none() {
+            continue;
+        }
+        match promotions
+            .iter()
+            .position(|(host_id, _, _, _)| *host_id == host_backend_node_id)
+        {
+            Some(position) if rank < promotions[position].2 => {
+                promotions[position] = (
+                    host_backend_node_id,
+                    index_in_snapshot,
+                    rank,
+                    host_capability,
+                );
+            }
+            Some(_) => {}
+            None => promotions.push((
+                host_backend_node_id,
+                index_in_snapshot,
+                rank,
+                host_capability,
+            )),
+        }
+    }
+    let mut additions = Vec::new();
+    for (_, index_in_snapshot, _, host_capability) in promotions {
+        let Some(node) = nodes.get(index_in_snapshot) else {
+            continue;
+        };
+        let Some(backend_node_id) = node.backend_node_id else {
+            continue;
+        };
+        let Some(facts) = index.get(&backend_node_id) else {
+            continue;
+        };
+        let Some(projected) = host_projection(facts, host_capability) else {
+            continue;
+        };
+        additions.push((index_in_snapshot, projected));
+    }
+    additions.sort_by_key(|(index_in_snapshot, _)| *index_in_snapshot);
+    for (offset, (index_in_snapshot, projected)) in additions.into_iter().enumerate() {
+        nodes.insert(index_in_snapshot + offset, projected);
+    }
+}
+
+fn capability_for_ax_node(
+    node: &BackendNode,
+    index: Option<&HashMap<i64, DomControlFacts>>,
+    private_descendants: &HashSet<i64>,
+) -> ControlCapability {
+    let Some(backend_node_id) = node.backend_node_id else {
+        return ControlCapability::default();
+    };
+    if let Some(index) = index {
+        return match index.get(&backend_node_id) {
+            Some(facts) if facts.in_native_control_shadow => ControlCapability::default(),
+            Some(facts) => {
+                capability_for_element(&facts.local_name, facts.input_type.as_deref(), &node.role)
+            }
+            // The document was classified, but this node was omitted. Do not
+            // guess a click target from its accessibility role.
+            None => ControlCapability::default(),
+        };
+    }
+    if private_descendants.contains(&backend_node_id) {
+        return ControlCapability::default();
+    }
+    legacy_role_capability(&node.role)
+}
+
+fn host_projection(facts: &DomControlFacts, capability: ControlCapability) -> Option<BackendNode> {
+    let role = host_role(
+        facts.host_local_name.as_deref().unwrap_or(""),
+        facts.host_input_type.as_deref(),
+    )?;
+    Some(BackendNode {
+        role: role.to_string(),
+        name: facts.host_label.clone(),
+        description: None,
+        value: facts.host_value.clone(),
+        group_key: None,
+        group_role: None,
+        group_label: None,
+        checked: None,
+        selected: None,
+        required: None,
+        disabled: None,
+        read_only: None,
+        backend_node_id: facts.host_backend_node_id,
+        capability,
+    })
+}
+
+fn host_role(local_name: &str, input_type: Option<&str>) -> Option<&'static str> {
+    match (local_name, input_type.unwrap_or("text")) {
+        ("select", _) => Some("combobox"),
+        ("textarea", _) => Some("textbox"),
+        ("input", "number") => Some("spinbutton"),
+        ("input", "range") => Some("slider"),
+        ("input", "date") => Some("Date"),
+        ("input", "time") => Some("InputTime"),
+        ("input", "color") => Some("ColorWell"),
+        ("input", "month" | "week" | "datetime-local") => Some("DateTime"),
+        ("input", "file" | "button" | "submit" | "reset" | "image") => Some("button"),
+        ("input", "checkbox") => Some("checkbox"),
+        ("input", "radio") => Some("radio"),
+        ("input", "text" | "email" | "tel" | "url" | "search" | "password") => Some("textbox"),
+        _ => None,
+    }
+}
+
+fn capability_for_element(
+    local_name: &str,
+    input_type: Option<&str>,
+    role: &str,
+) -> ControlCapability {
+    match local_name {
+        "select" => ControlCapability::select_option(),
+        "option" => ControlCapability::default(),
+        "textarea" => ControlCapability::text_input(),
+        "input" => match input_type.unwrap_or("text") {
+            "hidden" => ControlCapability::default(),
+            "file" => ControlCapability::file_upload(),
+            "number" | "range" | "date" | "datetime-local" | "month" | "week" | "time"
+            | "color" => ControlCapability::exact_value(),
+            "checkbox" | "radio" | "button" | "submit" | "reset" | "image" => {
+                ControlCapability::click()
+            }
+            "text" | "email" | "tel" | "url" | "search" | "password" => {
+                ControlCapability::text_input()
+            }
+            _ => legacy_role_capability(role),
+        },
+        "button" | "summary" => ControlCapability::click(),
+        "a" => legacy_role_capability(role),
+        _ if role == "option" => ControlCapability::default(),
+        _ => legacy_role_capability(role),
+    }
+}
+
+fn legacy_role_capability(role: &str) -> ControlCapability {
+    match role {
+        "textbox" | "searchbox" => ControlCapability::text_input(),
+        "button" | "link" | "checkbox" | "radio" | "switch" | "menuitem" | "tab" | "combobox"
+        | "DateTime" => ControlCapability::click(),
+        _ => ControlCapability::default(),
+    }
+}
+
+fn browser_private_control_descendants(raw_nodes: &[Value]) -> HashSet<i64> {
+    let by_id = raw_nodes
+        .iter()
+        .filter_map(|node| {
+            node.get("nodeId")
+                .and_then(Value::as_str)
+                .map(|id| (id.to_string(), node))
+        })
+        .collect::<HashMap<_, _>>();
+    raw_nodes
+        .iter()
+        .filter(|node| ax_descendant_of_browser_private_control(node, &by_id))
+        .filter_map(|node| node.get("backendDOMNodeId").and_then(Value::as_i64))
+        .collect()
+}
+
+fn ax_descendant_of_browser_private_control(node: &Value, by_id: &HashMap<String, &Value>) -> bool {
+    let mut parent_id = node.get("parentId").and_then(Value::as_str);
+    // No parent link is not evidence that this node is a browser-private part.
+    if parent_id.is_none() {
+        return false;
+    }
+    for _ in 0..32 {
+        let Some(id) = parent_id else {
+            return true;
+        };
+        let Some(parent) = by_id.get(id) else {
+            return true;
+        };
+        let role = ax_value(parent, "role").unwrap_or_default();
+        if is_browser_private_control_role(&role) {
+            return true;
+        }
+        if role == "RootWebArea" {
+            return false;
+        }
+        parent_id = parent.get("parentId").and_then(Value::as_str);
+    }
+    true
+}
+
+fn is_browser_private_control_role(role: &str) -> bool {
+    matches!(
+        role,
+        "Date" | "DateTime" | "InputTime" | "ColorWell" | "spinbutton" | "slider" | "combobox"
+    )
+}
+
+fn shadow_owner_promotion_rank(role: &str) -> u8 {
+    match role {
+        "spinbutton" | "slider" | "Date" | "DateTime" | "InputTime" | "ColorWell" => 0,
+        "button" | "combobox" => 1,
+        _ => u8::MAX,
+    }
+}
+
+fn index_dom_controls(root: &Value) -> HashMap<i64, DomControlFacts> {
+    let mut index = HashMap::new();
+    walk_dom_controls(root, None, &mut index);
+    index
+}
+
+fn walk_dom_controls(
+    node: &Value,
+    host: Option<&ShadowHost>,
+    index: &mut HashMap<i64, DomControlFacts>,
+) {
+    let node_type = node.get("nodeType").and_then(Value::as_i64).unwrap_or(0);
+    let is_shadow_root = node.get("shadowRootType").is_some() || node_type == 11;
+    if is_shadow_root {
+        if let Some(children) = node.get("children").and_then(Value::as_array) {
+            for child in children {
+                walk_dom_controls(child, host, index);
+            }
+        }
+        return;
+    }
+    if node_type != 1 {
+        if let Some(children) = node.get("children").and_then(Value::as_array) {
+            for child in children {
+                walk_dom_controls(child, host, index);
+            }
+        }
+        return;
+    }
+
+    let local_name = node
+        .get("localName")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let input_type = (local_name == "input").then(|| {
+        let raw = dom_attribute(node, "type").unwrap_or_else(|| "text".to_string());
+        if raw.is_empty() {
+            "text".to_string()
+        } else {
+            raw
+        }
+    });
+    let in_native_control_shadow = host
+        .as_ref()
+        .is_some_and(|host| matches!(host.local_name.as_str(), "input" | "select" | "textarea"));
+    let backend_node_id = node.get("backendNodeId").and_then(Value::as_i64);
+    if let Some(backend_node_id) = backend_node_id {
+        index.insert(
+            backend_node_id,
+            DomControlFacts {
+                local_name: local_name.clone(),
+                input_type: input_type.clone(),
+                in_native_control_shadow,
+                host_backend_node_id: host.and_then(|host| host.backend_node_id),
+                host_local_name: host.map(|host| host.local_name.clone()),
+                host_input_type: host.and_then(|host| host.input_type.clone()),
+                host_label: host.and_then(|host| host.label.clone()),
+                host_value: host.and_then(|host| host.value.clone()),
+            },
+        );
+    }
+    let next_host = ShadowHost {
+        backend_node_id,
+        local_name,
+        input_type,
+        label: element_label(node),
+        value: element_value(node),
+    };
+    if let Some(children) = node.get("children").and_then(Value::as_array) {
+        for child in children {
+            walk_dom_controls(child, host, index);
+        }
+    }
+    if let Some(shadow_roots) = node.get("shadowRoots").and_then(Value::as_array) {
+        for shadow_root in shadow_roots {
+            walk_dom_controls(shadow_root, Some(&next_host), index);
+        }
+    }
+}
+
+fn dom_attribute(node: &Value, name: &str) -> Option<String> {
+    dom_attribute_raw(node, name).map(|value| value.to_ascii_lowercase())
+}
+
+fn dom_attribute_raw(node: &Value, name: &str) -> Option<String> {
+    let attributes = node.get("attributes")?.as_array()?;
+    let mut index = 0;
+    while index + 1 < attributes.len() {
+        if attributes[index].as_str() == Some(name) {
+            return attributes[index + 1]
+                .as_str()
+                .map(|value| value.trim().to_string());
+        }
+        index += 2;
+    }
+    None
+}
+
+fn element_label(node: &Value) -> Option<String> {
+    for name in ["aria-label", "title"] {
+        if let Some(value) = dom_attribute_raw(node, name).filter(|value| !value.is_empty()) {
+            return Some(clip_bytes(&value, MAX_NODE_TEXT_BYTES));
+        }
+    }
+    None
+}
+
+fn element_value(node: &Value) -> Option<String> {
+    dom_attribute_raw(node, "value")
+        .filter(|value| !value.is_empty())
+        .map(|value| clip_bytes(&value, MAX_NODE_TEXT_BYTES))
 }
 
 fn ax_value(node: &Value, key: &str) -> Option<String> {
@@ -1489,23 +1894,6 @@ fn ax_group_context(
         parent_id = parent.get("parentId").and_then(Value::as_str);
     }
     None
-}
-
-fn is_actionable(role: &str) -> bool {
-    matches!(
-        role,
-        "button"
-            | "link"
-            | "textbox"
-            | "searchbox"
-            | "DateTime"
-            | "combobox"
-            | "checkbox"
-            | "radio"
-            | "switch"
-            | "menuitem"
-            | "tab"
-    )
 }
 
 fn fetch_page_descriptors(port: u16, deadline: Instant) -> BrowserResult<Vec<Value>> {
@@ -1992,17 +2380,308 @@ mod tests {
     use tungstenite::{accept, Message};
 
     #[test]
-    fn form_control_roles_needed_for_structured_fill_are_actionable() {
-        for role in ["textbox", "combobox", "DateTime"] {
-            assert!(
-                is_actionable(role),
-                "{role} should project an element identity"
-            );
-        }
+    fn dom_control_capabilities_follow_the_owning_element() {
+        let dom = json!({
+            "nodeType": 9,
+            "children": [{
+                "nodeType": 1,
+                "localName": "body",
+                "backendNodeId": 1,
+                "children": [
+                    input(13, "text", json!([])),
+                    input(18, "search", json!([])),
+                    input(29, "number", json!([])),
+                    input(35, "range", json!([])),
+                    input(40, "date", json!([
+                        {"nodeType": 1, "localName": "span", "backendNodeId": 44},
+                        {"nodeType": 1, "localName": "div", "backendNodeId": 49, "attributes": ["id", "picker"]}
+                    ])),
+                    input(51, "month", json!([])),
+                    json!({
+                        "nodeType": 1,
+                        "localName": "input",
+                        "backendNodeId": 61,
+                        "attributes": ["type", "week", "aria-label", "Week", "value", "2026-W12"],
+                        "shadowRoots": [{
+                            "nodeType": 11,
+                            "shadowRootType": "user-agent",
+                            "children": [
+                                {"nodeType": 1, "localName": "span", "backendNodeId": 65},
+                                {"nodeType": 1, "localName": "span", "backendNodeId": 67}
+                            ]
+                        }]
+                    }),
+                    input(11, "time", json!([])),
+                    input(80, "datetime-local", json!([])),
+                    input(23, "color", json!([])),
+                    input(99, "file", json!([])),
+                    input(2, "email", json!([])),
+                    input(14, "password", json!([])),
+                    input(15, "checkbox", json!([])),
+                    input(16, "hidden", json!([])),
+                    {
+                        "nodeType": 1,
+                        "localName": "select",
+                        "backendNodeId": 106,
+                        "children": [
+                            {"nodeType": 1, "localName": "option", "backendNodeId": 113}
+                        ]
+                    },
+                    {"nodeType": 1, "localName": "textarea", "backendNodeId": 103},
+                    {"nodeType": 1, "localName": "div", "backendNodeId": 119},
+                    {"nodeType": 1, "localName": "div", "backendNodeId": 120},
+                    {"nodeType": 1, "localName": "button", "backendNodeId": 200},
+                    {"nodeType": 1, "localName": "a", "backendNodeId": 202},
+                    {"nodeType": 1, "localName": "a", "backendNodeId": 203, "attributes": ["href", "https://example.test/"]},
+                    {
+                        "nodeType": 1,
+                        "localName": "ua-like",
+                        "backendNodeId": 201,
+                        "shadowRoots": [{
+                            "nodeType": 11,
+                            "shadowRootType": "open",
+                            "children": [
+                                {"nodeType": 1, "localName": "div", "backendNodeId": 123},
+                                {"nodeType": 1, "localName": "button", "backendNodeId": 124}
+                            ]
+                        }]
+                    }
+                ]
+            }]
+        });
+        let raw_nodes = vec![
+            ax("text", "textbox", Some(13)),
+            ax("search", "searchbox", Some(18)),
+            ax("email", "textbox", Some(2)),
+            ax("password", "textbox", Some(14)),
+            ax("checkbox", "checkbox", Some(15)),
+            ax("hidden", "textbox", Some(16)),
+            ax("number", "spinbutton", Some(29)),
+            ax("range", "slider", Some(35)),
+            ax("date", "Date", Some(40)),
+            ax("date-part", "spinbutton", Some(44)),
+            ax("date-picker", "button", Some(49)),
+            ax("month", "DateTime", Some(51)),
+            ax("time", "InputTime", Some(11)),
+            ax("local", "DateTime", Some(80)),
+            ax("color", "ColorWell", Some(23)),
+            ax("file", "button", Some(99)),
+            ax("select", "combobox", Some(106)),
+            ax("alpha", "option", Some(113)),
+            ax("notes", "textbox", Some(103)),
+            ax("aria-spin", "spinbutton", Some(119)),
+            ax("aria-slider", "slider", Some(120)),
+            ax("button", "button", Some(200)),
+            ax("plain-anchor", "generic", Some(202)),
+            ax("link", "link", Some(203)),
+            ax("shadow-spin", "spinbutton", Some(123)),
+            ax("shadow-button", "button", Some(124)),
+            ax("week-part-a", "spinbutton", Some(65)),
+            ax("week-part-b", "button", Some(67)),
+            ax("legacy-button", "button", Some(4242)),
+            ax("legacy-datetime", "DateTime", Some(4243)),
+            ax("detached-date", "Date", Some(4244)),
+            ax("no-backend", "button", None),
+        ];
+        let (nodes, _) = project_ax_nodes(&raw_nodes, Some(&dom));
+        let by_name = nodes
+            .iter()
+            .map(|node| (node.name.as_deref().unwrap_or(""), node))
+            .collect::<HashMap<_, _>>();
+        let actions = |name: &str| by_name[name].capability.action_names();
+
+        assert_eq!(actions("text"), ["click", "input_text"]);
+        assert_eq!(actions("search"), ["click", "input_text"]);
+        assert_eq!(actions("email"), ["click", "input_text"]);
+        assert_eq!(actions("password"), ["click", "input_text"]);
+        assert_eq!(actions("checkbox"), ["click"]);
+        assert!(actions("hidden").is_empty());
+        assert_eq!(actions("notes"), ["click", "input_text"]);
+        assert_eq!(actions("number"), ["set_value"]);
+        assert_eq!(actions("range"), ["set_value"]);
+        assert_eq!(actions("date"), ["set_value"]);
+        assert_eq!(actions("month"), ["set_value"]);
+        assert_eq!(actions("time"), ["set_value"]);
+        assert_eq!(actions("local"), ["set_value"]);
+        assert_eq!(actions("color"), ["set_value"]);
+        assert!(actions("date-part").is_empty());
+        assert!(actions("date-picker").is_empty());
+        assert_eq!(by_name["date-part"].backend_node_id, Some(44));
+        assert_eq!(actions("file"), ["upload_file"]);
+        assert_eq!(actions("select"), ["select_option"]);
+        assert!(actions("alpha").is_empty());
+        assert!(actions("aria-spin").is_empty());
+        assert!(actions("aria-slider").is_empty());
+        assert!(actions("shadow-spin").is_empty());
+        assert_eq!(actions("button"), ["click"]);
         assert!(
-            !is_actionable("option"),
-            "native option nodes are semantic choices; the owning combobox carries select_option authority"
+            actions("plain-anchor").is_empty(),
+            "DOM classification must not expand a non-link anchor beyond its accessibility semantics"
         );
+        assert_eq!(actions("link"), ["click"]);
+        assert_eq!(actions("shadow-button"), ["click"]);
+        assert!(
+            actions("legacy-button").is_empty(),
+            "a node omitted from a successful DOM index does not regain click"
+        );
+        assert!(actions("legacy-datetime").is_empty());
+        assert!(actions("detached-date").is_empty());
+        assert!(actions("no-backend").is_empty());
+        assert_eq!(by_name["no-backend"].backend_node_id, None);
+
+        let week_hosts = nodes
+            .iter()
+            .filter(|node| node.capability.exact_value && node.backend_node_id == Some(61))
+            .collect::<Vec<_>>();
+        assert_eq!(week_hosts.len(), 1, "one missing owner is projected once");
+        assert_eq!(week_hosts[0].role, "DateTime");
+        assert_eq!(week_hosts[0].name.as_deref(), Some("Week"));
+        assert_eq!(week_hosts[0].value.as_deref(), Some("2026-W12"));
+        assert_eq!(week_hosts[0].capability.action_names(), ["set_value"]);
+        assert!(nodes.iter().any(|node| {
+            node.name.as_deref() == Some("week-part-a")
+                && node.role == "spinbutton"
+                && node.backend_node_id == Some(65)
+                && node.capability.action_names().is_empty()
+        }));
+        assert!(nodes.iter().any(|node| {
+            node.name.as_deref() == Some("week-part-b")
+                && node.role == "button"
+                && node.backend_node_id == Some(67)
+                && node.capability.action_names().is_empty()
+        }));
+    }
+
+    #[test]
+    fn failed_dom_query_keeps_ordinary_controls_and_drops_shadow_pickers() {
+        let raw_nodes = vec![
+            ax_child("root", "RootWebArea", Some(1), None),
+            ax_child("Continue", "button", Some(2), Some("ax-root")),
+            ax_child("Name", "textbox", Some(3), Some("ax-root")),
+            ax_child("When", "Date", Some(10), Some("ax-root")),
+            ax_child("picker", "button", Some(11), Some("ax-When")),
+            ax_child("year", "spinbutton", Some(12), Some("ax-When")),
+            ax_child("Author shadow", "button", Some(20), Some("ax-root")),
+            ax_child("Month", "DateTime", Some(30), Some("ax-root")),
+        ];
+        let (nodes, _) = project_ax_nodes(&raw_nodes, None);
+        let by_name = nodes
+            .iter()
+            .filter_map(|node| node.name.as_deref().map(|name| (name, node)))
+            .collect::<HashMap<_, _>>();
+        assert_eq!(by_name["Continue"].capability.action_names(), ["click"]);
+        assert_eq!(
+            by_name["Name"].capability.action_names(),
+            ["click", "input_text"]
+        );
+        assert_eq!(
+            by_name["Author shadow"].capability.action_names(),
+            ["click"]
+        );
+        assert!(by_name["picker"].capability.action_names().is_empty());
+        assert_eq!(by_name["picker"].backend_node_id, Some(11));
+        assert!(by_name["year"].capability.action_names().is_empty());
+        assert!(by_name["When"].capability.action_names().is_empty());
+        assert_eq!(by_name["Month"].capability.action_names(), ["click"]);
+    }
+
+    #[test]
+    fn depth_truncated_shadow_tree_does_not_click_the_picker() {
+        let dom = json!({
+            "nodeType": 9,
+            "children": [{
+                "nodeType": 1,
+                "localName": "body",
+                "backendNodeId": 1,
+                "children": [
+                    json!({
+                        "nodeType": 1,
+                        "localName": "input",
+                        "backendNodeId": 40,
+                        "attributes": ["type", "date", "aria-label", "When"]
+                    }),
+                    {"nodeType": 1, "localName": "button", "backendNodeId": 200},
+                    {
+                        "nodeType": 1,
+                        "localName": "ua-like",
+                        "backendNodeId": 201,
+                        "shadowRoots": [{
+                            "nodeType": 11,
+                            "shadowRootType": "open",
+                            "children": [
+                                {"nodeType": 1, "localName": "button", "backendNodeId": 124}
+                            ]
+                        }]
+                    }
+                ]
+            }]
+        });
+        let raw_nodes = vec![
+            ax_child("root", "RootWebArea", Some(1), None),
+            ax_child("When", "Date", Some(40), Some("ax-root")),
+            ax_child("picker", "button", Some(49), Some("ax-When")),
+            ax_child("Continue", "button", Some(200), Some("ax-root")),
+            ax_child("Author shadow", "button", Some(124), Some("ax-root")),
+        ];
+        let (nodes, _) = project_ax_nodes(&raw_nodes, Some(&dom));
+        let by_name = nodes
+            .iter()
+            .filter_map(|node| node.name.as_deref().map(|name| (name, node)))
+            .collect::<HashMap<_, _>>();
+        assert_eq!(by_name["When"].capability.action_names(), ["set_value"]);
+        assert_eq!(by_name["When"].backend_node_id, Some(40));
+        assert!(by_name["picker"].capability.action_names().is_empty());
+        assert_eq!(by_name["picker"].role, "button");
+        assert_eq!(by_name["picker"].backend_node_id, Some(49));
+        assert_eq!(by_name["Continue"].capability.action_names(), ["click"]);
+        assert_eq!(
+            by_name["Author shadow"].capability.action_names(),
+            ["click"]
+        );
+    }
+
+    fn input(backend_node_id: i64, input_type: &str, shadow_children: Value) -> Value {
+        let mut node = json!({
+            "nodeType": 1,
+            "localName": "input",
+            "backendNodeId": backend_node_id,
+            "attributes": ["type", input_type]
+        });
+        if shadow_children
+            .as_array()
+            .is_some_and(|children| !children.is_empty())
+        {
+            node["shadowRoots"] = json!([{
+                "nodeType": 11,
+                "shadowRootType": "user-agent",
+                "children": shadow_children
+            }]);
+        }
+        node
+    }
+
+    fn ax(name: &str, role: &str, backend_node_id: Option<i64>) -> Value {
+        ax_child(name, role, backend_node_id, None)
+    }
+
+    fn ax_child(
+        name: &str,
+        role: &str,
+        backend_node_id: Option<i64>,
+        parent_id: Option<&str>,
+    ) -> Value {
+        let mut node = json!({
+            "nodeId": format!("ax-{name}"),
+            "role": {"value": role},
+            "name": {"value": name}
+        });
+        if let Some(backend_node_id) = backend_node_id {
+            node["backendDOMNodeId"] = json!(backend_node_id);
+        }
+        if let Some(parent_id) = parent_id {
+            node["parentId"] = json!(parent_id);
+        }
+        node
     }
 
     fn fake_cdp_server(reply: Option<Value>) -> (Url, thread::JoinHandle<()>) {
@@ -2199,11 +2878,11 @@ Connection: close
             "backendDOMNodeId": 4242,
         }));
 
-        let (nodes, truncated) = parse_ax_snapshot_nodes(&raw_nodes);
+        let (nodes, truncated) = project_ax_nodes(&raw_nodes, None);
         assert!(truncated);
         let late = nodes.last().expect("late actionable node retained");
         assert_eq!(late.name.as_deref(), Some("Continue"));
-        assert!(late.actionable);
+        assert_eq!(late.capability.action_names(), ["click"]);
         assert_eq!(late.backend_node_id, Some(4242));
     }
 

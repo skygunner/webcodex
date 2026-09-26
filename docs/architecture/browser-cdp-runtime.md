@@ -90,16 +90,54 @@ Model-facing `browser_id`, `page_id`, and `element_id` values are opaque,
 process-local identities. They are not aliases for CDP target IDs, backend node
 IDs, ports, PIDs, or filesystem paths.
 
-A semantic snapshot is bounded and primarily derived from CDP Accessibility
-semantics. It returns enough normalized role/name/value metadata to find readable
-content and interactive controls without returning unbounded raw HTML, DOM, or AX
-trees. Actionable snapshot nodes receive fresh opaque `element_id` values.
+A semantic snapshot is bounded and derived from CDP Accessibility semantics plus
+one DOM control classification. It returns enough normalized role/name/value
+metadata to find readable content and interactive controls without returning
+unbounded raw HTML, DOM, or AX trees. Actionable snapshot nodes receive fresh
+opaque `element_id` values and an `actions` list.
+
+`actions` is the canonical admission for that element. It is not inferred from
+the accessibility role alone. The resolved element's local name and input type
+select the effect: native `select` admits `select_option`; text-like inputs and
+`textarea` admit `click` and `input_text`; `number`, `range`, date/time-like
+inputs, and `color` admit `set_value`; `file` admits `upload_file`. Native
+`option` nodes remain observable choices and admit no effect. Accessibility
+`spinbutton` and `slider` nodes are not generically actionable. Descendants
+inside an `input`, `select`, or `textarea` shadow tree admit nothing.
+
+This is an intentional compatibility change from role-wide actionability. A
+native `select` no longer accepts `click` or `input_text`. A file input no
+longer accepts `click`. `number`, `range`, `date`, `month`, `week`, `time`,
+`datetime-local`, and `color` no longer accept `click` or `input_text`. Call
+only the action listed on the current snapshot node. Light-DOM buttons, links,
+checkboxes, radios, and text fields keep their previous actions when the DOM
+index contains them. An author button inside a custom element's shadow root
+also keeps `click` when that button is in the index.
+
+If the owning control is absent from the accessibility tree, one extra snapshot
+node is added for that owner. It uses the owner's role, accessible label, and
+DOM value, and its element id addresses the owner. The shadow part keeps its
+own role, name, and backend node, and admits no effect.
+
+A successful DOM index that omits a node grants that node nothing. Depth
+truncation therefore cannot turn a browser-private shadow picker into a click
+target. When `DOM.getDocument` fails, legacy role admission remains only for
+nodes that are not accessibility descendants of `Date`, `DateTime`,
+`InputTime`, `ColorWell`, `spinbutton`, `slider`, or `combobox`. Those
+descendants admit nothing, so a shadow picker does not regain `click`. A
+top-level `DateTime` host may still admit `click` in that failure mode because
+its input type is unknown. Iframe documents are not classified; controls inside
+them do not receive element authority. `click`, `input_text`, `select_option`,
+`set_value`, and `upload_file` reject an element that does not list that
+action. Document loader identity, snapshot generation, and stale-element
+rejection are unchanged.
 
 Element authority is fenced to Browser identity, page identity, current document
 (loader) identity, and snapshot generation. Navigation, document replacement, page
 replacement, a newer snapshot, or Runner restart makes older element IDs stale.
-Before `click` or `input_text`, the runtime re-observes the current page document
-and requires the complete fence to remain exact. A stale failure never guesses or
+Before any element effect (`click`, `input_text`, `select_option`, `set_value`, or
+`upload_file`), the runtime re-observes the current page document and requires the
+complete fence to remain exact. A stale failure never guesses or
 retargets a replacement element; recovery is a fresh
 `browser_observe(action=snapshot, ...)`.
 
@@ -146,7 +184,7 @@ Browser does not introduce a second image pipeline or a Phase 1 MCP App.
 ## Phase 1 limits and dogfood
 
 Phase 1 intentionally does not implement arbitrary JavaScript/evaluate, cookies or
-storage mutation, downloads, file upload, real-profile attachment, remote CDP
+storage mutation, downloads, real-profile attachment, remote CDP
 attachment, durable profiles, network interception, proxy configuration,
 extensions, password-manager access, credential extraction, cloud Browser
 scheduling, Browser MCP Apps, or Agent-specific Browser ownership.

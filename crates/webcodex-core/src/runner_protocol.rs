@@ -322,6 +322,11 @@ pub const RUNNER_CAPABILITY_BROWSER_OBSERVE: &str = "browser_observe";
 /// Missing on older Runners is false and is never inferred from Browser observation,
 /// Computer control, OS identity, protocol generation, or shell support.
 pub const RUNNER_CAPABILITY_BROWSER_CONTROL: &str = "browser_control";
+/// The Runner projects exact per-element Browser actions from the current semantic
+/// snapshot and enforces the same action admission before each element effect.
+/// Missing on older Runners is false and is never inferred from browser_control.
+pub const RUNNER_CAPABILITY_BROWSER_ELEMENT_ACTION_ADMISSION: &str =
+    "browser_element_action_admission";
 /// Runner-owned creation of an ephemeral Chromium-family Browser runtime. Missing
 /// on older Runners is false and is never inferred from executable/platform facts.
 pub const RUNNER_CAPABILITY_BROWSER_LAUNCH: &str = "browser_launch";
@@ -502,6 +507,7 @@ pub const RUNNER_CAPABILITY_NAMES: &[&str] = &[
     RUNNER_CAPABILITY_SKILL_MANAGEMENT,
     RUNNER_CAPABILITY_BROWSER_OBSERVE,
     RUNNER_CAPABILITY_BROWSER_CONTROL,
+    RUNNER_CAPABILITY_BROWSER_ELEMENT_ACTION_ADMISSION,
     RUNNER_CAPABILITY_BROWSER_LAUNCH,
     RUNNER_CAPABILITY_COMPUTER_OBSERVE,
     RUNNER_CAPABILITY_COMPUTER_APPLICATION_DISCOVERY,
@@ -726,6 +732,10 @@ pub struct RunnerCapabilities {
     /// Runner-owned Browser control excluding process launch.
     #[serde(default, skip_serializing_if = "is_false")]
     pub browser_control: bool,
+    /// Exact snapshot-advertised element action admission. Missing on older Runners
+    /// is false and never follows from generic Browser observation/control.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub browser_element_action_admission: bool,
     /// Runner-owned launch of ephemeral Chromium-family runtimes.
     #[serde(default, skip_serializing_if = "is_false")]
     pub browser_launch: bool,
@@ -1085,6 +1095,7 @@ impl Default for RunnerCapabilities {
             skill_management: false,
             browser_observe: false,
             browser_control: false,
+            browser_element_action_admission: false,
             browser_launch: false,
             computer_observe: false,
             computer_application_discovery: false,
@@ -2664,6 +2675,7 @@ mod envelope_tests {
                 skill_management: false,
                 browser_observe: false,
                 browser_control: false,
+                browser_element_action_admission: false,
                 browser_launch: false,
                 computer_observe: false,
                 computer_application_discovery: false,
@@ -2816,6 +2828,30 @@ mod envelope_tests {
         let capabilities: RunnerCapabilities =
             serde_json::from_str(r#"{"project_path_registration":true}"#).unwrap();
         assert!(capabilities.project_path_registration);
+    }
+
+    #[test]
+    fn browser_element_action_admission_is_additive_and_default_false() {
+        let legacy: RunnerCapabilities = serde_json::from_str(
+            r#"{"browser_observe":true,"browser_control":true,"browser_launch":true}"#,
+        )
+        .unwrap();
+        assert!(legacy.browser_observe);
+        assert!(legacy.browser_control);
+        assert!(!legacy.browser_element_action_admission);
+        assert!(legacy.browser_launch);
+
+        let present: RunnerCapabilities =
+            serde_json::from_str(r#"{"browser_element_action_admission":true}"#).unwrap();
+        assert!(present.browser_element_action_admission);
+        assert!(!present.browser_observe);
+        assert!(!present.browser_control);
+        assert!(!present.browser_launch);
+        assert!(
+            RUNNER_CAPABILITY_NAMES.contains(&RUNNER_CAPABILITY_BROWSER_ELEMENT_ACTION_ADMISSION)
+        );
+        assert!(!RUNNER_PROTOCOL_GENERATION_V2_BASELINE_CAPABILITY_NAMES
+            .contains(&RUNNER_CAPABILITY_BROWSER_ELEMENT_ACTION_ADMISSION));
     }
 
     #[test]
@@ -3975,6 +4011,7 @@ mod envelope_tests {
                 "skill_management",
                 "browser_observe",
                 "browser_control",
+                "browser_element_action_admission",
                 "browser_launch",
                 "computer_observe",
                 "computer_application_discovery",

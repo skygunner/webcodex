@@ -2415,6 +2415,15 @@ impl RunnerRegistry {
         timeout_secs: u64,
     ) -> Result<(String, oneshot::Receiver<ShellRunResponse>), String> {
         validate_id(&client_id, "client_id")?;
+        let requires_element_action_admission = matches!(
+            kind,
+            "browser_snapshot"
+                | "browser_click"
+                | "browser_input_text"
+                | "browser_select_option"
+                | "browser_set_value"
+                | "browser_upload_file"
+        );
         let required_feature = match kind {
             "browser_list_browsers"
             | "browser_list_pages"
@@ -2467,6 +2476,16 @@ impl RunnerRegistry {
             return Err(format!(
                 "capability_unavailable: runner {client_id} does not support {}",
                 required_feature.as_wire_name()
+            ));
+        }
+        if requires_element_action_admission
+            && !current
+                .runner_features
+                .supports(RunnerFeature::BrowserElementActionAdmission)
+        {
+            return Err(format!(
+                "capability_unavailable: runner {client_id} does not support {}",
+                RunnerFeature::BrowserElementActionAdmission.as_wire_name()
             ));
         }
         enqueue_pending_request_locked(

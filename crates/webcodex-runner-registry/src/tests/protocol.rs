@@ -500,6 +500,7 @@ async fn runner_supports_recognizes_all_protocol_capability_names() {
                 skill_management: true,
                 browser_observe: true,
                 browser_control: true,
+                browser_element_action_admission: true,
                 browser_launch: true,
                 computer_observe: true,
                 computer_application_discovery: true,

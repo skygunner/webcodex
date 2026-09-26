@@ -111,11 +111,34 @@ fn browser_output_schemas_accept_canonical_results_and_reject_leaked_fields() {
             "name": "Continue",
             "value": null,
             "element_id": "element_abcdefghijklmnop",
+            "actions": ["click"],
             "actionable": true
         }]
     })))
     .unwrap();
     validate_observe(&snapshot).unwrap();
+    let mut unknown_action = snapshot.clone();
+    unknown_action["output"]["nodes"][0]["actions"] = json!(["spinbutton"]);
+    assert!(validate_observe(&unknown_action).is_err());
+    let value_control =
+        serde_json::to_value(crate::tool_runtime::tool_result::ToolResult::ok(json!({
+            "execution_state": "completed",
+            "state_changed": false,
+            "browser_id": "browser_abcdefghijklmnop",
+            "page_id": "page_abcdefghijklmnop",
+            "snapshot_generation": 2,
+            "node_count": 1,
+            "truncated": false,
+            "nodes": [{
+                "role": "spinbutton",
+                "name": "Qty",
+                "element_id": "element_abcdefghijklmnop",
+                "actions": ["set_value"],
+                "actionable": true
+            }]
+        })))
+        .unwrap();
+    validate_observe(&value_control).unwrap();
 
     let screenshot =
         serde_json::to_value(crate::tool_runtime::tool_result::ToolResult::ok(json!({

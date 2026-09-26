@@ -2,12 +2,12 @@ use crate::cdp::{
     BackendFactory, BackendNode, BackendPage, BackendScreenshot, BrowserBackend, ChromiumFactory,
 };
 use crate::types::{
-    clip_bytes, clip_chars, validate_navigation_url, BrowserError, BrowserKey, BrowserResult,
-    BrowserShutdownReport, BrowserStability, BrowserSummary, PageSummary, Screenshot, SemanticNode,
-    SemanticSnapshot, SnapshotMode, BROWSER_IDLE_TIMEOUT, MAX_BROWSERS, MAX_BROWSER_LIFETIME,
-    MAX_IMAGE_BYTES, MAX_IMAGE_DIMENSION, MAX_INPUT_TEXT_BYTES, MAX_NODE_TEXT_BYTES,
-    MAX_PAGES_PER_BROWSER, MAX_PAGE_SUMMARIES, MAX_SNAPSHOT_BYTES, MAX_SNAPSHOT_NODES,
-    SHUTDOWN_TIMEOUT,
+    clip_bytes, clip_chars, validate_navigation_url, AdmittedBrowserAction, BrowserError,
+    BrowserKey, BrowserResult, BrowserShutdownReport, BrowserStability, BrowserSummary,
+    ControlCapability, PageSummary, Screenshot, SemanticNode, SemanticSnapshot, SnapshotMode,
+    BROWSER_IDLE_TIMEOUT, MAX_BROWSERS, MAX_BROWSER_LIFETIME, MAX_IMAGE_BYTES, MAX_IMAGE_DIMENSION,
+    MAX_INPUT_TEXT_BYTES, MAX_NODE_TEXT_BYTES, MAX_PAGES_PER_BROWSER, MAX_PAGE_SUMMARIES,
+    MAX_SNAPSHOT_BYTES, MAX_SNAPSHOT_NODES, SHUTDOWN_TIMEOUT,
 };
 use base64::{engine::general_purpose, Engine as _};
 use sha2::{Digest, Sha256};
@@ -52,7 +52,7 @@ struct ElementIdentity {
     document_id: String,
     snapshot_generation: u64,
     backend_node_id: i64,
-    actionable: bool,
+    capability: ControlCapability,
 }
 
 struct BrowserRuntime {
@@ -277,7 +277,10 @@ impl BrowserSupervisor {
         let source_nodes = snapshot
             .nodes
             .into_iter()
-            .filter(|node| effective_mode != SnapshotMode::Interactive || node.actionable)
+            .filter(|node| {
+                effective_mode != SnapshotMode::Interactive
+                    || (node.capability.admits_any() && node.backend_node_id.is_some())
+            })
             .collect::<Vec<_>>();
         let mut nodes = Vec::new();
         let mut aggregate_bytes = 0usize;
@@ -574,9 +577,13 @@ impl BrowserSupervisor {
         element_id: &str,
     ) -> BrowserResult<BrowserStability> {
         self.touch_current(browser_id)?;
-        self.element_effect(browser_id, page_id, element_id, |backend, target, node| {
-            backend.click(target, node)
-        })
+        self.element_effect(
+            browser_id,
+            page_id,
+            element_id,
+            AdmittedBrowserAction::Click,
+            |backend, target, node| backend.click(target, node),
+        )
     }
 
     pub fn input_text(
@@ -593,9 +600,13 @@ impl BrowserSupervisor {
                 "input text must be non-empty, NUL-free, and within the Browser UTF-8 byte bound",
             ));
         }
-        self.element_effect(browser_id, page_id, element_id, |backend, target, node| {
-            backend.input_text(target, node, text)
-        })
+        self.element_effect(
+            browser_id,
+            page_id,
+            element_id,
+            AdmittedBrowserAction::InputText,
+            |backend, target, node| backend.input_text(target, node, text),
+        )
     }
 
     pub fn select_option(
@@ -612,9 +623,13 @@ impl BrowserSupervisor {
                 "select option must be non-empty, NUL-free, and within the Browser UTF-8 byte bound",
             ));
         }
-        self.element_effect(browser_id, page_id, element_id, |backend, target, node| {
-            backend.select_option(target, node, option)
-        })
+        self.element_effect(
+            browser_id,
+            page_id,
+            element_id,
+            AdmittedBrowserAction::SelectOption,
+            |backend, target, node| backend.select_option(target, node, option),
+        )
     }
 
     pub fn set_value(
@@ -631,9 +646,13 @@ impl BrowserSupervisor {
                 "form value must be non-empty, NUL-free, and within the Browser UTF-8 byte bound",
             ));
         }
-        self.element_effect(browser_id, page_id, element_id, |backend, target, node| {
-            backend.set_value(target, node, value)
-        })
+        self.element_effect(
+            browser_id,
+            page_id,
+            element_id,
+            AdmittedBrowserAction::SetValue,
+            |backend, target, node| backend.set_value(target, node, value),
+        )
     }
 
     pub fn upload_file(
@@ -644,9 +663,13 @@ impl BrowserSupervisor {
         path: &std::path::Path,
     ) -> BrowserResult<BrowserStability> {
         self.touch_current(browser_id)?;
-        self.element_effect(browser_id, page_id, element_id, |backend, target, node| {
-            backend.upload_file(target, node, path)
-        })
+        self.element_effect(
+            browser_id,
+            page_id,
+            element_id,
+            AdmittedBrowserAction::UploadFile,
+            |backend, target, node| backend.upload_file(target, node, path),
+        )
     }
 
     pub fn key(
@@ -773,6 +796,7 @@ impl BrowserSupervisor {
         browser_id: &str,
         page_id: &str,
         element_id: &str,
+        action: AdmittedBrowserAction,
         effect: F,
     ) -> BrowserResult<BrowserStability>
     where
@@ -797,9 +821,11 @@ impl BrowserSupervisor {
         if element.page_id != page_id
             || element.document_id != page.document_id
             || element.snapshot_generation != page.snapshot_generation
-            || !element.actionable
         {
             return Err(stale_element());
+        }
+        if !element.capability.admits(action) {
+            return Err(unsupported_element_action());
         }
         effect(
             runtime.backend.as_mut(),
@@ -937,7 +963,9 @@ impl BrowserRuntime {
         group_id: Option<String>,
     ) -> SemanticNode {
         let mut element_id = None;
-        if node.actionable {
+        let actions = node.capability.action_names();
+        let actionable = node.capability.admits_any();
+        if actionable {
             if let Some(backend_node_id) = node.backend_node_id {
                 let id = opaque_id("element");
                 self.elements.insert(
@@ -947,7 +975,7 @@ impl BrowserRuntime {
                         document_id: document_id.to_string(),
                         snapshot_generation,
                         backend_node_id,
-                        actionable: true,
+                        capability: node.capability,
                     },
                 );
                 element_id = Some(id);
@@ -974,8 +1002,13 @@ impl BrowserRuntime {
             required: node.required,
             disabled: node.disabled,
             read_only: node.read_only,
+            actions: if element_id.is_some() {
+                actions
+            } else {
+                Vec::new()
+            },
+            actionable: element_id.is_some(),
             element_id,
-            actionable: node.actionable,
         }
     }
 
@@ -1114,6 +1147,13 @@ fn stale_page(page_id: &str) -> BrowserError {
     )
 }
 
+fn unsupported_element_action() -> BrowserError {
+    BrowserError::not_started(
+        "element_action_unsupported",
+        "snapshot element does not admit this Browser action",
+    )
+}
+
 fn stale_element() -> BrowserError {
     let mut error = BrowserError::not_started(
         "stale_element",
@@ -1136,6 +1176,30 @@ mod tests {
     };
     use crate::types::ExecutionState;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn fixture_node(
+        role: &str,
+        name: &str,
+        backend_node_id: Option<i64>,
+        capability: ControlCapability,
+    ) -> crate::cdp::BackendNode {
+        crate::cdp::BackendNode {
+            role: role.to_string(),
+            name: Some(name.to_string()),
+            description: None,
+            value: None,
+            group_key: None,
+            group_role: None,
+            group_label: None,
+            checked: None,
+            selected: None,
+            required: None,
+            disabled: None,
+            read_only: None,
+            backend_node_id,
+            capability,
+        }
+    }
 
     #[derive(Default)]
     struct FakeFactory {
@@ -1164,6 +1228,7 @@ mod tests {
         wait_fails: bool,
         fail_pages_after_create: bool,
         page_created: bool,
+        structured_controls: bool,
     }
 
     impl FakeBackend {
@@ -1188,7 +1253,14 @@ mod tests {
                 wait_fails: false,
                 fail_pages_after_create: false,
                 page_created: false,
+                structured_controls: false,
             }
+        }
+
+        fn with_structured_controls() -> Self {
+            let mut backend = Self::new();
+            backend.structured_controls = true;
+            backend
         }
 
         fn with_new_page_reconcile_failure() -> Self {
@@ -1243,6 +1315,23 @@ mod tests {
             _target_id: &str,
             _max_depth: u32,
         ) -> BrowserResult<BackendSnapshot> {
+            if self.structured_controls {
+                return Ok(BackendSnapshot {
+                    document_id: format!("doc-{}", self.document_generation),
+                    nodes: vec![
+                        fixture_node("button", "Go", Some(7), ControlCapability::click()),
+                        fixture_node(
+                            "spinbutton",
+                            "Qty",
+                            Some(8),
+                            ControlCapability::exact_value(),
+                        ),
+                        fixture_node("option", "Alpha", Some(9), ControlCapability::default()),
+                        fixture_node("slider", "Vol", Some(10), ControlCapability::exact_value()),
+                    ],
+                    truncated: false,
+                });
+            }
             let nodes = (0..self.snapshot_node_count)
                 .map(|index| {
                     let actionable = !self.mixed_snapshot || index % 2 == 0;
@@ -1264,7 +1353,11 @@ mod tests {
                         disabled: None,
                         read_only: None,
                         backend_node_id: actionable.then_some(index as i64 + 7),
-                        actionable,
+                        capability: if actionable {
+                            ControlCapability::click()
+                        } else {
+                            ControlCapability::default()
+                        },
                     }
                 })
                 .collect::<Vec<_>>();
@@ -1494,6 +1587,16 @@ mod tests {
             Ok(Box::new(FakeBackend::with_snapshot_nodes(
                 MAX_SNAPSHOT_NODES + 64,
             )))
+        }
+    }
+
+    struct StructuredControlsFactory;
+    impl BackendFactory for StructuredControlsFactory {
+        fn available(&self) -> bool {
+            true
+        }
+        fn launch(&self) -> BrowserResult<Box<dyn BrowserBackend>> {
+            Ok(Box::new(FakeBackend::with_structured_controls()))
         }
     }
 
@@ -1977,6 +2080,86 @@ mod tests {
     }
 
     #[test]
+    fn structured_control_identity_rejects_unadmitted_actions_and_keeps_fences() {
+        let supervisor = BrowserSupervisor::with_factory(Arc::new(StructuredControlsFactory));
+        let browser = supervisor.launch().unwrap();
+        let page = supervisor.pages(&browser.browser_id, 8).unwrap().remove(0);
+        let snapshot = supervisor
+            .snapshot(
+                &browser.browser_id,
+                &page.page_id,
+                SnapshotMode::Full,
+                MAX_SNAPSHOT_NODES,
+                DEFAULT_SNAPSHOT_DEPTH,
+            )
+            .unwrap();
+        let qty = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Qty"))
+            .unwrap();
+        assert_eq!(qty.actions, ["set_value"]);
+        assert!(qty.element_id.is_some());
+        let option = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Alpha"))
+            .unwrap();
+        assert!(!option.actionable);
+        assert!(option.element_id.is_none());
+        assert!(option.actions.is_empty());
+
+        let qty_id = qty.element_id.clone().unwrap();
+        let click = supervisor
+            .click(&browser.browser_id, &page.page_id, &qty_id)
+            .unwrap_err();
+        assert_eq!(click.kind, "element_action_unsupported");
+        assert_eq!(click.execution_state, ExecutionState::NotStarted);
+        assert_eq!(click.recovery_action, None);
+        supervisor
+            .set_value(&browser.browser_id, &page.page_id, &qty_id, "4")
+            .unwrap();
+        let button_id = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Go"))
+            .unwrap()
+            .element_id
+            .clone()
+            .unwrap();
+        let wrong_value = supervisor
+            .set_value(&browser.browser_id, &page.page_id, &button_id, "4")
+            .unwrap_err();
+        assert_eq!(wrong_value.kind, "element_action_unsupported");
+        assert_eq!(wrong_value.execution_state, ExecutionState::NotStarted);
+
+        let refreshed = supervisor
+            .snapshot(
+                &browser.browser_id,
+                &page.page_id,
+                SnapshotMode::Interactive,
+                MAX_SNAPSHOT_NODES,
+                DEFAULT_SNAPSHOT_DEPTH,
+            )
+            .unwrap();
+        assert!(refreshed.nodes.iter().all(|node| node.actionable));
+        assert!(refreshed
+            .nodes
+            .iter()
+            .all(|node| !node.actions.is_empty() && node.element_id.is_some()));
+        assert!(!refreshed
+            .nodes
+            .iter()
+            .any(|node| node.name.as_deref() == Some("Alpha")));
+        let stale = supervisor
+            .set_value(&browser.browser_id, &page.page_id, &qty_id, "5")
+            .unwrap_err();
+        assert_eq!(stale.kind, "stale_element");
+        assert_eq!(stale.execution_state, ExecutionState::NotStarted);
+        assert_eq!(stale.recovery_action, Some("snapshot"));
+    }
+
+    #[test]
     fn screenshot_bytes_are_bounded_before_projection() {
         let error = screenshot_result(
             "browser_test",
@@ -2075,4 +2258,245 @@ mod tests {
         assert_eq!(report.browsers, 1);
         assert_eq!(report.failures, 0);
     }
+
+    #[test]
+    #[ignore = "requires a local Chromium-family browser; CI uses deterministic DOM fixtures"]
+    fn chromium_structured_form_controls_are_addressable() {
+        let supervisor = BrowserSupervisor::new();
+        let _shutdown = ShutdownOnDrop(&supervisor);
+        assert!(
+            supervisor.available(),
+            "local Chromium-family browser is required"
+        );
+        let form = FormPage::serve();
+        let upload_path = std::env::temp_dir().join("webcodex-browser-upload.txt");
+        std::fs::write(&upload_path, b"resume").unwrap();
+        let browser = supervisor.launch().expect("chromium launch");
+        let page = supervisor.pages(&browser.browser_id, 8).unwrap().remove(0);
+        supervisor
+            .navigate(
+                &browser.browser_id,
+                &page.page_id,
+                &format!("http://127.0.0.1:{}/controls.html", form.port),
+            )
+            .unwrap();
+        let snapshot = supervisor
+            .snapshot(
+                &browser.browser_id,
+                &page.page_id,
+                SnapshotMode::Full,
+                MAX_SNAPSHOT_NODES,
+                DEFAULT_SNAPSHOT_DEPTH,
+            )
+            .unwrap();
+        let describe = snapshot
+            .nodes
+            .iter()
+            .map(|node| {
+                format!(
+                    "{} name={:?} actions={:?} actionable={}",
+                    node.role, node.name, node.actions, node.actionable
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let find = |name: &str| {
+            snapshot
+                .nodes
+                .iter()
+                .find(|node| node.name.as_deref() == Some(name))
+                .unwrap_or_else(|| panic!("missing {name}\n{describe}"))
+        };
+        let qty = find("Qty");
+        assert_eq!(qty.role, "spinbutton");
+        assert_eq!(qty.actions, ["set_value"]);
+        let vol = find("Vol");
+        assert_eq!(vol.role, "slider");
+        assert_eq!(vol.actions, ["set_value"]);
+        for name in ["When", "Month", "Time"] {
+            assert_eq!(find(name).actions, ["set_value"], "{name}");
+        }
+        assert_eq!(find("File").actions, ["upload_file"]);
+        assert_eq!(find("Pick").actions, ["select_option"]);
+        for name in ["Alpha", "Beta", "ARIA spin", "ARIA slider", "Shadow spin"] {
+            let node = find(name);
+            assert!(!node.actionable, "{name} received generic authority");
+            assert!(node.element_id.is_none(), "{name}");
+            assert!(node.actions.is_empty(), "{name}");
+        }
+        let click_buttons = snapshot
+            .nodes
+            .iter()
+            .filter(|node| {
+                node.role == "button" && node.actions.iter().any(|action| action == "click")
+            })
+            .map(|node| node.name.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(click_buttons, [Some("Author shadow".to_string())]);
+
+        let qty_id = qty.element_id.clone().unwrap();
+        let rejected = supervisor
+            .click(&browser.browser_id, &page.page_id, &qty_id)
+            .unwrap_err();
+        assert_eq!(rejected.kind, "element_action_unsupported");
+        assert_eq!(rejected.execution_state, ExecutionState::NotStarted);
+        supervisor
+            .set_value(&browser.browser_id, &page.page_id, &qty_id, "4")
+            .unwrap();
+        supervisor
+            .set_value(
+                &browser.browser_id,
+                &page.page_id,
+                &vol.element_id.clone().unwrap(),
+                "55",
+            )
+            .unwrap();
+        supervisor
+            .set_value(
+                &browser.browser_id,
+                &page.page_id,
+                &find("When").element_id.clone().unwrap(),
+                "2026-10-02",
+            )
+            .unwrap();
+        supervisor
+            .set_value(
+                &browser.browser_id,
+                &page.page_id,
+                &find("Month").element_id.clone().unwrap(),
+                "2026-10",
+            )
+            .unwrap();
+        supervisor
+            .set_value(
+                &browser.browser_id,
+                &page.page_id,
+                &find("Time").element_id.clone().unwrap(),
+                "10:15",
+            )
+            .unwrap();
+        supervisor
+            .select_option(
+                &browser.browser_id,
+                &page.page_id,
+                &find("Pick").element_id.clone().unwrap(),
+                "Beta",
+            )
+            .unwrap();
+        supervisor
+            .upload_file(
+                &browser.browser_id,
+                &page.page_id,
+                &find("File").element_id.clone().unwrap(),
+                &upload_path,
+            )
+            .unwrap();
+        let _ = std::fs::remove_file(&upload_path);
+
+        let refreshed = supervisor
+            .snapshot(
+                &browser.browser_id,
+                &page.page_id,
+                SnapshotMode::Full,
+                MAX_SNAPSHOT_NODES,
+                DEFAULT_SNAPSHOT_DEPTH,
+            )
+            .unwrap();
+        let refreshed_qty = refreshed
+            .nodes
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Qty"))
+            .expect("qty after set_value");
+        assert_eq!(refreshed_qty.actions, ["set_value"]);
+        // set_value already required the DOM value to remain "4". Chromium's
+        // spinbutton accessibility node does not always repeat that value.
+        assert!(matches!(refreshed_qty.value.as_deref(), None | Some("4")));
+        let stale = supervisor
+            .set_value(&browser.browser_id, &page.page_id, &qty_id, "5")
+            .unwrap_err();
+        assert_eq!(stale.kind, "stale_element");
+        assert_eq!(stale.recovery_action, Some("snapshot"));
+    }
+
+    struct ShutdownOnDrop<'a>(&'a BrowserSupervisor);
+
+    impl Drop for ShutdownOnDrop<'_> {
+        fn drop(&mut self) {
+            let _ = self
+                .0
+                .shutdown_until(Instant::now() + Duration::from_secs(2));
+        }
+    }
+
+    struct FormPage {
+        port: u16,
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        handle: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl FormPage {
+        fn serve() -> Self {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let thread_stop = std::sync::Arc::clone(&stop);
+            let handle = std::thread::spawn(move || {
+                while !thread_stop.load(Ordering::Relaxed) {
+                    let Ok((mut stream, _)) = listener.accept() else {
+                        break;
+                    };
+                    if thread_stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                    let mut request = [0u8; 2048];
+                    let _ = std::io::Read::read(&mut stream, &mut request);
+                    let body = FORM_PAGE_HTML.as_bytes();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
+                    let _ = std::io::Write::write_all(&mut stream, body);
+                }
+            });
+            Self {
+                port,
+                stop,
+                handle: Some(handle),
+            }
+        }
+    }
+
+    impl Drop for FormPage {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Relaxed);
+            let _ = std::net::TcpStream::connect(("127.0.0.1", self.port));
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    const FORM_PAGE_HTML: &str = r#"<!doctype html><meta charset="utf-8"><title>controls</title>
+<input id="number" type="number" aria-label="Qty" min="0" max="10" value="3">
+<input id="range" type="range" aria-label="Vol" min="0" max="100" value="40">
+<input id="date" type="date" aria-label="When" value="2026-09-26">
+<input id="month" type="month" aria-label="Month" value="2026-09">
+<input id="time" type="time" aria-label="Time" value="09:30">
+<input id="file" type="file" aria-label="File">
+<select id="select" aria-label="Pick"><option value="a">Alpha</option><option value="b">Beta</option></select>
+<div role="spinbutton" aria-label="ARIA spin" aria-valuenow="1" aria-valuemin="0" aria-valuemax="5" tabindex="0">ARIA spin</div>
+<div role="slider" aria-label="ARIA slider" aria-valuenow="2" aria-valuemin="0" aria-valuemax="10" tabindex="0">ARIA slider</div>
+<div id="host"></div>
+<script>
+customElements.define("ua-like", class extends HTMLElement {
+  constructor() {
+    super();
+    const root = this.attachShadow({mode:"open"});
+    root.innerHTML = '<button aria-label="Author shadow">Go</button><div role="spinbutton" aria-label="Shadow spin" tabindex="0">x</div>';
+  }
+});
+document.getElementById("host").append(document.createElement("ua-like"));
+</script>"#;
 }

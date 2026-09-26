@@ -56,6 +56,7 @@ pub enum RunnerFeature {
     SkillManagement,
     BrowserObserve,
     BrowserControl,
+    BrowserElementActionAdmission,
     BrowserLaunch,
     ComputerObserve,
     ComputerApplicationDiscovery,
@@ -129,6 +130,7 @@ const ALL_RUNNER_FEATURES: &[RunnerFeature] = &[
     RunnerFeature::SkillManagement,
     RunnerFeature::BrowserObserve,
     RunnerFeature::BrowserControl,
+    RunnerFeature::BrowserElementActionAdmission,
     RunnerFeature::BrowserLaunch,
     RunnerFeature::ComputerObserve,
     RunnerFeature::ComputerApplicationDiscovery,
@@ -236,6 +238,9 @@ impl RunnerFeature {
             Self::SkillManagement => wire::RUNNER_CAPABILITY_SKILL_MANAGEMENT,
             Self::BrowserObserve => wire::RUNNER_CAPABILITY_BROWSER_OBSERVE,
             Self::BrowserControl => wire::RUNNER_CAPABILITY_BROWSER_CONTROL,
+            Self::BrowserElementActionAdmission => {
+                wire::RUNNER_CAPABILITY_BROWSER_ELEMENT_ACTION_ADMISSION
+            }
             Self::BrowserLaunch => wire::RUNNER_CAPABILITY_BROWSER_LAUNCH,
             Self::ComputerObserve => wire::RUNNER_CAPABILITY_COMPUTER_OBSERVE,
             Self::ComputerApplicationDiscovery => {
@@ -331,6 +336,9 @@ impl RunnerFeature {
             wire::RUNNER_CAPABILITY_SKILL_MANAGEMENT => Self::SkillManagement,
             wire::RUNNER_CAPABILITY_BROWSER_OBSERVE => Self::BrowserObserve,
             wire::RUNNER_CAPABILITY_BROWSER_CONTROL => Self::BrowserControl,
+            wire::RUNNER_CAPABILITY_BROWSER_ELEMENT_ACTION_ADMISSION => {
+                Self::BrowserElementActionAdmission
+            }
             wire::RUNNER_CAPABILITY_BROWSER_LAUNCH => Self::BrowserLaunch,
             wire::RUNNER_CAPABILITY_COMPUTER_OBSERVE => Self::ComputerObserve,
             wire::RUNNER_CAPABILITY_COMPUTER_APPLICATION_DISCOVERY => {
@@ -411,6 +419,7 @@ impl RunnerFeature {
             | Self::SkillManagement
             | Self::BrowserObserve
             | Self::BrowserControl
+            | Self::BrowserElementActionAdmission
             | Self::BrowserLaunch
             | Self::ComputerObserve
             | Self::ComputerApplicationDiscovery
@@ -496,6 +505,7 @@ impl RunnerFeature {
             Self::SkillManagement => capabilities.skill_management,
             Self::BrowserObserve => capabilities.browser_observe,
             Self::BrowserControl => capabilities.browser_control,
+            Self::BrowserElementActionAdmission => capabilities.browser_element_action_admission,
             Self::BrowserLaunch => capabilities.browser_launch,
             Self::ComputerObserve => capabilities.computer_observe,
             Self::ComputerApplicationDiscovery => capabilities.computer_application_discovery,

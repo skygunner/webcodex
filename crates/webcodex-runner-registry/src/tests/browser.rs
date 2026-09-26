@@ -5,6 +5,7 @@ async fn register_browser_runner(
     client_id: &str,
     observe: bool,
     control: bool,
+    element_action_admission: bool,
     launch: bool,
 ) {
     registry
@@ -25,6 +26,7 @@ async fn register_browser_runner(
             capabilities: RunnerCapabilities {
                 browser_observe: observe,
                 browser_control: control,
+                browser_element_action_admission: element_action_admission,
                 browser_launch: launch,
                 ..v2_baseline_capabilities()
             },
@@ -38,7 +40,7 @@ async fn register_browser_runner(
 async fn browser_capability_is_checked_before_dispatch_and_never_falls_back() {
     let registry = RunnerRegistry::default();
     let alice = auth_context(Some("alice"), false);
-    register_browser_runner(&registry, "browser-old", false, false, false).await;
+    register_browser_runner(&registry, "browser-old", false, false, false, false).await;
 
     for (kind, payload, capability) in [
         ("browser_list_browsers", r#"{}"#, "browser_observe"),
@@ -89,10 +91,72 @@ async fn browser_capability_is_checked_before_dispatch_and_never_falls_back() {
 }
 
 #[tokio::test]
+async fn browser_element_action_admission_is_additive_and_fails_closed_for_old_runners() {
+    let registry = RunnerRegistry::default();
+    let alice = auth_context(Some("alice"), false);
+    register_browser_runner(&registry, "browser-legacy", true, true, false, true).await;
+
+    for kind in [
+        "browser_snapshot",
+        "browser_click",
+        "browser_input_text",
+        "browser_select_option",
+        "browser_set_value",
+        "browser_upload_file",
+    ] {
+        let error = registry
+            .enqueue_browser(
+                "browser-legacy".to_string(),
+                kind,
+                "{}".to_string(),
+                "alice".to_string(),
+                Some(&alice),
+                5,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.contains("capability_unavailable"), "{kind}: {error}");
+        assert!(
+            error.contains("browser_element_action_admission"),
+            "{kind}: {error}"
+        );
+        assert!(registry
+            .poll(RunnerPollRequest {
+                client_id: "browser-legacy".to_string(),
+                runner_instance_id: "browser-inst".to_string(),
+            })
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    registry
+        .enqueue_browser(
+            "browser-legacy".to_string(),
+            "browser_navigate",
+            "{}".to_string(),
+            "alice".to_string(),
+            Some(&alice),
+            5,
+        )
+        .await
+        .expect("generic Browser control remains compatible with the older capability");
+    let request = registry
+        .poll(RunnerPollRequest {
+            client_id: "browser-legacy".to_string(),
+            runner_instance_id: "browser-inst".to_string(),
+        })
+        .await
+        .unwrap()
+        .expect("navigation request");
+    assert_eq!(request.kind, "browser_navigate");
+}
+
+#[tokio::test]
 async fn browser_precise_operation_is_preserved_on_wire_without_shell_fields() {
     let registry = RunnerRegistry::default();
     let alice = auth_context(Some("alice"), false);
-    register_browser_runner(&registry, "browser-new", true, true, true).await;
+    register_browser_runner(&registry, "browser-new", true, true, true, true).await;
 
     let (_request_id, _receiver) = registry
         .enqueue_browser(

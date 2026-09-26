@@ -1539,6 +1539,10 @@ fn runner_register_capabilities(cfg: &RunnerConfig) -> RunnerCapabilities {
     let browser_available = webcodex_browser::discover_chromium_executable().is_some();
     capabilities.browser_observe = browser_available;
     capabilities.browser_control = browser_available;
+    // This binary publishes exact snapshot node `actions` and enforces the same
+    // admission set before element effects. Keep it separate from generic Browser
+    // control so a new Server cannot dispatch the stricter contract to an older Runner.
+    capabilities.browser_element_action_admission = browser_available;
     capabilities.browser_launch = browser_available;
     // Native read-only desktop observation is implemented only on macOS and
     // Windows. Unsupported platforms advertise false and fail closed.

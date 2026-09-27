@@ -34,6 +34,51 @@ pub(crate) fn is_managed_token_prefix(token: &str) -> bool {
     token.starts_with("wc_")
 }
 
+/// Read the remote shared-key opt-in flag from the environment. When true,
+/// direct shared-key authentication is allowed across a remote boundary
+/// (non-loopback bind or non-loopback `WEBCODEX_PUBLIC_URL`). The flag alone
+/// is inert: it must be combined with `WEBCODEX_SHARED_KEY_ENABLED`.
+pub(crate) fn shared_key_remote_enabled() -> bool {
+    crate::config::env_flag("WEBCODEX_SHARED_KEY_REMOTE_ENABLED").unwrap_or(false)
+}
+
+/// True when `WEBCODEX_PUBLIC_URL` is non-empty and points at a non-loopback
+/// host. Absent or empty values are local; unparseable values and hosts that
+/// cannot be verified as loopback fail closed as remote.
+pub(crate) fn configured_public_url_is_non_loopback() -> bool {
+    match std::env::var("WEBCODEX_PUBLIC_URL") {
+        Ok(raw) if !raw.trim().is_empty() => match url::Url::parse(raw.trim()) {
+            Ok(parsed) => match parsed.host_str() {
+                Some(host) => {
+                    !host.eq_ignore_ascii_case("localhost")
+                        && !host
+                            .parse::<std::net::IpAddr>()
+                            .is_ok_and(|ip| ip.is_loopback())
+                }
+                None => true,
+            },
+            Err(_) => true,
+        },
+        _ => false,
+    }
+}
+
+/// True when direct shared-key auth is configured AND the deployment crosses
+/// a remote boundary (non-loopback bind or non-loopback public URL). At that
+/// boundary the base flag alone must not enable the fallback.
+pub(crate) fn shared_key_requires_remote_opt_in(config: &crate::Config) -> bool {
+    shared_key_enabled() && (!config.is_loopback_bound() || configured_public_url_is_non_loopback())
+}
+
+/// The single authoritative policy for direct shared-key authentication,
+/// shared by the HTTP middleware and the QUIC/Runner transport. Local-only
+/// deployments keep the quick-start default; remote deployments require the
+/// explicit `WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true` opt-in.
+pub(crate) fn direct_shared_key_enabled(config: &crate::Config) -> bool {
+    shared_key_enabled()
+        && (!shared_key_requires_remote_opt_in(config) || shared_key_remote_enabled())
+}
+
 /// SHA-256 hex of a shared key, used for lightweight group isolation. Two
 /// requests presenting the same key land in the same group. The shared key is
 /// trimmed before hashing so direct shared-key visibility and the OAuth bridge

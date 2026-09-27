@@ -41,13 +41,44 @@ pub(crate) fn render_server_env(opts: &ServerInitOptions, token: &str) -> String
         content.push_str(&format!("WEBCODEX_PUBLIC_URL={public_url}\n"));
         content.push_str("WEBCODEX_OAUTH2_ENABLED=true\n");
         content.push_str(&format!("WEBCODEX_OAUTH2_ISSUER={public_url}\n"));
-        content.push_str("WEBCODEX_OAUTH2_SHARED_KEY_BRIDGE=true\n");
+        if opts.allow_remote_shared_key {
+            content.push_str("WEBCODEX_OAUTH2_SHARED_KEY_BRIDGE=true\n");
+        }
     }
-    content.push_str("WEBCODEX_SHARED_KEY_ENABLED=true\n");
+    if server_init_direct_shared_key_enabled(opts) {
+        content.push_str("WEBCODEX_SHARED_KEY_ENABLED=true\n");
+    }
+    if opts.allow_remote_shared_key {
+        content.push_str("WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true\n");
+    }
     if opts.open {
         content.push_str("WEBCODEX_ALLOW_ANONYMOUS=true\n");
     }
     content
+}
+
+/// True when the configured listen address binds to a non-loopback interface.
+/// Unparseable addresses fail closed as remote.
+pub(crate) fn server_listen_is_non_loopback(listen: &str) -> bool {
+    match listen.trim().parse::<std::net::SocketAddr>() {
+        Ok(addr) => !addr.ip().is_loopback(),
+        Err(_) => true,
+    }
+}
+
+/// Whether `server init` has enough public configuration to require the
+/// explicit remote shared-key opt-in. Any supplied public URL is treated as a
+/// remote boundary at initialization time; this keeps the generated env file
+/// fail-closed even if the URL later resolves differently.
+pub(crate) fn server_init_has_remote_boundary(opts: &ServerInitOptions) -> bool {
+    server_listen_is_non_loopback(&opts.listen) || opts.public_url.is_some()
+}
+
+/// Whether `server init` should emit `WEBCODEX_SHARED_KEY_ENABLED=true`.
+/// A remote/public deployment needs the explicit flag; a loopback-only init
+/// remains convenient by default.
+pub(crate) fn server_init_direct_shared_key_enabled(opts: &ServerInitOptions) -> bool {
+    opts.allow_remote_shared_key || !server_init_has_remote_boundary(opts)
 }
 
 pub(crate) fn read_env_file_value(path: &Path, key: &str) -> Result<Option<String>, String> {

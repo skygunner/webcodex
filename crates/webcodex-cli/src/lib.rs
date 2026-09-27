@@ -194,6 +194,7 @@ struct ServerInitOptions {
     env_file: PathBuf,
     public_url: Option<String>,
     open: bool,
+    allow_remote_shared_key: bool,
     overwrite: bool,
     json: bool,
 }
@@ -2052,6 +2053,7 @@ fn parse_server_init(args: &[String]) -> Result<ServerInitOptions, String> {
         env_file: defaults.env_file,
         public_url: None,
         open: false,
+        allow_remote_shared_key: false,
         overwrite: false,
         json: false,
     };
@@ -2063,6 +2065,7 @@ fn parse_server_init(args: &[String]) -> Result<ServerInitOptions, String> {
             "--env-file" => opts.env_file = PathBuf::from(next_value(&mut iter, arg)?),
             "--public-url" => opts.public_url = Some(next_value(&mut iter, arg)?),
             "--open" => opts.open = true,
+            "--allow-remote-shared-key" => opts.allow_remote_shared_key = true,
             "--overwrite" => opts.overwrite = true,
             "--json" => opts.json = true,
             _ => return Err(format!("unknown server init flag: {}", arg)),

@@ -265,6 +265,22 @@ only for local/trusted-network demos."
         );
         tracing::warn!("Anonymous API access is rejected by default in production mode.");
     }
+    if auth::shared_key_enabled() && auth::shared_key_requires_remote_opt_in(&config) {
+        if auth::shared_key_remote_enabled() {
+            tracing::warn!(
+                "Direct shared-key auth is exposed to remote callers: the server bind or \
+WEBCODEX_PUBLIC_URL crosses a remote boundary and WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true is set. \
+Anyone holding the shared key gets full shared-key access from the network."
+            );
+        } else {
+            tracing::warn!(
+                "Direct shared-key auth is configured (WEBCODEX_SHARED_KEY_ENABLED=true) but \
+DISABLED: the server bind or WEBCODEX_PUBLIC_URL crosses a remote boundary and \
+WEBCODEX_SHARED_KEY_REMOTE_ENABLED is not set. Set WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true to \
+explicitly allow remote shared-key auth."
+            );
+        }
+    }
     let build_info = build_info::current();
     tracing::info!(
         "Starting WebCodex v{} (commit {})",

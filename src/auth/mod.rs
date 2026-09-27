@@ -105,8 +105,9 @@ pub(crate) use pat::{
     validate_role, validate_token_prefix, validate_username,
 };
 pub(crate) use shared_key::{
-    allow_anonymous_enabled, is_managed_token_prefix, open_anonymous_context, shared_key_context,
-    shared_key_enabled, shared_key_hash_of, DIRECT_SHARED_KEY_MODEL_SCOPES,
+    allow_anonymous_enabled, direct_shared_key_enabled, is_managed_token_prefix,
+    open_anonymous_context, shared_key_context, shared_key_enabled, shared_key_hash_of,
+    shared_key_remote_enabled, shared_key_requires_remote_opt_in, DIRECT_SHARED_KEY_MODEL_SCOPES,
 };
 
 /// Root auth policy for OAuth client-secret verification. Persistence returns
@@ -136,6 +137,8 @@ pub(crate) use tokens::{OAuth2Verifier, PatVerifier, TokenVerifier};
 pub(crate) struct AuthEnvGuard {
     _env_lock: std::sync::MutexGuard<'static, ()>,
     shared_key_enabled: Option<std::ffi::OsString>,
+    shared_key_remote_enabled: Option<std::ffi::OsString>,
+    public_url: Option<std::ffi::OsString>,
     allow_anonymous: Option<std::ffi::OsString>,
     oauth2_shared_key_bridge: Option<std::ffi::OsString>,
 }
@@ -149,6 +152,8 @@ impl AuthEnvGuard {
         Self {
             _env_lock: env_lock,
             shared_key_enabled: std::env::var_os("WEBCODEX_SHARED_KEY_ENABLED"),
+            shared_key_remote_enabled: std::env::var_os("WEBCODEX_SHARED_KEY_REMOTE_ENABLED"),
+            public_url: std::env::var_os("WEBCODEX_PUBLIC_URL"),
             allow_anonymous: std::env::var_os("WEBCODEX_ALLOW_ANONYMOUS"),
             oauth2_shared_key_bridge: std::env::var_os("WEBCODEX_OAUTH2_SHARED_KEY_BRIDGE"),
         }
@@ -157,6 +162,8 @@ impl AuthEnvGuard {
     pub(crate) fn auth_required() -> Self {
         let guard = Self::new();
         guard.disable_direct_shared_key();
+        guard.disable_remote_shared_key();
+        guard.clear_public_url();
         guard.disable_open_anonymous();
         guard.disable_oauth2_shared_key_bridge();
         guard
@@ -168,6 +175,22 @@ impl AuthEnvGuard {
 
     pub(crate) fn disable_direct_shared_key(&self) {
         std::env::remove_var("WEBCODEX_SHARED_KEY_ENABLED");
+    }
+
+    pub(crate) fn enable_remote_shared_key(&self) {
+        std::env::set_var("WEBCODEX_SHARED_KEY_REMOTE_ENABLED", "true");
+    }
+
+    pub(crate) fn disable_remote_shared_key(&self) {
+        std::env::remove_var("WEBCODEX_SHARED_KEY_REMOTE_ENABLED");
+    }
+
+    pub(crate) fn set_public_url(&self, url: &str) {
+        std::env::set_var("WEBCODEX_PUBLIC_URL", url);
+    }
+
+    pub(crate) fn clear_public_url(&self) {
+        std::env::remove_var("WEBCODEX_PUBLIC_URL");
     }
 
     pub(crate) fn enable_open_anonymous(&self) {
@@ -191,6 +214,11 @@ impl AuthEnvGuard {
 impl Drop for AuthEnvGuard {
     fn drop(&mut self) {
         restore_test_env("WEBCODEX_SHARED_KEY_ENABLED", &self.shared_key_enabled);
+        restore_test_env(
+            "WEBCODEX_SHARED_KEY_REMOTE_ENABLED",
+            &self.shared_key_remote_enabled,
+        );
+        restore_test_env("WEBCODEX_PUBLIC_URL", &self.public_url);
         restore_test_env("WEBCODEX_ALLOW_ANONYMOUS", &self.allow_anonymous);
         restore_test_env(
             "WEBCODEX_OAUTH2_SHARED_KEY_BRIDGE",
@@ -278,10 +306,15 @@ pub(crate) async fn authenticate_bearer(
         }
         Ok(None) => {
             // Unknown bearer token: treat as a lightweight shared key only
-            // when quick-start mode is enabled, the token is non-empty after
-            // trimming, and it does not look like a WebCodex managed credential.
+            // when direct shared-key auth is effective for this deployment
+            // (local-only default, or explicit remote opt-in), the token is
+            // non-empty after trimming, and it does not look like a WebCodex
+            // managed credential.
             let trimmed = token.trim();
-            if shared_key_enabled() && !trimmed.is_empty() && !is_managed_token_prefix(trimmed) {
+            if direct_shared_key_enabled(config)
+                && !trimmed.is_empty()
+                && !is_managed_token_prefix(trimmed)
+            {
                 Some(shared_key_context(trimmed))
             } else {
                 None

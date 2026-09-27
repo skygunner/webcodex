@@ -1461,8 +1461,14 @@ async fn shared_key_fallback_gated_by_env_and_prefix() {
         "unknown token should be rejected when shared-key disabled"
     );
 
-    // Shared-key enabled: unknown non-wc token → Some (shared-key context).
+    // A remote bind needs an explicit shared-key opt-in.
     env.enable_direct_shared_key();
+    let r = authenticate_bearer(&config, None, Some("my-key")).await;
+    assert!(
+        r.is_none(),
+        "remote shared-key fallback must require opt-in"
+    );
+    env.enable_remote_shared_key();
     let r = authenticate_bearer(&config, None, Some("my-key")).await;
     assert!(r.is_some(), "non-wc token should be accepted as shared-key");
     let ctx = r.unwrap();
@@ -1490,6 +1496,54 @@ async fn shared_key_fallback_gated_by_env_and_prefix() {
 }
 
 #[tokio::test]
+async fn http_shared_key_fallback_requires_remote_opt_in() {
+    let env = crate::auth::AuthEnvGuard::auth_required();
+    env.enable_direct_shared_key();
+    let config = Arc::new(crate::Config {
+        addr: "0.0.0.0:8080".to_string(),
+        data_dir: PathBuf::from("./data"),
+        token: Some("secret".to_string()),
+        max_text_size: 2 * 1024 * 1024,
+        oauth2: crate::OAuth2Config::default(),
+    });
+    let (_tmp, db) = gate_test_db();
+    let service = Service::new(gate_router(config, db));
+
+    let (status, _) = gate_send(&service, "/api/runtime/status", Some("shared-key")).await;
+    assert_eq!(status, salvo::http::StatusCode::UNAUTHORIZED);
+
+    env.enable_remote_shared_key();
+    let (status, _) = gate_send(&service, "/api/runtime/status", Some("shared-key")).await;
+    assert_eq!(status, salvo::http::StatusCode::OK);
+}
+
+#[tokio::test]
+async fn direct_shared_key_policy_is_local_by_default_and_fails_closed_for_public_url() {
+    let env = crate::auth::AuthEnvGuard::auth_required();
+    let local = crate::Config {
+        addr: "127.0.0.1:8080".to_string(),
+        data_dir: PathBuf::from("./data"),
+        token: Some("secret".to_string()),
+        max_text_size: 2 * 1024 * 1024,
+        oauth2: crate::OAuth2Config::default(),
+    };
+    env.enable_direct_shared_key();
+    assert!(direct_shared_key_enabled(&local));
+
+    env.set_public_url("https://example.test");
+    assert!(!direct_shared_key_enabled(&local));
+    assert!(shared_key_requires_remote_opt_in(&local));
+
+    env.enable_remote_shared_key();
+    assert!(direct_shared_key_enabled(&local));
+
+    env.disable_remote_shared_key();
+    env.set_public_url("not a URL");
+    assert!(crate::auth::shared_key::configured_public_url_is_non_loopback());
+    assert!(!direct_shared_key_enabled(&local));
+}
+
+#[tokio::test]
 async fn shared_key_fallback_and_oauth_bridge_flags_are_independent() {
     let env = crate::auth::AuthEnvGuard::auth_required();
     let config = crate::Config {
@@ -1510,6 +1564,7 @@ async fn shared_key_fallback_and_oauth_bridge_flags_are_independent() {
 
     env.disable_oauth2_shared_key_bridge();
     env.enable_direct_shared_key();
+    env.enable_remote_shared_key();
     assert!(!crate::OAuth2Config::from_env().shared_key_bridge_enabled);
     let r = authenticate_bearer(&config, None, Some("my-key")).await;
     assert!(

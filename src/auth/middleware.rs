@@ -7,8 +7,8 @@ use salvo::prelude::*;
 
 use super::context::{AuthContext, AuthError};
 use super::shared_key::{
-    allow_anonymous_enabled, is_managed_token_prefix, open_anonymous_context, shared_key_context,
-    shared_key_enabled,
+    allow_anonymous_enabled, direct_shared_key_enabled, is_managed_token_prefix,
+    open_anonymous_context, shared_key_context,
 };
 use super::tokens::{authenticate, is_oauth2_access_token};
 use super::{bootstrap_context, scopes};
@@ -416,14 +416,15 @@ impl Handler for AuthMiddleware {
                 ctrl.call_next(req, depot, res).await;
             }
             Ok(None) => {
-                // Token not recognized by any verifier. When shared-key
-                // quick-start mode is enabled and the token does not look
-                // like a WebCodex managed credential (wc_*), treat it as a
-                // lightweight shared key. Managed-prefix tokens that failed
+                // Token not recognized by any verifier. When direct
+                // shared-key auth is effective for this deployment (local-only
+                // default, or explicit remote opt-in) and the token does not
+                // look like a WebCodex managed credential (wc_*), treat it as
+                // a lightweight shared key. Managed-prefix tokens that failed
                 // verification are always rejected.
                 let trimmed = token.trim();
                 if config.is_auth_enabled()
-                    && shared_key_enabled()
+                    && direct_shared_key_enabled(&*config)
                     && !trimmed.is_empty()
                     && !is_managed_token_prefix(trimmed)
                 {

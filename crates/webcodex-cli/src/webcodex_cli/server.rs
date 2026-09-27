@@ -163,13 +163,15 @@ pub(crate) fn run_server_init(opts: ServerInitOptions) -> Result<String, String>
         next_steps.push(foreground_command.clone());
         next_steps.push(status_command.clone());
         next_steps.push("configure HTTPS/public URL separately if using GPT Actions".to_string());
+        let shared_key_enabled = super::env::server_init_direct_shared_key_enabled(&opts);
         let summary = json!({
             "env_file": opts.env_file.to_string_lossy(),
             "listen": opts.listen,
             "data_dir": opts.data_dir.to_string_lossy(),
             "public_url": opts.public_url,
             "open": opts.open,
-            "shared_key_enabled": true,
+            "shared_key_enabled": shared_key_enabled,
+            "shared_key_remote_enabled": opts.allow_remote_shared_key,
             "token_generated": token_generated,
             "token_prefix": token_prefix(&token),
             "wrote_env_file": true,
@@ -196,6 +198,17 @@ pub(crate) fn run_server_init(opts: ServerInitOptions) -> Result<String, String>
     out.push_str("\nDetails:\n");
     out.push_str(&format!("  Configuration: {}\n", opts.env_file.display()));
     out.push_str(&format!("  Listen:        {}\n", opts.listen));
+    if super::env::server_init_has_remote_boundary(&opts) {
+        if opts.allow_remote_shared_key {
+            out.push_str(
+                "  Shared key:    enabled, remote shared-key auth ALLOWED (--allow-remote-shared-key)\n",
+            );
+        } else {
+            out.push_str(
+                "  Shared key:    disabled for this remote/public setup (pass --allow-remote-shared-key to allow)\n",
+            );
+        }
+    }
     Ok(out)
 }
 

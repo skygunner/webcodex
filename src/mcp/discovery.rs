@@ -17,6 +17,7 @@ pub(super) fn compact_tool(tool: &mut Value) {
             "work_on_project" => "Start ordinary coding/review with project or client_id+path. Omit session_id for a fresh Workflow Session; supply it only for exact resume. Defaults return project instructions, workflow and extension guidance. Use mode=worktree for an isolated Git worktree.",
             "tool_manifest" => "Discover tools by intent/category, or pass tool_name for one exact canonical contract plus route.primary/route.fallback. Discovery never registers a new Host tool. If a direct callable is absent, follow the exact gateway fallback when it is allowed.",
             "call_runtime_tool" => "Call one admitted runtime tool with its exact arguments. Use tool_manifest to discover the contract. Prefer an available direct callable; ordinary direct tools may fall back here when unavailable, but MCP App presentation tools must use their direct callable while Apps are enabled. Target validation and authority checks still apply.",
+            "edit_project_files" => "Primary project editor after read_files. Existing-file edit/delete/rename require expected_read_revision; create requires content. Use exact edits for unique text or replace_range for known 1-based inclusive lines, then review and validate.",
             "run_process" => "Run one native executable with literal argv. Use run_shell for shell grammar or a short related command chain. Long work continues as the same Runner-owned Job through observe_jobs; retain the returned continuation instead of redispatching.",
             "run_shell" => "Run shell grammar or a short related command chain. Use run_process for one native executable with literal argv. Long work continues as the same Runner-owned Job through observe_jobs; retain the returned continuation instead of redispatching.",
             "observe_jobs" => "Continue known Jobs by job_id; do not list first. Pass observation_token unchanged as after_observation_token. Follow the returned continuation for more output; observation never redispatches work. Use wait_for_job_terminal when blocked only on terminal completion.",
@@ -33,6 +34,9 @@ pub(super) fn compact_tool(tool: &mut Value) {
         compact_input_descriptions(schema);
         compact_control_sidecar(schema);
         compact_window_reply_sidecar(schema);
+        if name == "edit_project_files" {
+            compact_primary_editor_schema(schema);
+        }
         if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
             for (field, property) in properties {
                 if let (Some(description), Some(Value::String(copy))) = (
@@ -62,6 +66,66 @@ pub(super) fn compact_tool(tool: &mut Value) {
             }
         }
         compact_discovery_validation_annotations(schema);
+    }
+}
+
+fn compact_primary_editor_schema(schema: &mut Value) {
+    // `tools/list` is only the model-selection copy. The direct editor already
+    // carries one bounded top-level purpose, while the discriminated `changes`
+    // variants repeat explanatory prose across edit/create/delete/rename and
+    // nested exact/range edit forms. Keep every structural constraint, bound,
+    // required field and discriminator, but omit that duplicated nested copy.
+    // Canonical/full discovery and ToolRuntime parsing retain the exact schema.
+    if let Some(changes) = schema.pointer_mut("/properties/changes/items") {
+        strip_schema_descriptions(changes);
+    }
+}
+
+fn strip_schema_descriptions(schema: &mut Value) {
+    let Some(object) = schema.as_object_mut() else {
+        return;
+    };
+    object.remove("description");
+    for keyword in [
+        "properties",
+        "patternProperties",
+        "$defs",
+        "definitions",
+        "dependentSchemas",
+        "dependencies",
+    ] {
+        if let Some(children) = object.get_mut(keyword).and_then(Value::as_object_mut) {
+            for child in children.values_mut() {
+                strip_schema_descriptions(child);
+            }
+        }
+    }
+    for keyword in [
+        "items",
+        "prefixItems",
+        "allOf",
+        "anyOf",
+        "oneOf",
+        "additionalItems",
+        "additionalProperties",
+        "unevaluatedItems",
+        "unevaluatedProperties",
+        "propertyNames",
+        "contains",
+        "not",
+        "if",
+        "then",
+        "else",
+    ] {
+        if let Some(child) = object.get_mut(keyword) {
+            if let Some(children) = child.as_array_mut() {
+                for child in children {
+                    strip_schema_descriptions(child);
+                }
+            } else {
+                strip_schema_descriptions(child);
+            }
+        }
     }
 }
 

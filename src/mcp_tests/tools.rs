@@ -26,19 +26,10 @@ async fn wait_for_mcp_agent_request(
     }
 }
 
-// The compact switch is read per tools/list request, so `WEBCODEX_MCP_COMPACT_SCHEMAS`
-// must stay stable (and serialized against other env-mutating tests) for the whole
-// async body below. Adaptive Runtime is fixed; only schema projection varies.
-#[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn mcp_tools_list_uses_adaptive_inventory_in_both_schema_modes() {
-    let mut env = crate::test_support::TestEnvGuard::new();
-    let runtime = test_runtime();
     for compact in [false, true] {
-        env.set(
-            "WEBCODEX_MCP_COMPACT_SCHEMAS",
-            if compact { "true" } else { "false" },
-        );
+        let runtime = test_runtime_with_mcp_settings(compact, true);
         let outcome = handle_mcp_request(
             &runtime,
             rpc("tools/list", Some(Value::from(3)), json!({})),
@@ -1624,12 +1615,9 @@ fn mcp_tools_list_inputs_equal_canonical_except_descriptions_and_host_file_overl
 }
 
 // The exact manifest must stay canonical even when the request adapter reads
-// compact=true, so hold the existing environment guard through the calls.
-#[allow(clippy::await_holding_lock)]
+// compact=true; the explicit flag below covers both projections.
 #[tokio::test]
 async fn mcp_compact_preserves_stateless_wrappers_app_metadata_and_exact_manifest() {
-    let mut env = crate::test_support::TestEnvGuard::new();
-    env.set("WEBCODEX_MCP_COMPACT_SCHEMAS", "true");
     let mut auth = crate::auth::shared_key_context("compact-overlays-test");
     auth.scopes.push(crate::auth::SCOPE_ADMIN.to_string());
     for stateless in [false, true] {
@@ -2000,19 +1988,13 @@ async fn mcp_recording_session_ref_fails_closed_when_malformed() {
         .is_some_and(|message| message.contains("unknown_session_ref")));
 }
 
-#[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn mcp_compact_stateless_wrapper_ids_still_reject_malformed_invocations() {
-    let mut env = crate::test_support::TestEnvGuard::new();
-    let runtime = test_runtime();
-    let session = runtime
-        .sessions
-        .start_session(None, Some("compact wrapper validation".to_string()));
     for compact in [false, true] {
-        env.set(
-            "WEBCODEX_MCP_COMPACT_SCHEMAS",
-            if compact { "true" } else { "false" },
-        );
+        let runtime = test_runtime_with_mcp_settings(compact, true);
+        let session = runtime
+            .sessions
+            .start_session(None, Some("compact wrapper validation".to_string()));
         for malformed in ["not-an-id", "wc_msg_short", "wc_msg_0123456789abcde!"] {
             for field in ["record", "ack", "resolve"] {
                 let mut envelope = json!({"record": session.session_id});
@@ -2056,33 +2038,33 @@ async fn mcp_compact_stateless_wrapper_ids_still_reject_malformed_invocations() 
                 }
             }
         }
+        assert!(
+            runtime
+                .sessions
+                .summary(&session.session_id, Some(20))
+                .unwrap()
+                .events
+                .is_empty(),
+            "rejected invocations must not reach the recorder ledger"
+        );
+        // A real server-generated recorder remains usable in either projection.
+        let McpOutcome::Ok(value) = handle_mcp_request(
+            &runtime,
+            rpc(
+                "tools/call",
+                Some(json!(2)),
+                mcp_2026_params(json!({"name": "tool_manifest", "arguments": {
+                    "tool_name": "run_process", "_wc": {"record": session.session_id}
+                }})),
+            ),
+            None,
+        )
+        .await
+        else {
+            panic!("valid recorder");
+        };
+        assert_eq!(value["result"]["structuredContent"]["success"], true);
     }
-    assert!(
-        runtime
-            .sessions
-            .summary(&session.session_id, Some(20))
-            .unwrap()
-            .events
-            .is_empty(),
-        "rejected invocations must not reach the recorder ledger"
-    );
-    // A real server-generated recorder remains usable with compact=true.
-    let McpOutcome::Ok(value) = handle_mcp_request(
-        &runtime,
-        rpc(
-            "tools/call",
-            Some(json!(2)),
-            mcp_2026_params(json!({"name": "tool_manifest", "arguments": {
-                "tool_name": "run_process", "_wc": {"record": session.session_id}
-            }})),
-        ),
-        None,
-    )
-    .await
-    else {
-        panic!("valid recorder");
-    };
-    assert_eq!(value["result"]["structuredContent"]["success"], true);
 }
 
 #[test]
@@ -2462,14 +2444,10 @@ async fn mcp_tools_list_stateless_serialized_size_budget() {
 }
 
 // The compact switch is the tested product behavior: `tools/call` must be
-// unaffected while `WEBCODEX_MCP_COMPACT_SCHEMAS` is set, so the env must stay
-// stable (and serialized against other env-mutating tests) for the whole call.
-#[allow(clippy::await_holding_lock)]
+// unaffected while the Runtime's snapshot reads compact=true.
 #[tokio::test]
 async fn mcp_tools_call_still_returns_structured_content_under_compact_flag() {
-    let mut env = crate::test_support::TestEnvGuard::new();
-    env.set("WEBCODEX_MCP_COMPACT_SCHEMAS", "true");
-    let runtime = test_runtime();
+    let runtime = test_runtime_with_mcp_settings(true, true);
     let outcome = handle_mcp_request(
         &runtime,
         rpc(

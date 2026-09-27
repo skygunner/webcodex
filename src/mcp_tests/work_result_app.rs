@@ -686,3 +686,48 @@ async fn changes_file_diff_discards_unadvertised_recording_session_wrapper() {
     assert_eq!(after.events.len(), before.events.len());
     assert_eq!(after.updated_at, before.updated_at);
 }
+
+/// Proves the `RuntimeInfo.mcp_apps_enabled` startup snapshot — not ambient env —
+/// drives the real MCP request adapter. Both runtimes are built via
+/// `test_runtime_with_mcp_settings` with explicit snapshots; the identical
+/// UI-capable `tools/list` request is served through the production
+/// `handle_mcp_request` path, which reads the snapshot rather than the env.
+#[tokio::test]
+async fn mcp_apps_enabled_snapshot_drives_real_request_adapter() {
+    let runtime_off = test_runtime_with_mcp_settings(true, false);
+    let runtime_on = test_runtime_with_mcp_settings(true, true);
+
+    let request = || {
+        rpc(
+            "tools/list",
+            Some(json!(5110)),
+            mcp_2026_ui_params(json!({})),
+        )
+    };
+
+    let off = handle_mcp_request(&runtime_off, request(), None).await;
+    let McpOutcome::Ok(off) = off else {
+        panic!("Apps-OFF tools/list failed");
+    };
+    let off_present =
+        tool(&off["result"], "present_work_result").expect("present_work_result (OFF)");
+    // The snapshot is OFF: no UI resource backing on the app tool.
+    assert!(off_present.pointer("/_meta/ui/resourceUri").is_none());
+    // App-only tools are absent when the snapshot disables MCP Apps.
+    assert!(tool(&off["result"], "work_result_state").is_none());
+
+    let on = handle_mcp_request(&runtime_on, request(), None).await;
+    let McpOutcome::Ok(on) = on else {
+        panic!("Apps-ON tools/list failed");
+    };
+    let on_present = tool(&on["result"], "present_work_result").expect("present_work_result (ON)");
+    // The snapshot is ON: the work-result app presents its UI resource.
+    assert_eq!(
+        on_present.pointer("/_meta/ui/resourceUri"),
+        Some(&json!(MCP_WORK_RESULT_UI_RESOURCE_URI))
+    );
+    assert!(
+        tool(&on["result"], "work_result_state").is_some(),
+        "app-only tool present when the snapshot enables MCP Apps"
+    );
+}

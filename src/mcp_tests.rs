@@ -137,6 +137,19 @@ fn test_runtime() -> ToolRuntime {
     ToolRuntime::new_for_tests()
 }
 
+/// Build a runtime with an explicit MCP startup snapshot, so tests assert the
+/// frozen values instead of holding process-global env guards across requests.
+fn test_runtime_with_mcp_settings(compact_schemas: bool, apps_enabled: bool) -> ToolRuntime {
+    ToolRuntime::new(
+        std::sync::Arc::new(crate::runner_http::RunnerRegistry::default()),
+        std::sync::Arc::new(crate::tool_runtime::RuntimeInfo {
+            mcp_compact_schemas: compact_schemas,
+            mcp_apps_enabled: apps_enabled,
+            ..Default::default()
+        }),
+    )
+}
+
 fn test_runtime_with_public_url(public_url: &str) -> ToolRuntime {
     let runtime_info = crate::tool_runtime::RuntimeInfo {
         configured_public_url: Some(public_url.to_string()),

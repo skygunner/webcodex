@@ -3,16 +3,13 @@ use super::*;
 // Durable model-ergonomics and MCP tool-surface measurement integration tests.
 // Keep these separate from the general HTTP transport lifecycle coverage.
 
-// Explicit compact-schema=false keeps the full outputSchema projection. Keep the
-// env serialized against other compact-schema tests for the whole HTTP request.
-#[allow(clippy::await_holding_lock)]
+// Explicit compact-schema=false keeps the full outputSchema projection. Use an
+// explicit runtime snapshot so no process-global env guard is needed.
 #[tokio::test]
 async fn http_mcp_tools_list_explicit_full_projection_audits_effective_policy() {
-    let mut env = crate::test_support::TestEnvGuard::new();
-    env.set("WEBCODEX_MCP_COMPACT_SCHEMAS", "false");
     let config = test_config(Some("secret"));
     let (_tmp, db) = test_db();
-    let runtime = Arc::new(test_runtime());
+    let runtime = Arc::new(test_runtime_with_mcp_settings(false, true));
     let service = Service::new(build_test_router(config, db.clone(), runtime));
     let mut resp = TestClient::post("http://localhost/mcp")
         .bearer_auth("secret")
@@ -85,11 +82,8 @@ async fn http_mcp_tools_list_explicit_full_projection_audits_effective_policy() 
     }
 }
 
-#[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn http_adaptive_tools_list_unset_defaults_to_compact_and_reports_effective_policy() {
-    let mut env = crate::test_support::TestEnvGuard::new();
-    env.remove("WEBCODEX_MCP_COMPACT_SCHEMAS");
     let config = test_config(Some("secret"));
     let (_tmp, db) = test_db();
     let runtime = Arc::new(test_runtime());
@@ -134,8 +128,6 @@ async fn http_adaptive_tools_list_unset_defaults_to_compact_and_reports_effectiv
 #[tokio::test]
 async fn http_mcp_tools_list_stateless_audit_measures_final_compact_result_and_skips_notifications()
 {
-    let mut env = crate::test_support::TestEnvGuard::new();
-    env.set("WEBCODEX_MCP_COMPACT_SCHEMAS", "1");
     let config = test_config(Some("secret"));
     let (_tmp, db) = test_db();
     let runtime = Arc::new(test_runtime());

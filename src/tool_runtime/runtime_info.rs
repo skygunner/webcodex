@@ -36,6 +36,14 @@ pub struct RuntimeInfo {
     pub oauth2_enabled: bool,
     pub oauth2_shared_key_bridge_enabled: bool,
     pub quic: Option<std::sync::Arc<std::sync::Mutex<crate::config::QuicRuntimeStatus>>>,
+    /// Effective MCP compact-schema mode captured when this Runtime was built.
+    /// MCP request dispatch and `runtime_status` read this snapshot rather than
+    /// re-reading process-global environment, so a running Runtime's protocol
+    /// surface does not drift when the environment changes after startup.
+    pub mcp_compact_schemas: bool,
+    /// Effective MCP App exposure flag captured when this Runtime was built.
+    /// Same startup-snapshot semantics as [`Self::mcp_compact_schemas`].
+    pub mcp_apps_enabled: bool,
 }
 
 impl RuntimeInfo {
@@ -65,6 +73,10 @@ impl RuntimeInfo {
             quic: Some(std::sync::Arc::new(std::sync::Mutex::new(
                 quic_cfg.runtime_status(),
             ))),
+            mcp_compact_schemas: crate::model_surface::effective_mcp_compact_schemas(
+                crate::config::mcp_compact_schemas_override(),
+            ),
+            mcp_apps_enabled: crate::config::mcp_apps_enabled(),
         }
     }
 }
@@ -408,9 +420,7 @@ impl ToolRuntime {
         output.insert("service".to_string(), json!("webcodex"));
         output.insert(
             "mcp_compact_schemas".to_string(),
-            json!(crate::model_surface::effective_mcp_compact_schemas(
-                crate::config::mcp_compact_schemas_override(),
-            )),
+            json!(self.runtime_info.mcp_compact_schemas),
         );
         output.insert(
             "effective_config".to_string(),
@@ -691,9 +701,7 @@ impl ToolRuntime {
         output.insert("service".to_string(), json!("webcodex"));
         output.insert(
             "mcp_compact_schemas".to_string(),
-            json!(crate::model_surface::effective_mcp_compact_schemas(
-                crate::config::mcp_compact_schemas_override(),
-            )),
+            json!(self.runtime_info.mcp_compact_schemas),
         );
         output.insert(
             "effective_config".to_string(),
@@ -1592,6 +1600,11 @@ impl Default for RuntimeInfo {
             quic: Some(std::sync::Arc::new(std::sync::Mutex::new(
                 crate::config::QuicServerConfig::default().runtime_status(),
             ))),
+            // Product defaults without touching process-global environment:
+            // compact schemas are on by default and MCP Apps exposure is
+            // enabled by default.
+            mcp_compact_schemas: true,
+            mcp_apps_enabled: true,
         }
     }
 }

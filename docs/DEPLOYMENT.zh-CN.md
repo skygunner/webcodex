@@ -385,12 +385,16 @@ Plugin discovery 重启 Runner。
 
 ## OAuth2
 
-Server 没有公网 origin 时 OAuth2 仍默认关闭。使用 `webcodex server init --public-url https://your-domain.example` 时，初始化会写入 public URL、以该 URL 作为 issuer 启用 OAuth，并为普通 hosted connect 启用 shared-key OAuth bridge。手工维护 env 时等价配置为：
+Server 没有公网 origin 时 OAuth2 仍默认关闭。使用 `webcodex server init --public-url https://your-domain.example` 时，初始化会写入 public URL，并以该 URL 作为 issuer 启用 OAuth。跨该 public boundary 的 direct shared-key auth 与 shared-key OAuth bridge 默认仍关闭；如需有意启用，必须额外传入 `--allow-remote-shared-key`。
+
+手工维护 env 且有意启用 remote shared-key auth 与 shared-key OAuth bridge 时，配置为：
 
 ```text
 WEBCODEX_PUBLIC_URL=https://your-domain.example
 WEBCODEX_OAUTH2_ENABLED=true
 WEBCODEX_OAUTH2_ISSUER=https://your-domain.example
+WEBCODEX_SHARED_KEY_ENABLED=true
+WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true
 WEBCODEX_OAUTH2_SHARED_KEY_BRIDGE=true
 ```
 

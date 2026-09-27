@@ -438,12 +438,16 @@ manual config generation uses `webcodex runner init`.
 
 ## OAuth2
 
-OAuth2 remains disabled by default when a Server has no public origin. `webcodex server init --public-url https://your-domain.example` writes the public URL, enables OAuth with that exact issuer, and enables the shared-key OAuth bridge for ordinary hosted connect. For a hand-managed env file, the equivalent settings are:
+OAuth2 remains disabled by default when a Server has no public origin. `webcodex server init --public-url https://your-domain.example` writes the public URL and enables OAuth with that exact issuer. Direct shared-key auth and the shared-key OAuth bridge remain disabled across that public boundary unless you explicitly add `--allow-remote-shared-key`.
+
+For a hand-managed env file that intentionally enables remote shared-key auth and the shared-key OAuth bridge, configure:
 
 ```text
 WEBCODEX_PUBLIC_URL=https://your-domain.example
 WEBCODEX_OAUTH2_ENABLED=true
 WEBCODEX_OAUTH2_ISSUER=https://your-domain.example
+WEBCODEX_SHARED_KEY_ENABLED=true
+WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true
 WEBCODEX_OAUTH2_SHARED_KEY_BRIDGE=true
 ```
 

@@ -482,6 +482,31 @@ struct CloudflareTunnelStartup {
     url_rx: mpsc::Receiver<String>,
 }
 
+/// Owns the startup-stage process group until it is either explicitly
+/// terminated or transferred into a live `CloudflareTunnel`. This closes the
+/// async-cancellation/error gap before the tunnel object itself exists: Tokio's
+/// `Child::kill_on_drop` only kills the direct child, not inherited descendants.
+struct CloudflareStartupProcessGroupGuard {
+    process_group_id: Option<u32>,
+}
+
+impl CloudflareStartupProcessGroupGuard {
+    fn new(process_group_id: Option<u32>) -> Self {
+        Self { process_group_id }
+    }
+
+    fn take(&mut self) -> Option<u32> {
+        self.process_group_id.take()
+    }
+}
+
+impl Drop for CloudflareStartupProcessGroupGuard {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        signal_cloudflare_process_group(self.process_group_id.take());
+    }
+}
+
 impl CloudflareTunnel {
     async fn wait_for_exit(&mut self) -> Result<(), ProductError> {
         let status = self
@@ -1055,6 +1080,7 @@ async fn wait_for_cloudflare_quick_url(
         recent,
         mut url_rx,
     } = startup;
+    let mut process_group_guard = CloudflareStartupProcessGroupGuard::new(process_group_id);
     loop {
         if let Some(status) = child.try_wait().map_err(|_| tunnel_runtime_error())? {
             // The child can exit after writing a valid Quick Tunnel URL but before
@@ -1069,13 +1095,13 @@ async fn wait_for_cloudflare_quick_url(
                     url,
                     CloudflareTunnel {
                         child,
-                        process_group_id,
+                        process_group_id: process_group_guard.take(),
                         stdout_task,
                         stderr_task,
                     },
                 ));
             }
-            terminate_cloudflare_process_tree(&mut child, process_group_id).await;
+            terminate_cloudflare_process_tree(&mut child, process_group_guard.take()).await;
             // Kill any descendants first so inherited pipe handles are closed.
             // Bytes already written to the kernel pipes remain readable, letting
             // the reader tasks deterministically drain diagnostics to EOF instead
@@ -1095,7 +1121,7 @@ async fn wait_for_cloudflare_quick_url(
         }
         let now = Instant::now();
         if now >= deadline {
-            terminate_cloudflare_process_tree(&mut child, process_group_id).await;
+            terminate_cloudflare_process_tree(&mut child, process_group_guard.take()).await;
             stdout_task.abort();
             stderr_task.abort();
             return Err(ProductError::new(
@@ -1110,7 +1136,7 @@ async fn wait_for_cloudflare_quick_url(
                 url,
                 CloudflareTunnel {
                     child,
-                    process_group_id,
+                    process_group_id: process_group_guard.take(),
                     stdout_task,
                     stderr_task,
                 },
@@ -1804,6 +1830,31 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.code, "tunnel_unavailable");
         assert!(error.message.contains("startup-failed"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cloudflare_quick_tunnel_cancelled_startup_reaps_descendant() {
+        let _lock = tunnel_test_lock().lock().await;
+        let (_temp, binary, pid_file) =
+            fake_cloudflared_with_descendant(FakeCloudflaredLifecycle::StartupTimeout);
+        let startup =
+            spawn_cloudflare_quick_with_binary(&binary, "http://127.0.0.1:23456").unwrap();
+        let parent_pid = startup.child.id().unwrap();
+        let descendant_pid =
+            wait_for_pid_file(&pid_file, Instant::now() + Duration::from_secs(2)).await;
+        assert_ne!(parent_pid, descendant_pid);
+
+        let cancelled = tokio::time::timeout(
+            Duration::from_millis(20),
+            wait_for_cloudflare_quick_url(startup, Instant::now() + Duration::from_secs(5)),
+        )
+        .await;
+        assert!(cancelled.is_err(), "startup future unexpectedly completed");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        assert_pid_gone(parent_pid, deadline).await;
+        assert_pid_gone(descendant_pid, deadline).await;
     }
 
     #[cfg(unix)]

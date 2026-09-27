@@ -38,7 +38,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-command -v git >/dev/null && command -v systemctl >/dev/null || { echo "need git+systemctl" >&2; exit 2; }
+# 非交互 ssh 下 PATH 常缺 ~/.cargo/bin（wa1 实测），rustup 标准位显式补上
+export PATH="$HOME/.cargo/bin:$PATH"
+command -v git >/dev/null && command -v systemctl >/dev/null && command -v cargo >/dev/null \
+  || { echo "need git+systemctl+cargo (cargo expected in ~/.cargo/bin or PATH)" >&2; exit 2; }
 [[ -f pull_compile_install.sh ]] || { echo "run from the webcodex repo root (pull_compile_install.sh not found)" >&2; exit 2; }
 [[ -n "$(git status --porcelain --untracked-files=no)" ]] && { echo "tracked worktree dirty; commit/stash first (build identity must be dirty=false)" >&2; exit 2; }
 

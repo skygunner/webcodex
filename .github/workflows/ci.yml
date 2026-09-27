@@ -10,6 +10,9 @@ on:
   merge_group:
     types: [checks_requested]
 
+permissions:
+  contents: read
+
 # PR runs coalesce by PR number. Merge-group candidates plus main/release pushes use
 # the exact candidate SHA as the group key so each integration candidate keeps its evidence.
 concurrency:

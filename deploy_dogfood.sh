@@ -158,14 +158,17 @@ main() {
   backup
   dry "./pull_compile_install.sh" && exit 0
   stop_units
-  if ! ./pull_compile_install.sh; then
-    rollback; exit 1
-  fi
+  # pull_compile_install 尾部的 webcodex doctor 假定栈在运行；单元化部署时栈是
+  # 停的（否则安装会 Text file busy），doctor 的连接检查必然失败——所以退出码
+  # 不作为失败依据，安装是否成功以下面的身份复验为准。
+  ./pull_compile_install.sh || echo "pull_compile_install exit=$? (doctor 的连接失败在停栈部署下属预期)"
   echo "== installed identity =="
   local id_ok=0
   for b in "${BINS[@]}"; do verify_identity "$BIN_DIR/$b" || id_ok=1; done
   [[ $id_ok == 0 ]] || { rollback; exit 1; }
   start_units || { rollback; exit 1; }
+  echo "== doctor (栈运行中) =="
+  "$BIN_DIR/webcodex" doctor || { rollback; exit 1; }
   smoke || { rollback; exit 1; }
   echo "== deploy ok: $HEAD_SHORT =="
   [[ $HAVE_BACKUP == 1 ]] && echo "rollback path: $BACKUP_DIR"

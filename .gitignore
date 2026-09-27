@@ -57,3 +57,6 @@ data*
 /artifacts/projects-runtime/
 /artifacts/runtime-call-stream/
 /scripts/ui-smoke/node_modules/
+
+# Nightly/audit scratch logs (never commit)
+.temp/

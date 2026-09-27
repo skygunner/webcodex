@@ -1,5 +1,0 @@
-Merge made by the 'ort' strategy.
- frontend/dist/app.js                                    |  4 ++--
- frontend/src/runtime-v2/state/useWindowCollaboration.ts |  7 +++++--
- frontend/test-v2/window-collaboration.test.tsx          | 13 +++++++++++--
- 3 files changed, 18 insertions(+), 6 deletions(-)

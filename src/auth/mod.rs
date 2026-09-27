@@ -105,9 +105,10 @@ pub(crate) use pat::{
     validate_role, validate_token_prefix, validate_username,
 };
 pub(crate) use shared_key::{
-    allow_anonymous_enabled, direct_shared_key_enabled, is_managed_token_prefix,
-    open_anonymous_context, shared_key_context, shared_key_enabled, shared_key_hash_of,
-    shared_key_remote_enabled, shared_key_requires_remote_opt_in, DIRECT_SHARED_KEY_MODEL_SCOPES,
+    allow_anonymous_enabled, direct_shared_key_enabled, direct_shared_key_enabled_with_quic,
+    is_managed_token_prefix, open_anonymous_context, shared_key_context, shared_key_enabled,
+    shared_key_hash_of, shared_key_remote_enabled, shared_key_requires_remote_opt_in,
+    DIRECT_SHARED_KEY_MODEL_SCOPES,
 };
 
 /// Root auth policy for OAuth client-secret verification. Persistence returns
@@ -139,6 +140,8 @@ pub(crate) struct AuthEnvGuard {
     shared_key_enabled: Option<std::ffi::OsString>,
     shared_key_remote_enabled: Option<std::ffi::OsString>,
     public_url: Option<std::ffi::OsString>,
+    quic_enabled: Option<std::ffi::OsString>,
+    quic_listen: Option<std::ffi::OsString>,
     allow_anonymous: Option<std::ffi::OsString>,
     oauth2_shared_key_bridge: Option<std::ffi::OsString>,
 }
@@ -154,6 +157,8 @@ impl AuthEnvGuard {
             shared_key_enabled: std::env::var_os("WEBCODEX_SHARED_KEY_ENABLED"),
             shared_key_remote_enabled: std::env::var_os("WEBCODEX_SHARED_KEY_REMOTE_ENABLED"),
             public_url: std::env::var_os("WEBCODEX_PUBLIC_URL"),
+            quic_enabled: std::env::var_os("WEBCODEX_QUIC_ENABLED"),
+            quic_listen: std::env::var_os("WEBCODEX_QUIC_LISTEN"),
             allow_anonymous: std::env::var_os("WEBCODEX_ALLOW_ANONYMOUS"),
             oauth2_shared_key_bridge: std::env::var_os("WEBCODEX_OAUTH2_SHARED_KEY_BRIDGE"),
         }
@@ -164,6 +169,7 @@ impl AuthEnvGuard {
         guard.disable_direct_shared_key();
         guard.disable_remote_shared_key();
         guard.clear_public_url();
+        guard.disable_quic_listener();
         guard.disable_open_anonymous();
         guard.disable_oauth2_shared_key_bridge();
         guard
@@ -193,6 +199,16 @@ impl AuthEnvGuard {
         std::env::remove_var("WEBCODEX_PUBLIC_URL");
     }
 
+    pub(crate) fn set_quic_listener(&self, listen: &str) {
+        std::env::set_var("WEBCODEX_QUIC_ENABLED", "true");
+        std::env::set_var("WEBCODEX_QUIC_LISTEN", listen);
+    }
+
+    pub(crate) fn disable_quic_listener(&self) {
+        std::env::remove_var("WEBCODEX_QUIC_ENABLED");
+        std::env::remove_var("WEBCODEX_QUIC_LISTEN");
+    }
+
     pub(crate) fn enable_open_anonymous(&self) {
         std::env::set_var("WEBCODEX_ALLOW_ANONYMOUS", "true");
     }
@@ -219,6 +235,8 @@ impl Drop for AuthEnvGuard {
             &self.shared_key_remote_enabled,
         );
         restore_test_env("WEBCODEX_PUBLIC_URL", &self.public_url);
+        restore_test_env("WEBCODEX_QUIC_ENABLED", &self.quic_enabled);
+        restore_test_env("WEBCODEX_QUIC_LISTEN", &self.quic_listen);
         restore_test_env("WEBCODEX_ALLOW_ANONYMOUS", &self.allow_anonymous);
         restore_test_env(
             "WEBCODEX_OAUTH2_SHARED_KEY_BRIDGE",

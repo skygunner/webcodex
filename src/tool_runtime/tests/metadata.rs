@@ -2548,6 +2548,18 @@ fn runtime_info_snapshots_remote_shared_key_policy() {
     assert!(!blocked.shared_key_enabled);
     assert!(!blocked.shared_key_remote_enabled);
 
+    let local_config = crate::Config {
+        addr: "127.0.0.1:8080".to_string(),
+        ..config.clone()
+    };
+    let mut remote_quic = crate::config::QuicServerConfig::default();
+    remote_quic.enabled = true;
+    remote_quic.listen = "0.0.0.0:8443".to_string();
+    let quic_blocked = RuntimeInfo::from_config_with_quic_config(&local_config, &remote_quic);
+    assert!(quic_blocked.shared_key_configured);
+    assert!(!quic_blocked.shared_key_enabled);
+    assert!(!quic_blocked.shared_key_remote_enabled);
+
     env.enable_remote_shared_key();
     assert!(crate::auth::direct_shared_key_enabled(&config));
     assert!(blocked.shared_key_configured);

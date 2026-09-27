@@ -306,6 +306,30 @@ fn server_init_remote_shared_key_requires_explicit_opt_in() {
 }
 
 #[test]
+fn server_init_localhost_listen_keeps_local_shared_key_default() {
+    let tmp = tempfile::tempdir().unwrap();
+    let env_file = tmp.path().join("webcodex.env");
+    let data_dir = tmp.path().join("data");
+    let opts = parse_server_init(&args(&[
+        "--listen",
+        "localhost:8080",
+        "--data-dir",
+        data_dir.to_str().unwrap(),
+        "--env-file",
+        env_file.to_str().unwrap(),
+        "--json",
+    ]))
+    .unwrap();
+    let output = run_server_init(opts).unwrap();
+    let content = std::fs::read_to_string(&env_file).unwrap();
+    assert!(content.contains("WEBCODEX_SHARED_KEY_ENABLED=true\n"));
+    assert!(!content.contains("WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true\n"));
+    let summary: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(summary["shared_key_enabled"], true);
+    assert_eq!(summary["shared_key_remote_enabled"], false);
+}
+
+#[test]
 fn server_init_refuses_overwrite_unless_requested() {
     let tmp = tempfile::tempdir().unwrap();
     let env_file = tmp.path().join("webcodex.env");

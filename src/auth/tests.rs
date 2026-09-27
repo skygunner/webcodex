@@ -1543,6 +1543,32 @@ async fn direct_shared_key_policy_is_local_by_default_and_fails_closed_for_publi
     assert!(!direct_shared_key_enabled(&local));
 }
 
+#[test]
+fn direct_shared_key_policy_treats_remote_quic_as_remote_boundary() {
+    let env = crate::auth::AuthEnvGuard::auth_required();
+    let local = crate::Config {
+        addr: "127.0.0.1:8080".to_string(),
+        data_dir: PathBuf::from("./data"),
+        token: Some("secret".to_string()),
+        max_text_size: 2 * 1024 * 1024,
+        oauth2: crate::OAuth2Config::default(),
+    };
+    env.enable_direct_shared_key();
+    assert!(direct_shared_key_enabled(&local));
+
+    env.set_quic_listener("0.0.0.0:8443");
+    assert!(shared_key_requires_remote_opt_in(&local));
+    assert!(!direct_shared_key_enabled(&local));
+
+    let quic = crate::config::QuicServerConfig::from_env();
+    assert!(!crate::auth::direct_shared_key_enabled_with_quic(
+        &local, &quic
+    ));
+
+    env.enable_remote_shared_key();
+    assert!(direct_shared_key_enabled(&local));
+}
+
 #[tokio::test]
 async fn shared_key_fallback_and_oauth_bridge_flags_are_independent() {
     let env = crate::auth::AuthEnvGuard::auth_required();

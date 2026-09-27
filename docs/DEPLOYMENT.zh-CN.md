@@ -398,6 +398,8 @@ WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true
 WEBCODEX_OAUTH2_SHARED_KEY_BRIDGE=true
 ```
 
+如果配置了 direct shared-key auth，同时启用的 QUIC Runner listener 绑定到非 loopback 地址，也必须使用同一个 remote opt-in；QUIC 默认监听地址为 `0.0.0.0:8443`。
+
 普通仓库机器不需要 managed login，直接使用 MCP 客户端要求的精确 callback：
 
 ```bash

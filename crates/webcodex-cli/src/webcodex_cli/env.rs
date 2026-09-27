@@ -60,9 +60,13 @@ pub(crate) fn render_server_env(opts: &ServerInitOptions, token: &str) -> String
 /// True when the configured listen address binds to a non-loopback interface.
 /// Unparseable addresses fail closed as remote.
 pub(crate) fn server_listen_is_non_loopback(listen: &str) -> bool {
-    match listen.trim().parse::<std::net::SocketAddr>() {
+    let listen = listen.trim();
+    match listen.parse::<std::net::SocketAddr>() {
         Ok(addr) => !addr.ip().is_loopback(),
-        Err(_) => true,
+        Err(_) => !listen
+            .strip_prefix("localhost:")
+            .and_then(|port| port.parse::<u16>().ok())
+            .is_some(),
     }
 }
 

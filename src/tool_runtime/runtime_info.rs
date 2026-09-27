@@ -80,7 +80,7 @@ impl RuntimeInfo {
         Self {
             auth_enabled,
             shared_key_configured: crate::auth::shared_key_enabled(),
-            shared_key_enabled: crate::auth::direct_shared_key_enabled(config),
+            shared_key_enabled: crate::auth::direct_shared_key_enabled_with_quic(config, quic_cfg),
             shared_key_remote_enabled: crate::auth::shared_key_remote_enabled(),
             configured_public_url,
             oauth2_enabled: config.oauth2.enabled,

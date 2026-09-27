@@ -451,6 +451,8 @@ WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true
 WEBCODEX_OAUTH2_SHARED_KEY_BRIDGE=true
 ```
 
+The same remote opt-in is required when direct shared-key auth is configured and an enabled QUIC Runner listener binds a non-loopback address; the default QUIC listen address is `0.0.0.0:8443`.
+
 For ordinary repository machines, no managed login is required. Connect with the MCP client's exact callback:
 
 ```bash

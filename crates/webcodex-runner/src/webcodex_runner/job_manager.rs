@@ -253,6 +253,10 @@ pub(crate) struct JobManager {
     workers: ActivityTracker,
     current_sink: Arc<Mutex<Option<RunnerSink>>>,
     pending_job_updates: Arc<Mutex<HashMap<String, JobUpdateDeliveryQueue>>>,
+    /// Orders the gap between assigning/observing an update sequence and making
+    /// that update visible to the delivery worker. The worker holds this only
+    /// while selecting a candidate; transport I/O always happens after release.
+    job_update_delivery_order: Arc<Mutex<()>>,
     delivery_signal: Arc<JobUpdateDeliverySignal>,
     owner_lifetime: Option<Arc<JobManagerOwnerLifetime>>,
     detached_profile_server_url: String,
@@ -269,11 +273,13 @@ impl JobManager {
         let shutting_down = Arc::new(AtomicBool::new(false));
         let current_sink = Arc::new(Mutex::new(None));
         let pending_job_updates = Arc::new(Mutex::new(HashMap::new()));
+        let job_update_delivery_order = Arc::new(Mutex::new(()));
         let delivery_signal = Arc::new(JobUpdateDeliverySignal::default());
         spawn_job_update_delivery_worker(
             Arc::downgrade(&jobs),
             Arc::downgrade(&current_sink),
             Arc::downgrade(&pending_job_updates),
+            Arc::downgrade(&job_update_delivery_order),
             Arc::clone(&delivery_signal),
         );
         let owner_lifetime = Arc::new(JobManagerOwnerLifetime {
@@ -294,6 +300,7 @@ impl JobManager {
             workers: ActivityTracker::default(),
             current_sink,
             pending_job_updates,
+            job_update_delivery_order,
             delivery_signal,
             owner_lifetime: Some(owner_lifetime),
             detached_profile_server_url: String::new(),
@@ -512,6 +519,7 @@ fn spawn_job_update_delivery_worker(
     jobs: Weak<Mutex<HashMap<String, RunningJob>>>,
     current_sink: Weak<Mutex<Option<RunnerSink>>>,
     pending_job_updates: Weak<Mutex<HashMap<String, JobUpdateDeliveryQueue>>>,
+    job_update_delivery_order: Weak<Mutex<()>>,
     signal: Arc<JobUpdateDeliverySignal>,
 ) {
     std::thread::spawn(move || {
@@ -520,7 +528,15 @@ fn spawn_job_update_delivery_worker(
             let Some(pending_map) = pending_job_updates.upgrade() else {
                 break;
             };
+            let Some(delivery_order) = job_update_delivery_order.upgrade() else {
+                break;
+            };
             let candidate = {
+                // A producer holds this from sequence assignment/snapshot
+                // observation through queue insertion. Selecting under the same
+                // gate prevents a higher sequence from escaping while an older
+                // generated update is still between the Job and delivery locks.
+                let _delivery_order = lock_unpoison(&delivery_order);
                 let pending = lock_unpoison(&pending_map);
                 pending.iter().find_map(|(job_id, queue)| {
                     queue.next().cloned().map(|update| (job_id.clone(), update))
@@ -1533,6 +1549,7 @@ impl JobManager {
     }
 
     fn update_and_send(&self, job_id: &str, delta: RunnerJobDelta) {
+        let _delivery_order = lock_unpoison(&self.job_update_delivery_order);
         if let Some((update, semantic)) = self.record_update(job_id, delta) {
             self.queue_recorded_update(update, semantic);
         }
@@ -1542,6 +1559,7 @@ impl JobManager {
         if self.current_sink().is_none() {
             return;
         }
+        let _delivery_order = lock_unpoison(&self.job_update_delivery_order);
         let registered_by_job = registered
             .jobs
             .iter()
@@ -1609,6 +1627,7 @@ impl JobManager {
     }
 
     fn resend_snapshot(&self, job_id: &str) {
+        let _delivery_order = lock_unpoison(&self.job_update_delivery_order);
         let update = lock_unpoison(&self.jobs).get(job_id).map(|job| {
             job_update_from_snapshot(&job.client_id, &job.runner_instance_id, &job.snapshot)
         });
@@ -1900,6 +1919,7 @@ impl JobManager {
         record: &super::detached_job::DetachedJobRecord,
     ) -> Result<bool, String> {
         let snapshot = snapshot_from_detached_record(record)?;
+        let delivery_order = lock_unpoison(&self.job_update_delivery_order);
         let (update, terminal, semantic) = {
             let mut jobs = lock_unpoison(&self.jobs);
             let job = jobs
@@ -1944,6 +1964,7 @@ impl JobManager {
             )
         };
         self.queue_recorded_update(update, terminal || semantic);
+        drop(delivery_order);
         if terminal {
             lock_unpoison(&self.detached_jobs).remove(job_id);
             self.start_available_queued();

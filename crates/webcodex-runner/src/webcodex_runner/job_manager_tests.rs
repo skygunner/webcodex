@@ -167,6 +167,84 @@ fn delivery_queue_orders_semantic_truth_and_drops_stale_output_only_updates() {
 }
 
 #[test]
+fn delivery_worker_waits_for_sequence_barrier_before_selecting_candidate() {
+    let manager = JobManager::new(1);
+    let job_id = "delivery-sequence-barrier";
+    let mut snapshot = test_job_snapshot(job_id);
+    snapshot.update_seq = 5;
+    lock_unpoison(&manager.jobs).insert(
+        job_id.to_string(),
+        RunningJob {
+            client_id: "test-agent".into(),
+            runner_instance_id: "test-instance".into(),
+            snapshot,
+            child: None,
+            stop_requested: Arc::new(AtomicBool::new(false)),
+            slot_reserved: true,
+        },
+    );
+
+    // Model the exact producer gap this queue exists to tolerate: seq5 is
+    // already pending while an older generated seq4 still owns the sequencing
+    // barrier and has not reached the queue yet. The delivery worker must not
+    // let seq5 escape during that window.
+    let delivery_order = lock_unpoison(&manager.job_update_delivery_order);
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+    manager.install_sink(RunnerSink::WebSocket {
+        tx,
+        client_id: "test-agent".into(),
+        runner_instance_id: "test-instance".into(),
+    });
+
+    let pending = |update_seq, status: &str| PendingJobUpdateDelivery {
+        update_seq,
+        status: status.to_string(),
+        exit_code: None,
+        duration_ms: None,
+        error: None,
+        command_execution_state: None,
+        validation_progress: None,
+        test_count_evidence: None,
+        activity: None,
+        finished: false,
+    };
+    {
+        let mut pending_map = lock_unpoison(&manager.pending_job_updates);
+        assert!(pending_map
+            .entry(job_id.to_string())
+            .or_default()
+            .enqueue(pending(5, "stop_requested"), true));
+    }
+    manager.delivery_signal.notify();
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(matches!(
+        rx.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+
+    {
+        let mut pending_map = lock_unpoison(&manager.pending_job_updates);
+        assert!(pending_map
+            .get_mut(job_id)
+            .unwrap()
+            .enqueue(pending(4, "running"), true));
+    }
+    drop(delivery_order);
+    manager.delivery_signal.notify();
+
+    let updates = collect_job_updates(&mut rx, Duration::from_secs(5));
+    assert_eq!(
+        updates
+            .iter()
+            .map(|update| update.update_seq)
+            .collect::<Vec<_>>(),
+        vec![Some(4), Some(5)]
+    );
+    assert_eq!(updates[0].status, "running");
+    assert_eq!(updates[1].status, "stop_requested");
+}
+
+#[test]
 fn job_reconciliation_inventory_prioritizes_active_and_bounds_terminal_history() {
     let manager = JobManager::new(1);
     let now = chrono::Utc::now().timestamp();

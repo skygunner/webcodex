@@ -552,7 +552,7 @@ fn remove_exact_registration(path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::webcodex_cli::test_support::canonical_test_tempdir;
+    use crate::webcodex_cli::test_support::{canonical_test_tempdir, executable_test_tempdir};
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
@@ -882,7 +882,7 @@ mod tests {
     {
         use std::os::unix::fs::PermissionsExt;
 
-        let tmp = canonical_test_tempdir();
+        let tmp = executable_test_tempdir();
         let config_base = tmp.path().join("config");
         let state_base = tmp.path().join("state");
         let project = tmp.path().join("repo");
@@ -977,7 +977,7 @@ mod tests {
     async fn lost_unregister_response_reobserves_runner_removed_registration_as_absent() {
         use std::os::unix::fs::PermissionsExt;
 
-        let tmp = canonical_test_tempdir();
+        let tmp = executable_test_tempdir();
         let config_base = tmp.path().join("config");
         let state_base = tmp.path().join("state");
         let project = tmp.path().join("repo");
@@ -1132,7 +1132,7 @@ mod tests {
     fn last_project_disconnect_stops_managed_runner() {
         use std::os::unix::fs::PermissionsExt;
 
-        let tmp = canonical_test_tempdir();
+        let tmp = executable_test_tempdir();
         let runner = tmp.path().join("webcodex-runner");
         std::fs::write(
             &runner,

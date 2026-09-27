@@ -1148,7 +1148,7 @@ fn read_local_runner_log_tail(state_dir: &Path, lines: u32) -> Result<LogTail, S
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::webcodex_cli::test_support::canonical_test_tempdir;
+    use crate::webcodex_cli::test_support::{canonical_test_tempdir, executable_test_tempdir};
 
     fn write_lines(path: &Path, start: usize, end: usize, trailing_newline: bool) {
         let mut content = (start..end)
@@ -1225,7 +1225,7 @@ mod tests {
     fn local_runner_reuses_process_recovers_stale_pid_and_stops() {
         use std::os::unix::fs::PermissionsExt;
 
-        let tmp = canonical_test_tempdir();
+        let tmp = executable_test_tempdir();
         let runner = tmp.path().join("webcodex-runner");
         std::fs::write(
             &runner,
@@ -1374,7 +1374,7 @@ mod tests {
     fn local_runner_rotates_logs_while_alive_and_stops_its_writer() {
         use std::os::unix::fs::PermissionsExt;
 
-        let tmp = canonical_test_tempdir();
+        let tmp = executable_test_tempdir();
         let runner = tmp.path().join("webcodex-runner");
         std::fs::write(
             &runner,

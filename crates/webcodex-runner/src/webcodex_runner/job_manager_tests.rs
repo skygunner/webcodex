@@ -36,6 +36,137 @@ fn retained_terminal_job(job_id: &str, ended_at: i64) -> RunningJob {
 }
 
 #[test]
+fn delivery_queue_orders_semantic_truth_and_drops_stale_output_only_updates() {
+    let mut queue = JobUpdateDeliveryQueue::default();
+    let base = RunnerJobUpdateRequest {
+        client_id: "test-agent".into(),
+        runner_instance_id: "test-instance".into(),
+        job_id: "ordered-delivery".into(),
+        request_id: Some("request-ordered-delivery".into()),
+        update_seq: Some(0),
+        status: "running".into(),
+        stdout_chunk: None,
+        stderr_chunk: None,
+        log_snapshot: None,
+        exit_code: None,
+        duration_ms: None,
+        error: None,
+        command_execution_state: None,
+        validation_progress: None,
+        test_count_evidence: None,
+        activity: None,
+        finished: false,
+    };
+    let mut semantic = base.clone();
+    semantic.update_seq = Some(3);
+    semantic.status = "stop_requested".into();
+    semantic.error = Some("stop requested".into());
+    assert!(queue.enqueue(PendingJobUpdateDelivery::from_update(&semantic), true));
+
+    // A: a stale output-only (seq2) that arrives behind newer semantic truth
+    // (seq3) is dropped rather than retained to regress the drained state.
+    let mut stale_heartbeat = semantic.clone();
+    stale_heartbeat.update_seq = Some(2);
+    stale_heartbeat.status = "running".into();
+    stale_heartbeat.error = None;
+    assert!(queue.enqueue(
+        PendingJobUpdateDelivery::from_update(&stale_heartbeat),
+        false
+    ));
+    assert_eq!(
+        queue
+            .required
+            .iter()
+            .map(|pending| pending.update_seq)
+            .collect::<Vec<_>>(),
+        vec![3]
+    );
+    assert!(queue.output_only.is_none());
+
+    // B: out-of-order semantic seq5 then seq4 both land, kept ascending.
+    semantic.update_seq = Some(5);
+    assert!(queue.enqueue(PendingJobUpdateDelivery::from_update(&semantic), true));
+    semantic.update_seq = Some(4);
+    assert!(queue.enqueue(PendingJobUpdateDelivery::from_update(&semantic), true));
+    assert_eq!(
+        queue
+            .required
+            .iter()
+            .map(|pending| pending.update_seq)
+            .collect::<Vec<_>>(),
+        vec![3, 4, 5]
+    );
+
+    // C: a duplicate semantic seq4 replaces the existing seq4 in place. The
+    // distinct status/error sentinel proves replacement, not a new item.
+    let mut duplicate = semantic.clone();
+    duplicate.status = "stopped_replaced".into();
+    duplicate.error = Some("replaced sentinel".into());
+    assert!(queue.enqueue(PendingJobUpdateDelivery::from_update(&duplicate), true));
+    assert_eq!(
+        queue
+            .required
+            .iter()
+            .map(|pending| pending.update_seq)
+            .collect::<Vec<_>>(),
+        vec![3, 4, 5]
+    );
+    let replaced = queue
+        .required
+        .iter()
+        .find(|pending| pending.update_seq == 4)
+        .unwrap();
+    assert_eq!(replaced.status, "stopped_replaced");
+    assert_eq!(replaced.error.as_deref(), Some("replaced sentinel"));
+
+    // D: a genuinely newer output-only (seq6) is coalesced and retained.
+    semantic.update_seq = Some(6);
+    assert!(queue.enqueue(PendingJobUpdateDelivery::from_update(&semantic), false));
+    assert_eq!(queue.output_only.as_ref().unwrap().update_seq, 6);
+    assert_eq!(
+        queue
+            .required
+            .iter()
+            .map(|pending| pending.update_seq)
+            .collect::<Vec<_>>(),
+        vec![3, 4, 5]
+    );
+
+    // E: newer semantic truth (seq7) clears the older output-only (seq6).
+    semantic.update_seq = Some(7);
+    assert!(queue.enqueue(PendingJobUpdateDelivery::from_update(&semantic), true));
+    assert!(queue.output_only.is_none());
+    assert_eq!(
+        queue
+            .required
+            .iter()
+            .map(|pending| pending.update_seq)
+            .collect::<Vec<_>>(),
+        vec![3, 4, 5, 7]
+    );
+
+    // F: once required holds seq7, an output-only seq7 or seq6 must not
+    // resurrect an older/equal heartbeat behind the semantic truth.
+    let mut backdoor = semantic.clone();
+    backdoor.update_seq = Some(7);
+    backdoor.status = "running".into();
+    backdoor.error = None;
+    assert!(queue.enqueue(PendingJobUpdateDelivery::from_update(&backdoor), false));
+    assert!(queue.output_only.is_none());
+    backdoor.update_seq = Some(6);
+    assert!(queue.enqueue(PendingJobUpdateDelivery::from_update(&backdoor), false));
+    assert!(queue.output_only.is_none());
+    assert_eq!(
+        queue
+            .required
+            .iter()
+            .map(|pending| pending.update_seq)
+            .collect::<Vec<_>>(),
+        vec![3, 4, 5, 7]
+    );
+}
+
+#[test]
 fn job_reconciliation_inventory_prioritizes_active_and_bounds_terminal_history() {
     let manager = JobManager::new(1);
     let now = chrono::Utc::now().timestamp();

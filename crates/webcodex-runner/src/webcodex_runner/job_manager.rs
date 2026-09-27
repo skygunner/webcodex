@@ -391,20 +391,53 @@ impl JobUpdateDeliveryQueue {
             return true;
         }
         if semantic {
-            self.output_only = None;
-            if let Some(last) = self.required.back_mut() {
-                if last.update_seq == update.update_seq {
-                    *last = update;
-                    return true;
-                }
+            if self
+                .output_only
+                .as_ref()
+                .is_some_and(|pending| pending.update_seq <= update.update_seq)
+            {
+                self.output_only = None;
+            }
+            if let Some(existing) = self
+                .required
+                .iter_mut()
+                .find(|pending| pending.update_seq == update.update_seq)
+            {
+                *existing = update;
+                return true;
             }
             if self.required.len() >= JOB_UPDATE_REQUIRED_PENDING_MAX {
                 self.required.clear();
                 self.suspended_until_reconciliation = true;
                 return false;
             }
-            self.required.push_back(update);
+            let insert_at = self
+                .required
+                .iter()
+                .position(|pending| pending.update_seq > update.update_seq)
+                .unwrap_or(self.required.len());
+            self.required.insert(insert_at, update);
         } else {
+            // Update generation happens under the Job map lock, while queue
+            // insertion happens later under the delivery lock. A newer semantic
+            // update can therefore overtake an older heartbeat/output-only update
+            // between those locks. Never retain that stale update behind newer
+            // required truth: a legacy/non-sequenced Server would otherwise see
+            // the semantic state and then regress when the queue drains.
+            if self
+                .required
+                .iter()
+                .any(|required| required.update_seq >= update.update_seq)
+            {
+                return true;
+            }
+            if self
+                .output_only
+                .as_ref()
+                .is_some_and(|pending| pending.update_seq >= update.update_seq)
+            {
+                return true;
+            }
             self.output_only = Some(update);
         }
         true

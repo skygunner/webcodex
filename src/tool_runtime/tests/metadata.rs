@@ -2933,19 +2933,24 @@ fn runtime_info_from_env_reads_effective_server_config() {
     // the effective env exactly once, at construction.
     env.set("WEBCODEX_MCP_COMPACT_SCHEMAS", "false");
     env.set("WEBCODEX_MCP_APPS_ENABLED", "false");
+    env.set("WEBCODEX_MCP_TEXT_JSON_COMPAT", "false");
     let frozen = RuntimeInfo::from_env();
     assert!(!frozen.mcp_compact_schemas);
     assert!(!frozen.mcp_apps_enabled);
+    assert!(!frozen.mcp_text_json_compat_enabled);
 
     // Mutating the environment must NOT mutate an already-built snapshot; only
     // a new construction reads the new values.
     env.set("WEBCODEX_MCP_COMPACT_SCHEMAS", "true");
     env.set("WEBCODEX_MCP_APPS_ENABLED", "true");
+    env.set("WEBCODEX_MCP_TEXT_JSON_COMPAT", "true");
     assert!(!frozen.mcp_compact_schemas);
     assert!(!frozen.mcp_apps_enabled);
+    assert!(!frozen.mcp_text_json_compat_enabled);
     let refreshed = RuntimeInfo::from_env();
     assert!(refreshed.mcp_compact_schemas);
     assert!(refreshed.mcp_apps_enabled);
+    assert!(refreshed.mcp_text_json_compat_enabled);
 }
 
 #[tokio::test]

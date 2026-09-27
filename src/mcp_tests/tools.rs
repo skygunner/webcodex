@@ -2467,6 +2467,39 @@ async fn mcp_tools_call_still_returns_structured_content_under_compact_flag() {
 }
 
 #[tokio::test]
+async fn mcp_text_json_compat_uses_runtime_snapshot() {
+    let runtime_off = test_runtime_with_mcp_snapshot(true, true, false);
+    let runtime_on = test_runtime_with_mcp_snapshot(true, true, true);
+    let request = || {
+        rpc(
+            "tools/call",
+            Some(json!(3003)),
+            adaptive_runtime_gateway_params("list_projects", json!({})),
+        )
+    };
+
+    let McpOutcome::Ok(off) = handle_mcp_request(&runtime_off, request(), None).await else {
+        panic!("text-JSON compat OFF call failed");
+    };
+    let McpOutcome::Ok(on) = handle_mcp_request(&runtime_on, request(), None).await else {
+        panic!("text-JSON compat ON call failed");
+    };
+
+    assert_eq!(
+        off["result"]["content"][0]["text"],
+        "WebCodex tool completed successfully."
+    );
+    assert_eq!(
+        on["result"]["content"][0]["text"],
+        serde_json::to_string(&on["result"]["structuredContent"]).unwrap()
+    );
+    assert_eq!(
+        off["result"]["structuredContent"], on["result"]["structuredContent"],
+        "the snapshot changes only the compatibility text projection"
+    );
+}
+
+#[tokio::test]
 async fn session_tools_stay_registered_and_follow_adaptive_routes() {
     let runtime = test_runtime();
     let specs = registered_tool_specs();

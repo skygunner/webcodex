@@ -44,6 +44,9 @@ pub struct RuntimeInfo {
     /// Effective MCP App exposure flag captured when this Runtime was built.
     /// Same startup-snapshot semantics as [`Self::mcp_compact_schemas`].
     pub mcp_apps_enabled: bool,
+    /// Effective MCP text-JSON compatibility projection captured at Runtime
+    /// construction. Ordinary tool-result framing must not re-read ambient env.
+    pub mcp_text_json_compat_enabled: bool,
 }
 
 impl RuntimeInfo {
@@ -77,6 +80,7 @@ impl RuntimeInfo {
                 crate::config::mcp_compact_schemas_override(),
             ),
             mcp_apps_enabled: crate::config::mcp_apps_enabled(),
+            mcp_text_json_compat_enabled: crate::config::mcp_text_json_compat_enabled(),
         }
     }
 }
@@ -1601,10 +1605,11 @@ impl Default for RuntimeInfo {
                 crate::config::QuicServerConfig::default().runtime_status(),
             ))),
             // Product defaults without touching process-global environment:
-            // compact schemas are on by default and MCP Apps exposure is
-            // enabled by default.
+            // compact schemas and MCP Apps are on by default, while duplicate
+            // text-JSON compatibility remains opt-in.
             mcp_compact_schemas: true,
             mcp_apps_enabled: true,
+            mcp_text_json_compat_enabled: false,
         }
     }
 }

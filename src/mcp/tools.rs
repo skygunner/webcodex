@@ -1183,11 +1183,12 @@ pub(super) fn mcp_runtime_tool_result(
         artifact_presentation,
         result,
         resources::McpResourceToolCallContext::default(),
+        false,
         result_presentation,
     ) {
         resources::McpResourceToolResultAdaptation::Framed(value) => value,
         resources::McpResourceToolResultAdaptation::Unhandled(result) => {
-            mcp_runtime_tool_result_fallback(result, result_presentation)
+            mcp_runtime_tool_result_fallback(result, false, result_presentation)
         }
     }
 }
@@ -2093,6 +2094,7 @@ pub(super) async fn handle_call(
                 }
                 let rendered = mcp_runtime_tool_result_fallback(
                     adaptive_runtime_gateway_unknown_target(&target),
+                    runtime.runtime_info.mcp_text_json_compat_enabled,
                     result_presentation,
                 );
                 return McpOutcome::Ok(rpc_result(
@@ -2246,7 +2248,11 @@ pub(super) async fn handle_call(
                     &ack_session_message_ids,
                 );
 
-                let result = mcp_runtime_tool_result_fallback(result, result_presentation);
+                let result = mcp_runtime_tool_result_fallback(
+                    result,
+                    runtime.runtime_info.mcp_text_json_compat_enabled,
+                    result_presentation,
+                );
                 return McpOutcome::Ok(rpc_result(
                     id,
                     if stateless_2026 {
@@ -2429,7 +2435,11 @@ pub(super) async fn handle_call(
                     &ack_session_message_ids,
                 );
 
-                let result = mcp_runtime_tool_result_fallback(result, result_presentation);
+                let result = mcp_runtime_tool_result_fallback(
+                    result,
+                    runtime.runtime_info.mcp_text_json_compat_enabled,
+                    result_presentation,
+                );
                 return McpOutcome::Ok(rpc_result(
                     id,
                     if stateless_2026 {
@@ -2743,6 +2753,7 @@ pub(super) async fn handle_call(
         artifact_presentation,
         result,
         resource_tool_call,
+        runtime.runtime_info.mcp_text_json_compat_enabled,
         result_presentation,
     ) {
         resources::McpResourceToolResultAdaptation::Framed(value) => value,
@@ -2750,7 +2761,11 @@ pub(super) async fn handle_call(
             // App-only tools use the standard CallToolResult channel too. Their
             // visibility/admission boundary, not custom result metadata, keeps
             // continuation protocol data out of ordinary model tool results.
-            mcp_runtime_tool_result_fallback(result, result_presentation)
+            mcp_runtime_tool_result_fallback(
+                result,
+                runtime.runtime_info.mcp_text_json_compat_enabled,
+                result_presentation,
+            )
         }
     };
     if app_only_work_result_state

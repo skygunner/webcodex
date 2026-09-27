@@ -51,11 +51,15 @@ fi
 echo "== source: $HEAD_SHA ($(git branch --show-current)) =="
 
 # 发现需要管理的 share 单元（enabled 或 active 的 webcodex-share-*；可再 --unit 追加）
+# 纳入管理 = active 或 enabled 的 webcodex-share-* 单元（enabled 说明运维意图是常驻，
+# 失败运行中被 stop 过的也要拉回）。bash 5.1 空数组 ${arr[@]:-} 会展开出一个空串元素，
+# 一律用 ${arr[@]+"${arr[@]}"} 惯用法。
 mapfile -t UNITS < <(systemctl --user list-unit-files 'webcodex-share-*.service' --no-legend 2>/dev/null | awk '{print $1}')
-for u in "${EXTRA_UNITS[@]:-}"; do [[ -n "$u" ]] && UNITS+=("$u"); done
+for u in ${EXTRA_UNITS[@]+"${EXTRA_UNITS[@]}"}; do UNITS+=("$u"); done
 ACTIVE_UNITS=()
-for u in "${UNITS[@]:-}"; do
-  [[ "$(systemctl --user is-active "$u" 2>/dev/null)" == "active" ]] && ACTIVE_UNITS+=("$u")
+for u in ${UNITS[@]+"${UNITS[@]}"}; do
+  [[ "$(systemctl --user is-active "$u" 2>/dev/null)" == "active" ]] && ACTIVE_UNITS+=("$u") && continue
+  [[ "$(systemctl --user is-enabled "$u" 2>/dev/null)" == "enabled" ]] && ACTIVE_UNITS+=("$u")
 done
 echo "== share units: ${ACTIVE_UNITS[*]:-none} =="
 
@@ -83,7 +87,7 @@ backup() {
 }
 
 stop_units() {
-  for u in "${ACTIVE_UNITS[@]:-}"; do
+  for u in ${ACTIVE_UNITS[@]+"${ACTIVE_UNITS[@]}"}; do
     dry "stop $u" || systemctl --user stop "$u"
   done
   sleep 1
@@ -104,12 +108,12 @@ verify_identity() {
 }
 
 start_units() {
-  for u in "${ACTIVE_UNITS[@]:-}"; do
+  for u in ${ACTIVE_UNITS[@]+"${ACTIVE_UNITS[@]}"}; do
     dry "start $u" || systemctl --user start "$u"
   done
   [[ ${#ACTIVE_UNITS[@]} -eq 0 ]] && return 0
   sleep 15
-  for u in "${ACTIVE_UNITS[@]:-}"; do
+  for u in ${ACTIVE_UNITS[@]+"${ACTIVE_UNITS[@]}"}; do
     local before after
     before="$(systemctl --user show "$u" -p ExecMainStartTimestamp --value)"
     [[ "$(systemctl --user is-active "$u")" == "active" ]] || { echo "$u not active" >&2; return 1; }
@@ -123,7 +127,7 @@ start_units() {
 smoke() {
   [[ ${#URLS[@]} -eq 0 ]] && { echo "== no --url given; skip public smoke =="; return 0; }
   local u
-  for u in "${URLS[@]}"; do
+  for u in ${URLS[@]+"${URLS[@]}"}; do
     local body
     body="$(curl -s -m 25 -X POST "$u" -H 'Content-Type: application/json' \
       -H 'Accept: application/json, text/event-stream' \
@@ -136,10 +140,10 @@ smoke() {
 rollback() {
   echo "!! FAILURE — rollback triggered" >&2
   if [[ $HAVE_BACKUP == 1 ]]; then
-    for u in "${ACTIVE_UNITS[@]:-}"; do systemctl --user stop "$u" 2>/dev/null || true; done
+    for u in ${ACTIVE_UNITS[@]+"${ACTIVE_UNITS[@]}"}; do systemctl --user stop "$u" 2>/dev/null || true; done
     cp -a "$BACKUP_DIR/webcodex" "$BACKUP_DIR/webcodex-server" "$BACKUP_DIR/webcodex-runner" "$BIN_DIR/"
     for b in "${BINS[@]}"; do "$BIN_DIR/$b" --version; done
-    for u in "${ACTIVE_UNITS[@]:-}"; do systemctl --user start "$u" 2>/dev/null || true; done
+    for u in ${ACTIVE_UNITS[@]+"${ACTIVE_UNITS[@]}"}; do systemctl --user start "$u" 2>/dev/null || true; done
     echo "rolled back to $( "$BIN_DIR/webcodex" --version ); units restarted. Repo ref stays at $HEAD_SHORT." >&2
   else
     echo "no backup existed; nothing to roll back — inspect manually" >&2

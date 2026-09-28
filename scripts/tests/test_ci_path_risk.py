@@ -68,6 +68,16 @@ class PathRiskFixtureTests(unittest.TestCase):
         self.assertEqual(result["needs_desktop_package"], "true")
         self.assertEqual(result["needs_desktop_frontend"], "false")
 
+    def test_codex_python_adapter_requires_windows_core_only(self) -> None:
+        result = classify("integrations/codex/platform_security.py")
+        self.assertEqual(result["needs_windows_core"], "true")
+        self.assertEqual(result["needs_windows_runner"], "false")
+        self.assertEqual(result["needs_windows_package"], "false")
+        self.assertEqual(result["needs_windows_desktop"], "false")
+        self.assertEqual(result["needs_macos"], "false")
+        self.assertEqual(result["needs_full_native"], "false")
+        self.assertIn("codex-adapter", result["categories"])
+
     def test_process_requires_windows_core_and_macos_without_desktop_package(self) -> None:
         result = classify("crates/webcodex-process/src/lib.rs")
         self.assertEqual(result["needs_windows_core"], "true")

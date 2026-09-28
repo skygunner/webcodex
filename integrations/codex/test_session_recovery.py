@@ -2,11 +2,14 @@ import copy
 import json
 from pathlib import Path
 import tempfile
+import os
+import subprocess
 import unittest
 from unittest.mock import Mock, patch
 
 import session_recovery as recovery
 from external_observation_hook import AdapterError
+from platform_security import read_private_file, secure_created_path
 
 
 class SessionRecoveryTests(unittest.TestCase):
@@ -16,8 +19,8 @@ class SessionRecoveryTests(unittest.TestCase):
         self.root = Path(self.tmp.name).resolve()
         self.project = self.root / "project"; self.project.mkdir()
         self.entry = self.root / "entry"; self.entry.mkdir()
-        self.state = self.root / "state"; self.state.mkdir(mode=0o700)
-        self.auth = self.root / "auth"; self.auth.write_text("Bearer fixture"); self.auth.chmod(0o600)
+        self.state = self.root / "state"; self.state.mkdir(mode=0o700); secure_created_path(self.state)
+        self.auth = self.root / "auth"; self.auth.write_text("Bearer fixture"); secure_created_path(self.auth)
         self.registry_path = self.root / "registry.json"
         self.binding = {
             "project": "agent:fixture:project", "project_root": str(self.project),
@@ -33,7 +36,7 @@ class SessionRecoveryTests(unittest.TestCase):
         self.reader = Mock(return_value=self.value)
 
     def save(self):
-        self.registry_path.write_text(json.dumps(self.registry)); self.registry_path.chmod(0o600)
+        self.registry_path.write_text(json.dumps(self.registry)); secure_created_path(self.registry_path)
 
     def read(self):
         return recovery.cached_recovery(
@@ -194,14 +197,30 @@ class SessionRecoveryTests(unittest.TestCase):
         self.assertEqual(recovery.select(self.registry, self.entry, "local-two"), [self.binding])
 
     def test_project_controlled_registry_and_symlink_rejected(self):
-        bad = self.entry / "registry"; bad.write_text(json.dumps(self.registry)); bad.chmod(0o600)
+        bad = self.entry / "registry"; bad.write_text(json.dumps(self.registry)); secure_created_path(bad)
         with self.assertRaises(AdapterError): recovery.load_registry(bad)
-        link = self.root / "link"; link.symlink_to(self.registry_path)
-        with self.assertRaises(OSError): recovery.load_registry(link)
+        link = self.root / "link"
+        try:
+            link.symlink_to(self.registry_path)
+        except OSError:
+            if os.name == "nt":
+                return
+            raise
+        with self.assertRaisesRegex(AdapterError, "private_regular_file_required"):
+            recovery.load_registry(link)
 
     def test_public_registry_and_non_https_remote_rejected(self):
-        self.registry_path.chmod(0o644)
+        if os.name == "nt":
+            subprocess.run(
+                ["icacls", str(self.registry_path), "/grant", "*S-1-1-0:(R)"],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            self.registry_path.chmod(0o644)
         with self.assertRaises(AdapterError): recovery.load_registry(self.registry_path)
+        secure_created_path(self.registry_path)
         self.registry["server_url"] = "http://remote.example"; self.save()
         with self.assertRaises(AdapterError): recovery.load_registry(self.registry_path)
 
@@ -210,7 +229,12 @@ class SessionRecoveryTests(unittest.TestCase):
         value = self.read()
         self.assertEqual(value["status"], "read_snapshot")
         self.assertLess(len(json.dumps(value)), 1000)
-        self.assertEqual(Path(value["snapshot_path"]).stat().st_mode & 0o777, 0o600)
+        self.assertTrue(read_private_file(
+            Path(value["snapshot_path"]),
+            recovery.MAX_BYTES,
+            "snapshot_not_private",
+            "snapshot_too_large",
+        ))
 
     def caller(self, registry, route, body):
         if route.endswith("/projects"):
@@ -250,7 +274,12 @@ class SessionRecoveryTests(unittest.TestCase):
         self.assertEqual(recovery.associate(*args, caller=self.caller)["status"], "associated")
         current = recovery.load_registry(self.registry_path)
         self.assertEqual(recovery.associate(self.registry_path, current, self.project, "wc_sess_fixture", [self.entry], caller=self.caller)["status"], "already_associated")
-        self.assertEqual(self.registry_path.stat().st_mode & 0o777, 0o600)
+        self.assertTrue(read_private_file(
+            self.registry_path,
+            recovery.MAX_BYTES,
+            "registry_not_private",
+            "registry_too_large",
+        ))
 
     def test_association_does_not_overwrite_concurrent_registry_change(self):
         current = {**self.registry, "bindings": []}; self.registry_path.write_text(json.dumps(current))
@@ -260,7 +289,7 @@ class SessionRecoveryTests(unittest.TestCase):
 
     def test_association_failure_before_replace_preserves_original(self):
         before = self.registry_path.read_bytes()
-        with patch.object(recovery.os, "replace", side_effect=OSError("fixture")):
+        with patch.object(recovery, "atomic_private_write", side_effect=OSError("fixture")):
             with self.assertRaises(OSError): recovery.associate(self.registry_path, self.registry, self.project, "wc_sess_fixture", [self.project], caller=self.caller)
         self.assertEqual(self.registry_path.read_bytes(), before)
         self.assertEqual(list(self.root.glob(".recovery-*")), [])

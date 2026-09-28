@@ -225,6 +225,9 @@ def _classify_path(risk: Risk, path: str) -> None:
             "plugin-sdk" if path.startswith("npm/plugin-sdk/") else "plugin-sdk-dogfood"
         )
         return
+    if path.startswith("integrations/codex/") and path.endswith(".py"):
+        _mark_windows_core(risk, "codex-adapter")
+        return
     if _is_docs_or_text(path):
         risk.categories.add("docs")
         return

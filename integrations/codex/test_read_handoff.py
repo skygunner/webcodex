@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import read_handoff as recovery
 from external_observation_hook import AdapterError
+from platform_security import secure_created_path
 
 
 class ReadHandoffTests(unittest.TestCase):
@@ -17,7 +18,7 @@ class ReadHandoffTests(unittest.TestCase):
         self.project_root.mkdir()
         self.auth = root / "auth"
         self.auth.write_text("Bearer fixture")
-        self.auth.chmod(0o600)
+        secure_created_path(self.auth)
         self.config = {
             "server_url": "http://127.0.0.1:12345",
             "authorization_file": str(self.auth),

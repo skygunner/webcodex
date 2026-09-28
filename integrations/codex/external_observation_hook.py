@@ -2,18 +2,21 @@
 """Optional PostToolUse adapter. Never installs/trusts Hooks or executes work."""
 import argparse
 import contextlib
-import fcntl
 import hashlib
 import json
-import os
 from pathlib import Path
 import re
-import stat
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+from platform_security import (
+    SecurityError,
+    locked_state_directory,
+    read_private_file,
+)
 
 MAX_BYTES = 131072
 MAX_PENDING = 256
@@ -28,15 +31,15 @@ def digest(value):
 
 
 def private_file(path):
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    with os.fdopen(fd, "rb") as stream:
-        st = os.fstat(stream.fileno())
-        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077 or st.st_nlink != 1:
-            raise AdapterError("private_regular_file_required")
-        raw = stream.read(MAX_BYTES + 1)
-        if len(raw) > MAX_BYTES:
-            raise AdapterError("input_too_large")
-        return raw
+    try:
+        return read_private_file(
+            path,
+            MAX_BYTES,
+            "private_regular_file_required",
+            "input_too_large",
+        )
+    except SecurityError as error:
+        raise AdapterError(str(error)) from None
 
 
 def load_config(path):
@@ -122,68 +125,48 @@ def send(config, event, timeout):
 
 @contextlib.contextmanager
 def state_lock(config):
-    root = Path(config["state_dir"])
     # State must be prepared explicitly by the operator; no project file is
     # automatically executable/configuration, and no trust or permissions change.
-    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    lock = None
     try:
-        st = os.fstat(fd)
-        if st.st_uid != os.getuid() or st.st_mode & 0o077:
-            raise AdapterError("private_state_directory_required")
-        lock = os.open(".lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=fd)
-        ls = os.fstat(lock)
-        if not stat.S_ISREG(ls.st_mode) or ls.st_uid != os.getuid() or ls.st_nlink != 1 or ls.st_mode & 0o077:
-            raise AdapterError("invalid_lock")
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise AdapterError("adapter_busy_event_not_saved") from None
-        yield fd
-    finally:
-        if lock is not None:
-            os.close(lock)
-        os.close(fd)
+        with locked_state_directory(config["state_dir"]) as state:
+            yield state
+    except SecurityError as error:
+        raise AdapterError(str(error)) from None
 
 
-def read_pending(fd, name):
-    child = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
-    with os.fdopen(child, "rb") as stream:
-        st = os.fstat(stream.fileno())
-        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_uid != os.getuid() or st.st_mode & 0o077:
-            raise AdapterError("invalid_pending_file")
-        raw = stream.read(MAX_BYTES + 1)
-    if len(raw) > MAX_BYTES:
-        raise AdapterError("oversized_pending_file")
-    return json.loads(raw)
+def read_pending(state, name):
+    try:
+        return state.read_json(name, MAX_BYTES)
+    except SecurityError as error:
+        raise AdapterError(str(error)) from None
 
 
 def deliver(config, event=None, sender=send):
     # Never automatically retarget pending events after configuration changes.
     association = digest(json.dumps([config[k] for k in ("server_url", "project", "project_root", "workflow_session_id", "local_session_id")]))
-    with state_lock(config) as fd:
-        names = sorted(n for n in os.listdir(fd) if re.fullmatch(r"[0-9a-f]{64}\.json", n))
+    with state_lock(config) as state:
+        names = sorted(n for n in state.names() if re.fullmatch(r"[0-9a-f]{64}\.json", n))
         if event is not None:
             name = digest(association + event["event_id"]) + ".json"
             envelope = {"association": association, "event": event}
             if name in names:
-                if read_pending(fd, name) != envelope:
+                if read_pending(state, name) != envelope:
                     raise AdapterError("pending_event_conflict")
             else:
                 if len(names) >= MAX_PENDING:
                     raise AdapterError("pending_capacity_event_not_saved")
-                # Write + fsync before transmission. An interrupted write is
-                # left visible and fails closed; it is never silently replayed.
-                child = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
-                with os.fdopen(child, "w") as stream:
-                    json.dump(envelope, stream, sort_keys=True)
-                    stream.flush(); os.fsync(stream.fileno())
-                os.fsync(fd)
+                # Write + fsync/FlushFileBuffers before transmission. An
+                # interrupted write is left visible and fails closed; it is
+                # never silently replayed.
+                try:
+                    state.create_json(name, envelope)
+                except SecurityError as error:
+                    raise AdapterError(str(error)) from None
                 names.append(name)
         deadline = time.monotonic() + 15
         acknowledged = 0
         for name in names:
-            envelope = read_pending(fd, name)
+            envelope = read_pending(state, name)
             if not isinstance(envelope, dict) or set(envelope) != {"association", "event"} or envelope.get("association") != association:
                 raise AdapterError("pending_association_mismatch")
             saved = envelope["event"]
@@ -203,8 +186,7 @@ def deliver(config, event=None, sender=send):
             if remaining <= 0:
                 raise AdapterError("pending_delivery_deadline")
             sender(config, envelope["event"], min(5, remaining))
-            os.unlink(name, dir_fd=fd)
-            os.fsync(fd)
+            state.unlink(name)
             acknowledged += 1
         return {"status": "recorded", "acknowledged": acknowledged}
 

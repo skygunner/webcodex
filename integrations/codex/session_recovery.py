@@ -7,7 +7,6 @@ create a Session, change a Goal, or execute/replay the recorded work.
 import argparse
 import hashlib
 import json
-import os
 from pathlib import Path
 import re
 import sys
@@ -15,6 +14,7 @@ import urllib.parse
 import urllib.request
 
 from external_observation_hook import AdapterError, MAX_BYTES, NoRedirect, private_file, state_lock
+from platform_security import SecurityError, atomic_private_write
 from read_handoff import read_handoff
 
 EVENTS = {"SessionStart", "UserPromptSubmit"}
@@ -80,23 +80,13 @@ def validate_registry(path, value):
 
 
 def atomic_json(path, value):
-    import tempfile
     raw = json.dumps(value, ensure_ascii=False, indent=2).encode() + b"\n"
     if len(raw) > MAX_BYTES:
         raise AdapterError("recovery_state_capacity")
-    fd, temporary = tempfile.mkstemp(prefix=".recovery-", dir=path.parent)
     try:
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(raw); stream.flush(); os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+        atomic_private_write(path, raw)
+    except SecurityError as error:
+        raise AdapterError(str(error)) from None
 
 
 def within_entry(cwd, entry):

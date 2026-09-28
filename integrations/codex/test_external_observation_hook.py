@@ -3,9 +3,11 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import subprocess
 import unittest
 from unittest.mock import patch
 import external_observation_hook as hook
+from platform_security import secure_created_path
 
 
 class AdapterTests(unittest.TestCase):
@@ -15,12 +17,13 @@ class AdapterTests(unittest.TestCase):
         self.root = Path(self.temp.name).resolve()
         (self.root / 'project').mkdir()
         (self.root / 'state').mkdir(mode=0o700)
+        secure_created_path(self.root / 'state')
         self.config = dict(server_url='http://127.0.0.1:12345', authorization_file=str(self.root/'auth'),
             project='agent:fixture:project', project_root=str(self.root/'project'),
             workflow_session_id='wc_sess_fixture', local_session_id='local-fixture', state_dir=str(self.root/'state'))
         self.payload = dict(hook_event_name='PostToolUse', session_id='local-fixture', cwd=self.config['project_root'], tool_use_id='call-one', tool_name='Bash', tool_input={'command':'PRIVATE'}, tool_response='exit 0 PRIVATE')
-        self.path = self.root/'config.json'; self.path.write_text(json.dumps(self.config)); self.path.chmod(0o600)
-        (self.root/'auth').write_text('Bearer fixture'); (self.root/'auth').chmod(0o600)
+        self.path = self.root/'config.json'; self.path.write_text(json.dumps(self.config)); secure_created_path(self.path)
+        (self.root/'auth').write_text('Bearer fixture'); secure_created_path(self.root/'auth')
 
     def event(self):
         return hook.observation(self.config, self.payload)
@@ -44,9 +47,17 @@ class AdapterTests(unittest.TestCase):
 
     def test_config_must_be_private_and_outside_project(self):
         self.assertEqual(hook.load_config(self.path), self.config)
-        self.path.chmod(0o644)
+        if os.name == "nt":
+            subprocess.run(
+                ["icacls", str(self.path), "/grant", "*S-1-1-0:(R)"],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            self.path.chmod(0o644)
         with self.assertRaises(hook.AdapterError):hook.load_config(self.path)
-        self.path.chmod(0o600)
+        secure_created_path(self.path)
         self.config['state_dir']=self.config['project_root']
         self.path.write_text(json.dumps(self.config))
         with self.assertRaises(hook.AdapterError):hook.load_config(self.path)
@@ -57,8 +68,14 @@ class AdapterTests(unittest.TestCase):
         with self.assertRaises(hook.AdapterError):hook.load_config(self.path)
 
     def test_private_file_symlink_rejected(self):
-        link=self.root/'linked';link.symlink_to(self.root/'auth')
-        with self.assertRaises(OSError):hook.private_file(link)
+        link=self.root/'linked'
+        try:
+            link.symlink_to(self.root/'auth')
+        except OSError:
+            if os.name == "nt":
+                self.skipTest("Windows host does not permit file symlink creation")
+            raise
+        with self.assertRaises((OSError, hook.AdapterError)):hook.private_file(link)
 
     def test_ack_removes_exact_pending(self):
         sent=[]
@@ -87,7 +104,7 @@ class AdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(hook.AdapterError,'conflict'):hook.deliver(self.config,self.event(),lambda *a:self.fail('must not send'))
 
     def test_corrupt_pending_is_not_discarded(self):
-        p=self.root/'state'/('a'*64+'.json');p.write_text('{');p.chmod(0o600)
+        p=self.root/'state'/('a'*64+'.json');p.write_text('{');secure_created_path(p)
         with self.assertRaises(ValueError):hook.deliver(self.config,None,lambda *a:self.fail('must not send'))
         self.assertTrue(p.exists())
 

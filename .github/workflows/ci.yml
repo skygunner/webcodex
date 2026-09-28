@@ -626,6 +626,9 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -641,6 +644,8 @@ jobs:
         run: cargo check --locked --workspace
       - name: Run Windows library and CLI tests
         run: cargo test --locked -p webcodex-runner-config -p webcodex-process -p webcodex-cli
+      - name: Test optional Codex observation adapter on Windows
+        run: python -m unittest discover -s integrations/codex -p 'test_*.py' -v
       - name: Run Windows search fallback tests
         run: |
           cargo test --locked -p webcodex --lib search_project_text_grep

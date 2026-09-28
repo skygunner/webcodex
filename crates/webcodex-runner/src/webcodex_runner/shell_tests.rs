@@ -393,7 +393,7 @@ fn internal_posix_runtime_ignores_configured_shell_on_posix_hosts() {
     use std::os::unix::fs::PermissionsExt;
 
     let cwd = crate::tests::executable_tempdir();
-    let project_registry_dir = crate::tests::executable_tempdir();
+    let project_registry_dir = tempfile::tempdir().unwrap();
     let marker = cwd.path().join("configured-shell-ran");
     let configured_shell = cwd.path().join("configured-shell");
     std::fs::write(

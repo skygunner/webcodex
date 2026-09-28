@@ -401,7 +401,7 @@ async fn terminal_protocol_violation_during_recovery_keeps_execution_terminal_au
 }
 
 #[tokio::test]
-async fn validation_progress_accepts_coalesced_sequence_gaps_without_skipping_steps() {
+async fn validation_progress_accepts_sequence_only_heartbeats_and_coalesced_gaps() {
     let registry = RunnerRegistry::default();
     register(&registry, INSTANCE_A, empty_inventory()).await;
     let steps = vec![
@@ -490,8 +490,25 @@ async fn validation_progress_accepts_coalesced_sequence_gaps_without_skipping_st
         }
     };
 
+    registry
+        .update_job(validation_update(2, "running", 0, Some("format"), false))
+        .await
+        .unwrap();
+    let mut heartbeat = validation_update(3, "running", 0, Some("format"), false);
+    heartbeat.activity = None;
+    let heartbeat_view = registry.update_job(heartbeat).await.unwrap();
+    assert_eq!(heartbeat_view.status, "running");
+    assert_eq!(heartbeat_view.last_update_seq, Some(3));
+    assert_eq!(
+        heartbeat_view.validation_progress,
+        Some(ShellJobValidationProgress {
+            completed: 0,
+            current_step: Some("format".to_string()),
+            failed_step: None,
+        })
+    );
+
     for update in [
-        validation_update(2, "running", 0, Some("format"), false),
         validation_update(37, "running", 1, Some("check"), false),
         validation_update(81, "running", 2, Some("test"), false),
     ] {

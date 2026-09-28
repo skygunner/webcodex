@@ -174,6 +174,7 @@ pub(crate) enum RouteId {
     AuditSessions,
     AuditSession,
     AuditStats,
+    Healthz,
     OpenApiDocument,
     RuntimeWebRoot,
     RuntimeWebAppJs,
@@ -256,7 +257,7 @@ pub(crate) fn spec(id: RouteId) -> &'static RouteSpec {
         .unwrap_or_else(|| panic!("RouteId {id:?} has no canonical RouteSpec"))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy-gpt-actions"))]
 pub(crate) fn path(id: RouteId) -> &'static str {
     spec(id).path
 }
@@ -581,7 +582,7 @@ mod tests {
         let routes = iter_routes()
             .filter(|spec| spec.surface == PublicWeb)
             .collect::<Vec<_>>();
-        assert_eq!(routes.len(), 7);
+        assert_eq!(routes.len(), 8);
         for route in routes {
             assert_eq!(route.method, RouteMethod::Get, "{:?}", route.id);
             assert_eq!(

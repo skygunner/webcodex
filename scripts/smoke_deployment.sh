@@ -6,7 +6,7 @@ set -euo pipefail
 #
 # Lightweight smoke test against an ALREADY-DEPLOYED WebCodex instance.
 # It does NOT start a server or agent. It verifies the public surface is
-# reachable, auth works, and the GPT Actions + MCP endpoints respond.
+# reachable, auth works, and the maintained runtime + MCP endpoints respond.
 #
 # Usage:
 #   WEBCODEX_PUBLIC_URL="https://webcodex.example.com" \
@@ -19,12 +19,11 @@ set -euo pipefail
 #   SMOKE_TIMEOUT    per-curl timeout in seconds (default 15)
 #
 # What it checks:
-#   1. GET  /openapi.json            -> valid OpenAPI JSON with paths.
+#   1. GET  /healthz                 -> HTTP success.
 #   2. POST /api/runtime/status      -> success == true.
 #   3. POST /api/tools/call (list_projects)       -> success == true.
 #   4. POST /mcp initialize          -> result.protocolVersion non-empty.
 #   5. POST /mcp tools/list          -> result.tools is a non-empty array.
-#
 # It uses only curl + python3 (no jq dependency) and never prints the token.
 #
 # Exit codes:
@@ -134,25 +133,15 @@ PY
 }
 
 # ----------------------------------------------------------------------------
-# 1. GET /openapi.json
+# 1. GET /healthz
 # ----------------------------------------------------------------------------
 
-log "GET /openapi.json"
-body="$(api_get /openapi.json || true)"
-paths_json="$(python3 -c '
-import json, sys
-try:
-    d = json.loads(sys.stdin.read())
-    print(len(d.get("paths", {})))
-except Exception:
-    print(0)
-' <<<"$body" 2>/dev/null || echo 0)"
-if [ "${paths_json:-0}" -gt 0 ]; then
-    pass "/openapi.json returns a schema with ${paths_json} path(s)"
+log "GET /healthz"
+if api_get /healthz >/dev/null; then
+    pass "/healthz reports Server readiness"
 else
-    fail "/openapi.json did not return a valid OpenAPI schema (paths=0)"
+    fail "/healthz did not report Server readiness"
 fi
-
 # ----------------------------------------------------------------------------
 # 2. POST /api/runtime/status
 # ----------------------------------------------------------------------------

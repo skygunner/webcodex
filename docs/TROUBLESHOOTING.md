@@ -10,7 +10,7 @@ Server:
 
 - `webcodex --version` prints a version.
 - `webcodex server status --env-file /etc/webcodex/webcodex.env` reports the local server reachable.
-- `curl http://127.0.0.1:8080/openapi.json` returns OpenAPI JSON on the server host.
+- `curl -f http://127.0.0.1:8080/healthz` returns HTTP 200 on the server host.
 - Public HTTPS is reachable through nginx or your chosen reverse proxy, if used.
 
 Client:
@@ -221,7 +221,7 @@ Check the local service first, then the reverse proxy:
 ```bash
 systemctl status webcodex
 journalctl -u webcodex
-curl http://127.0.0.1:8080/openapi.json
+curl -f http://127.0.0.1:8080/healthz
 ```
 
 If local HTTP works but public HTTPS does not, check the nginx upstream host/port and TLS configuration. WebCodex CLI does not automate reverse proxy setup.
@@ -298,12 +298,7 @@ generic Actions surface no longer exposes the retired `listRuntimeTools` facade.
 
 ### GPT Action still uses an old schema
 
-Re-import the OpenAPI schema from the deployed `/openapi.json`, then check the
-operation count. It is derived from the current Adaptive Direct projection plus
-`call_runtime_tool`, so do not compare it with a fixed recommended count. The
-generated surface must remain below the GPT Actions 30-operation ceiling; if it
-reaches that ceiling, change the canonical Adaptive projection or a real protocol
-exception rather than silently truncating the schema.
+First confirm the deployed Server was built with `legacy-gpt-actions`; default builds do not mount `/openapi.json` or `/api/actions/*`. For an intentionally retained legacy deployment, re-import `/openapi.json`. Its operation set is a frozen compatibility snapshot plus `call_runtime_tool`; maintained Adaptive Runtime changes no longer grow it. Run the separate legacy workflow or the feature-enabled tests when changing that adapter.
 
 ### MCP tool list looks stale
 

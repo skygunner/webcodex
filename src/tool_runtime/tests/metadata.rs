@@ -2594,9 +2594,6 @@ async fn runtime_status_preserves_allowlisted_effective_config_across_projection
         shared_key_enabled: false,
         shared_key_remote_enabled: false,
         configured_public_url: Some("https://runtime.example.com".to_string()),
-        shared_key_configured: true,
-        shared_key_enabled: true,
-        shared_key_remote_enabled: false,
         oauth2_enabled: true,
         oauth2_shared_key_bridge_enabled: true,
         ..RuntimeInfo::default()
@@ -2622,14 +2619,7 @@ async fn runtime_status_preserves_allowlisted_effective_config_across_projection
     let auth = config["auth"].as_object().expect("effective auth object");
     assert_eq!(auth.len(), 6, "effective auth facts must stay allowlisted");
     assert_eq!(auth["shared_key_configured"], true);
-<<<<<<< HEAD
-    assert_eq!(auth["shared_key_enabled"], true);
-||||||| d6954518
-    assert_eq!(auth.len(), 4, "effective auth facts must stay allowlisted");
-    assert_eq!(auth["shared_key_enabled"], true);
-=======
     assert_eq!(auth["shared_key_enabled"], false);
->>>>>>> 77e551768aa87d8c2e88fec90d33a36a8653c634
     assert_eq!(auth["shared_key_remote_enabled"], false);
     assert_eq!(auth["anonymous_enabled"], true);
     assert_eq!(auth["oauth2_enabled"], true);

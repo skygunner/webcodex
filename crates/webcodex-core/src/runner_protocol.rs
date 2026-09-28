@@ -528,6 +528,17 @@ runner_capabilities! {
         #[serde(default)]
         pub project_validation_v1: bool = false;
     }
+    /// The Runner understands the additive portable package scope carried by
+    /// project validation requests. Older project_validation_v1 Runners reject
+    /// scoped requests before dispatch rather than interpreting an unknown field.
+    ProjectValidationPackageScope => RUNNER_CAPABILITY_PROJECT_VALIDATION_PACKAGE_SCOPE("project_validation_package_scope_v1"),
+    v2_baseline = false {
+        /// Additive bounded package scope for project validation. Missing on older
+        /// project_validation_v1 Runners is false and must fail closed before a
+        /// scoped planning request is sent.
+        #[serde(default, skip_serializing_if = "is_false")]
+        pub project_validation_package_scope_v1: bool = false;
+    }
     /// The Runner understands the first-class model-facing `go_test` tool identity
     /// and its durable `ShellJobValidationMetadata` contract. This is deliberately
     /// separate from Go JSON parsing support: older Runners may advertise
@@ -2702,6 +2713,7 @@ mod envelope_tests {
                 structured_cargo_check_packages: true,
                 structured_go_test_json: true,
                 project_validation_v1: false,
+                project_validation_package_scope_v1: false,
                 structured_go_test_tool: true,
                 structured_go_test_packages: true,
                 structured_process_argv: true,
@@ -4485,6 +4497,31 @@ mod filter_canonical_tests {
             "structured go_test rejects per-step environment overrides"
         );
         assert!(!env_injected.is_valid());
+    }
+
+    #[test]
+    fn canonical_scoped_project_validation_argv_accepts_bounded_package_shapes() {
+        let cargo_test = validation_step(
+            "test",
+            "cargo",
+            &["test", "-p", "package-a", "-p", "package-b"],
+        );
+        assert!(cargo_test.is_canonical());
+
+        let go_vet = validation_step("check", "go", &["vet", "./cmd/...", "./internal"]);
+        assert!(go_vet.is_canonical());
+
+        for rejected in [
+            validation_step("check", "go", &["vet", "not-relative"]),
+            validation_step("check", "go", &["vet", "./internal", "--flag"]),
+            validation_step(
+                "test",
+                "cargo",
+                &["test", "-p", "package-a", "-p", "package-a"],
+            ),
+        ] {
+            assert!(!rejected.is_canonical(), "{rejected:?}");
+        }
     }
 
     #[test]

@@ -1537,6 +1537,9 @@ fn runner_register_capabilities(cfg: &RunnerConfig) -> RunnerCapabilities {
     // infer this from generic structured validation support.
     capabilities.set(RunnerCapabilityId::StructuredGoTestJson, true);
     capabilities.set(RunnerCapabilityId::ProjectValidation, true);
+    // Portable package scope is additive to project_validation_v1 so mixed
+    // Server/Runner deployments fail closed before sending the expanded request.
+    capabilities.set(RunnerCapabilityId::ProjectValidationPackageScope, true);
     // This binary also understands the first-class go_test durable metadata
     // identity. Keep this independent from JSON parsing so an old Runner that
     // supported Connector Go evidence cannot be mistaken for a first-class

@@ -32,12 +32,17 @@ pub(crate) struct ListRunnersOptions {
 #[derive(Debug, Clone)]
 pub struct RuntimeInfo {
     pub auth_enabled: bool,
+    /// Raw base flag (`WEBCODEX_SHARED_KEY_ENABLED`) captured at Runtime
+    /// construction, before the remote-boundary policy is applied.
+    pub shared_key_configured: bool,
+    /// Effective direct shared-key policy captured at Runtime construction.
+    /// Unlike `shared_key_configured`, this is false at a remote boundary
+    /// unless the explicit remote opt-in is configured.
+    pub shared_key_enabled: bool,
+    /// Raw explicit remote opt-in (`WEBCODEX_SHARED_KEY_REMOTE_ENABLED`)
+    /// captured at Runtime construction.
+    pub shared_key_remote_enabled: bool,
     pub configured_public_url: Option<String>,
-    /// Effective MCP schema projection captured once when the Runtime is built.
-    /// Environment configuration is startup state, not per-request mutable input.
-    pub mcp_compact_schemas: bool,
-    /// Effective MCP App exposure captured once when the Runtime is built.
-    pub mcp_apps_enabled: bool,
     pub shared_key_configured: bool,
     pub shared_key_enabled: bool,
     pub shared_key_remote_enabled: bool,
@@ -77,14 +82,10 @@ impl RuntimeInfo {
             .filter(|s| !s.is_empty());
         Self {
             auth_enabled,
-            configured_public_url,
-            mcp_compact_schemas: crate::model_surface::effective_mcp_compact_schemas(
-                crate::config::mcp_compact_schemas_override(),
-            ),
-            mcp_apps_enabled: crate::config::mcp_apps_enabled(),
             shared_key_configured: crate::auth::shared_key_enabled(),
-            shared_key_enabled: crate::auth::direct_shared_key_enabled(config),
+            shared_key_enabled: crate::auth::direct_shared_key_enabled_with_quic(config, quic_cfg),
             shared_key_remote_enabled: crate::auth::shared_key_remote_enabled(),
+            configured_public_url,
             oauth2_enabled: config.oauth2.enabled,
             oauth2_shared_key_bridge_enabled: config.oauth2.enabled
                 && config.oauth2.shared_key_bridge_enabled,
@@ -108,7 +109,8 @@ impl ToolRuntime {
                     && self.runtime_info.shared_key_configured,
                 "shared_key_enabled": self.runtime_info.auth_enabled
                     && self.runtime_info.shared_key_enabled,
-                "shared_key_remote_enabled": self.runtime_info.shared_key_remote_enabled,
+                "shared_key_remote_enabled": self.runtime_info.auth_enabled
+                    && self.runtime_info.shared_key_remote_enabled,
                 "anonymous_enabled": self.runtime_info.auth_enabled
                     && crate::auth::allow_anonymous_enabled(),
                 "oauth2_enabled": self.runtime_info.oauth2_enabled,
@@ -1623,6 +1625,9 @@ impl Default for RuntimeInfo {
     fn default() -> Self {
         Self {
             auth_enabled: false,
+            shared_key_configured: false,
+            shared_key_enabled: false,
+            shared_key_remote_enabled: false,
             configured_public_url: None,
             mcp_compact_schemas: true,
             mcp_apps_enabled: true,

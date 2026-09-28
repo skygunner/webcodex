@@ -70,6 +70,34 @@ pub(crate) fn render_server_env(opts: &ServerInitOptions, token: &str) -> String
     content
 }
 
+/// True when the configured listen address binds to a non-loopback interface.
+/// Unparseable addresses fail closed as remote.
+pub(crate) fn server_listen_is_non_loopback(listen: &str) -> bool {
+    let listen = listen.trim();
+    match listen.parse::<std::net::SocketAddr>() {
+        Ok(addr) => !addr.ip().is_loopback(),
+        Err(_) => !listen
+            .strip_prefix("localhost:")
+            .and_then(|port| port.parse::<u16>().ok())
+            .is_some(),
+    }
+}
+
+/// Whether `server init` has enough public configuration to require the
+/// explicit remote shared-key opt-in. Any supplied public URL is treated as a
+/// remote boundary at initialization time; this keeps the generated env file
+/// fail-closed even if the URL later resolves differently.
+pub(crate) fn server_init_has_remote_boundary(opts: &ServerInitOptions) -> bool {
+    server_listen_is_non_loopback(&opts.listen) || opts.public_url.is_some()
+}
+
+/// Whether `server init` should emit `WEBCODEX_SHARED_KEY_ENABLED=true`.
+/// A remote/public deployment needs the explicit flag; a loopback-only init
+/// remains convenient by default.
+pub(crate) fn server_init_direct_shared_key_enabled(opts: &ServerInitOptions) -> bool {
+    opts.allow_remote_shared_key || !server_init_has_remote_boundary(opts)
+}
+
 pub(crate) fn read_env_file_value(path: &Path, key: &str) -> Result<Option<String>, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("failed to read env file {}: {}", path.display(), e))?;

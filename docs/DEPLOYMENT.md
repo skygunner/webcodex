@@ -436,21 +436,20 @@ manual config generation uses `webcodex runner init`.
 
 ## OAuth2
 
-OAuth2 remains disabled by default when a Server has no public origin. `webcodex server init --public-url https://your-domain.example` writes the public URL and enables OAuth with that exact issuer, but does **not** enable direct shared-key auth or the shared-key OAuth bridge. For the managed/default public path, the equivalent settings are:
+OAuth2 remains disabled by default when a Server has no public origin. `webcodex server init --public-url https://your-domain.example` writes the public URL and enables OAuth with that exact issuer. Direct shared-key auth and the shared-key OAuth bridge remain disabled across that public boundary unless you explicitly add `--allow-remote-shared-key`.
+
+For a hand-managed env file that intentionally enables remote shared-key auth and the shared-key OAuth bridge, configure:
 
 ```text
 WEBCODEX_PUBLIC_URL=https://your-domain.example
 WEBCODEX_OAUTH2_ENABLED=true
 WEBCODEX_OAUTH2_ISSUER=https://your-domain.example
+WEBCODEX_SHARED_KEY_ENABLED=true
+WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true
+WEBCODEX_OAUTH2_SHARED_KEY_BRIDGE=true
 ```
 
-Legacy/trusted hosted shared-key OAuth requires explicit acknowledgement:
-
-```bash
-webcodex server init --public-url https://your-domain.example --allow-remote-shared-key
-```
-
-The hand-managed equivalent additionally sets `WEBCODEX_SHARED_KEY_ENABLED=true`, `WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true`, and `WEBCODEX_OAUTH2_SHARED_KEY_BRIDGE=true`.
+The same remote opt-in is required when direct shared-key auth is configured and an enabled QUIC Runner listener binds a non-loopback address; the default QUIC listen address is `0.0.0.0:8443`.
 
 For ordinary repository machines, no managed login is required. Connect with the MCP client's exact callback:
 

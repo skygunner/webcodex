@@ -384,21 +384,20 @@ Plugin discovery 重启 Runner。
 
 ## OAuth2
 
-Server 没有公网 origin 时 OAuth2 仍默认关闭。使用 `webcodex server init --public-url https://your-domain.example` 时，初始化会写入 public URL，并以该 URL 作为 issuer 启用 OAuth，但**不会**自动启用 direct shared-key 或 shared-key OAuth bridge。managed/default 公网路径的手工 env 等价配置为：
+Server 没有公网 origin 时 OAuth2 仍默认关闭。使用 `webcodex server init --public-url https://your-domain.example` 时，初始化会写入 public URL，并以该 URL 作为 issuer 启用 OAuth。跨该 public boundary 的 direct shared-key auth 与 shared-key OAuth bridge 默认仍关闭；如需有意启用，必须额外传入 `--allow-remote-shared-key`。
+
+手工维护 env 且有意启用 remote shared-key auth 与 shared-key OAuth bridge 时，配置为：
 
 ```text
 WEBCODEX_PUBLIC_URL=https://your-domain.example
 WEBCODEX_OAUTH2_ENABLED=true
 WEBCODEX_OAUTH2_ISSUER=https://your-domain.example
+WEBCODEX_SHARED_KEY_ENABLED=true
+WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true
+WEBCODEX_OAUTH2_SHARED_KEY_BRIDGE=true
 ```
 
-legacy/受信 hosted shared-key OAuth 必须显式确认：
-
-```bash
-webcodex server init --public-url https://your-domain.example --allow-remote-shared-key
-```
-
-手工 env 的等价配置还需要 `WEBCODEX_SHARED_KEY_ENABLED=true`、`WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true` 与 `WEBCODEX_OAUTH2_SHARED_KEY_BRIDGE=true`。
+如果配置了 direct shared-key auth，同时启用的 QUIC Runner listener 绑定到非 loopback 地址，也必须使用同一个 remote opt-in；QUIC 默认监听地址为 `0.0.0.0:8443`。
 
 普通仓库机器不需要 managed login，直接使用 MCP 客户端要求的精确 callback：
 

@@ -248,9 +248,9 @@ fn server_init_writes_env_file_and_0600_permissions() {
     assert!(content.contains("WEBCODEX_PUBLIC_URL=https://example.test\n"));
     assert!(content.contains("WEBCODEX_OAUTH2_ENABLED=true\n"));
     assert!(content.contains("WEBCODEX_OAUTH2_ISSUER=https://example.test\n"));
-    assert!(content.contains("WEBCODEX_OAUTH2_SHARED_KEY_BRIDGE=true\n"));
-    assert!(content.contains("WEBCODEX_SHARED_KEY_ENABLED=true\n"));
-    assert!(content.contains("WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true\n"));
+    assert!(!content.contains("WEBCODEX_OAUTH2_SHARED_KEY_BRIDGE=true\n"));
+    assert!(!content.contains("WEBCODEX_SHARED_KEY_ENABLED=true\n"));
+    assert!(!content.contains("WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true\n"));
     let token = parse_env_content_value(&content, "WEBCODEX_TOKEN").unwrap();
     assert!(!output.contains(&token));
     assert!(!output.contains("token prefix:"), "{output}");
@@ -264,45 +264,71 @@ fn server_init_writes_env_file_and_0600_permissions() {
 }
 
 #[test]
-fn server_init_non_loopback_listen_does_not_enable_shared_key_by_default() {
+fn server_init_remote_shared_key_requires_explicit_opt_in() {
     let tmp = tempfile::tempdir().unwrap();
     let env_file = tmp.path().join("webcodex.env");
+    let data_dir = tmp.path().join("data");
     let opts = parse_server_init(&args(&[
         "--listen",
         "0.0.0.0:8080",
+        "--data-dir",
+        data_dir.to_str().unwrap(),
         "--env-file",
         env_file.to_str().unwrap(),
-        "--data-dir",
-        tmp.path().to_str().unwrap(),
+        "--json",
     ]))
     .unwrap();
-    assert!(!opts.allow_remote_shared_key);
-    run_server_init(opts).unwrap();
+    let output = run_server_init(opts).unwrap();
     let content = std::fs::read_to_string(&env_file).unwrap();
-    assert!(!content.contains("WEBCODEX_SHARED_KEY_ENABLED=true"));
-    assert!(!content.contains("WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true"));
+    assert!(!content.contains("WEBCODEX_SHARED_KEY_ENABLED=true\n"));
+    assert!(!content.contains("WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true\n"));
+    let summary: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(summary["shared_key_enabled"], false);
+    assert_eq!(summary["shared_key_remote_enabled"], false);
+
+    let opted_in = parse_server_init(&args(&[
+        "--listen",
+        "0.0.0.0:8080",
+        "--data-dir",
+        data_dir.to_str().unwrap(),
+        "--env-file",
+        env_file.to_str().unwrap(),
+        "--allow-remote-shared-key",
+        "--overwrite",
+        "--json",
+    ]))
+    .unwrap();
+    let output = run_server_init(opted_in).unwrap();
+    let content = std::fs::read_to_string(&env_file).unwrap();
+    assert!(content.contains("WEBCODEX_SHARED_KEY_ENABLED=true\n"));
+    assert!(content.contains("WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true\n"));
+    let summary: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(summary["shared_key_enabled"], true);
+    assert_eq!(summary["shared_key_remote_enabled"], true);
 }
 
 #[test]
-fn server_init_public_url_does_not_enable_remote_shared_key_by_default() {
+fn server_init_localhost_listen_keeps_local_shared_key_default() {
     let tmp = tempfile::tempdir().unwrap();
     let env_file = tmp.path().join("webcodex.env");
+    let data_dir = tmp.path().join("data");
     let opts = parse_server_init(&args(&[
+        "--listen",
+        "localhost:8080",
+        "--data-dir",
+        data_dir.to_str().unwrap(),
         "--env-file",
         env_file.to_str().unwrap(),
-        "--data-dir",
-        tmp.path().to_str().unwrap(),
-        "--public-url",
-        "https://example.test",
+        "--json",
     ]))
     .unwrap();
-    assert!(!opts.allow_remote_shared_key);
-    run_server_init(opts).unwrap();
+    let output = run_server_init(opts).unwrap();
     let content = std::fs::read_to_string(&env_file).unwrap();
-    assert!(!content.contains("WEBCODEX_SHARED_KEY_ENABLED=true"));
-    assert!(content.contains("WEBCODEX_OAUTH2_ENABLED=true\n"));
-    assert!(!content.contains("WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true"));
-    assert!(!content.contains("WEBCODEX_OAUTH2_SHARED_KEY_BRIDGE=true"));
+    assert!(content.contains("WEBCODEX_SHARED_KEY_ENABLED=true\n"));
+    assert!(!content.contains("WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true\n"));
+    let summary: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(summary["shared_key_enabled"], true);
+    assert_eq!(summary["shared_key_remote_enabled"], false);
 }
 
 #[test]

@@ -2534,6 +2534,53 @@ async fn runtime_status_includes_build_metadata() {
     assert!(build.get("built_at").is_some());
 }
 
+#[test]
+fn runtime_info_snapshots_remote_shared_key_policy() {
+    let env = crate::auth::AuthEnvGuard::auth_required();
+    env.enable_direct_shared_key();
+    let config = crate::Config {
+        addr: "0.0.0.0:8080".to_string(),
+        data_dir: std::path::PathBuf::from("./data"),
+        token: Some("secret".to_string()),
+        max_text_size: 2 * 1024 * 1024,
+        oauth2: crate::OAuth2Config::default(),
+    };
+    let quic = crate::config::QuicServerConfig::default();
+    let blocked = RuntimeInfo::from_config_with_quic_config(&config, &quic);
+    assert!(blocked.shared_key_configured);
+    assert!(!blocked.shared_key_enabled);
+    assert!(!blocked.shared_key_remote_enabled);
+
+    let local_config = crate::Config {
+        addr: "127.0.0.1:8080".to_string(),
+        ..config.clone()
+    };
+    let mut remote_quic = crate::config::QuicServerConfig::default();
+    remote_quic.enabled = true;
+    remote_quic.listen = "0.0.0.0:8443".to_string();
+    let quic_blocked = RuntimeInfo::from_config_with_quic_config(&local_config, &remote_quic);
+    assert!(quic_blocked.shared_key_configured);
+    assert!(!quic_blocked.shared_key_enabled);
+    assert!(!quic_blocked.shared_key_remote_enabled);
+
+    env.enable_remote_shared_key();
+    assert!(crate::auth::direct_shared_key_enabled(&config));
+    assert!(blocked.shared_key_configured);
+    assert!(
+        !blocked.shared_key_enabled,
+        "runtime info must not drift after startup"
+    );
+    assert!(
+        !blocked.shared_key_remote_enabled,
+        "runtime info must not drift after startup"
+    );
+
+    let enabled = RuntimeInfo::from_config_with_quic_config(&config, &quic);
+    assert!(enabled.shared_key_configured);
+    assert!(enabled.shared_key_enabled);
+    assert!(enabled.shared_key_remote_enabled);
+}
+
 #[tokio::test]
 async fn runtime_status_preserves_allowlisted_effective_config_across_projections() {
     let mut env = crate::test_support::TestEnvGuard::new();
@@ -2543,6 +2590,9 @@ async fn runtime_status_preserves_allowlisted_effective_config_across_projection
 
     let runtime = runtime_with_info(RuntimeInfo {
         auth_enabled: true,
+        shared_key_configured: true,
+        shared_key_enabled: false,
+        shared_key_remote_enabled: false,
         configured_public_url: Some("https://runtime.example.com".to_string()),
         shared_key_configured: true,
         shared_key_enabled: true,
@@ -2572,7 +2622,14 @@ async fn runtime_status_preserves_allowlisted_effective_config_across_projection
     let auth = config["auth"].as_object().expect("effective auth object");
     assert_eq!(auth.len(), 6, "effective auth facts must stay allowlisted");
     assert_eq!(auth["shared_key_configured"], true);
+<<<<<<< HEAD
     assert_eq!(auth["shared_key_enabled"], true);
+||||||| d6954518
+    assert_eq!(auth.len(), 4, "effective auth facts must stay allowlisted");
+    assert_eq!(auth["shared_key_enabled"], true);
+=======
+    assert_eq!(auth["shared_key_enabled"], false);
+>>>>>>> 77e551768aa87d8c2e88fec90d33a36a8653c634
     assert_eq!(auth["shared_key_remote_enabled"], false);
     assert_eq!(auth["anonymous_enabled"], true);
     assert_eq!(auth["oauth2_enabled"], true);

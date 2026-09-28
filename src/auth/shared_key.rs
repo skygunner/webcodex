@@ -72,6 +72,84 @@ pub(crate) fn is_managed_token_prefix(token: &str) -> bool {
     token.starts_with("wc_")
 }
 
+/// Read the remote shared-key opt-in flag from the environment. When true,
+/// direct shared-key authentication is allowed across a remote boundary
+/// (HTTP bind, public URL, or enabled non-loopback QUIC listener). The flag alone
+/// is inert: it must be combined with `WEBCODEX_SHARED_KEY_ENABLED`.
+pub(crate) fn shared_key_remote_enabled() -> bool {
+    crate::config::env_flag("WEBCODEX_SHARED_KEY_REMOTE_ENABLED").unwrap_or(false)
+}
+
+/// True when `WEBCODEX_PUBLIC_URL` is non-empty and points at a non-loopback
+/// host. Absent or empty values are local; unparseable values and hosts that
+/// cannot be verified as loopback fail closed as remote.
+pub(crate) fn configured_public_url_is_non_loopback() -> bool {
+    match std::env::var("WEBCODEX_PUBLIC_URL") {
+        Ok(raw) if !raw.trim().is_empty() => match url::Url::parse(raw.trim()) {
+            Ok(parsed) => match parsed.host_str() {
+                Some(host) => {
+                    !host.eq_ignore_ascii_case("localhost")
+                        && !host
+                            .parse::<std::net::IpAddr>()
+                            .is_ok_and(|ip| ip.is_loopback())
+                }
+                None => true,
+            },
+            Err(_) => true,
+        },
+        _ => false,
+    }
+}
+
+fn quic_listener_is_non_loopback(quic: &crate::config::QuicServerConfig) -> bool {
+    if !quic.enabled {
+        return false;
+    }
+    quic.listen
+        .trim()
+        .parse::<std::net::SocketAddr>()
+        .map(|addr| !addr.ip().is_loopback())
+        .unwrap_or(true)
+}
+
+/// True when direct shared-key auth is configured AND the deployment crosses
+/// any remote boundary: HTTP bind, public URL, or an enabled non-loopback QUIC
+/// Runner listener. At that boundary the base flag alone must not enable the
+/// fallback.
+pub(crate) fn shared_key_requires_remote_opt_in_with_quic(
+    config: &crate::Config,
+    quic: &crate::config::QuicServerConfig,
+) -> bool {
+    shared_key_enabled()
+        && (!config.is_loopback_bound()
+            || configured_public_url_is_non_loopback()
+            || quic_listener_is_non_loopback(quic))
+}
+
+pub(crate) fn shared_key_requires_remote_opt_in(config: &crate::Config) -> bool {
+    let quic = crate::config::QuicServerConfig::from_env();
+    shared_key_requires_remote_opt_in_with_quic(config, &quic)
+}
+
+/// The single authoritative policy for direct shared-key authentication,
+/// shared by the HTTP middleware and the QUIC/Runner transport. Local-only
+/// deployments keep the quick-start default; any remotely exposed direct
+/// shared-key surface requires the explicit
+/// `WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true` opt-in.
+pub(crate) fn direct_shared_key_enabled_with_quic(
+    config: &crate::Config,
+    quic: &crate::config::QuicServerConfig,
+) -> bool {
+    shared_key_enabled()
+        && (!shared_key_requires_remote_opt_in_with_quic(config, quic)
+            || shared_key_remote_enabled())
+}
+
+pub(crate) fn direct_shared_key_enabled(config: &crate::Config) -> bool {
+    let quic = crate::config::QuicServerConfig::from_env();
+    direct_shared_key_enabled_with_quic(config, &quic)
+}
+
 /// SHA-256 hex of a shared key, used for lightweight group isolation. Two
 /// requests presenting the same key land in the same group. The shared key is
 /// trimmed before hashing so direct shared-key visibility and the OAuth bridge

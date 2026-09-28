@@ -1614,6 +1614,8 @@ fn mcp_tools_list_inputs_equal_canonical_except_descriptions_and_host_file_overl
     }
 }
 
+// The exact manifest must stay canonical even when the request adapter reads
+// compact=true; the explicit flag below covers both projections.
 #[tokio::test]
 async fn mcp_compact_preserves_stateless_wrappers_app_metadata_and_exact_manifest() {
     let mut auth = crate::auth::shared_key_context("compact-overlays-test");
@@ -1985,6 +1987,7 @@ async fn mcp_recording_session_ref_fails_closed_when_malformed() {
         .as_str()
         .is_some_and(|message| message.contains("unknown_session_ref")));
 }
+
 #[tokio::test]
 async fn mcp_compact_stateless_wrapper_ids_still_reject_malformed_invocations() {
     for compact in [false, true] {
@@ -2437,6 +2440,8 @@ async fn mcp_tools_list_stateless_serialized_size_budget() {
     }
 }
 
+// The compact switch is the tested product behavior: `tools/call` must be
+// unaffected while the Runtime's snapshot reads compact=true.
 #[tokio::test]
 async fn mcp_tools_call_still_returns_structured_content_under_compact_flag() {
     let runtime = test_runtime_with_mcp_settings(true, true);
@@ -2456,6 +2461,39 @@ async fn mcp_tools_call_still_returns_structured_content_under_compact_flag() {
     assert!(value["result"]["content"].is_array());
     assert!(value["result"]["structuredContent"].is_object());
     assert!(value["result"]["structuredContent"]["success"].is_boolean());
+}
+
+#[tokio::test]
+async fn mcp_text_json_compat_uses_runtime_snapshot() {
+    let runtime_off = test_runtime_with_mcp_snapshot(true, true, false);
+    let runtime_on = test_runtime_with_mcp_snapshot(true, true, true);
+    let request = || {
+        rpc(
+            "tools/call",
+            Some(json!(3003)),
+            adaptive_runtime_gateway_params("list_projects", json!({})),
+        )
+    };
+
+    let McpOutcome::Ok(off) = handle_mcp_request(&runtime_off, request(), None).await else {
+        panic!("text-JSON compat OFF call failed");
+    };
+    let McpOutcome::Ok(on) = handle_mcp_request(&runtime_on, request(), None).await else {
+        panic!("text-JSON compat ON call failed");
+    };
+
+    assert_eq!(
+        off["result"]["content"][0]["text"],
+        "WebCodex tool completed successfully."
+    );
+    assert_eq!(
+        on["result"]["content"][0]["text"],
+        serde_json::to_string(&on["result"]["structuredContent"]).unwrap()
+    );
+    assert_eq!(
+        off["result"]["structuredContent"], on["result"]["structuredContent"],
+        "the snapshot changes only the compatibility text projection"
+    );
 }
 
 #[tokio::test]

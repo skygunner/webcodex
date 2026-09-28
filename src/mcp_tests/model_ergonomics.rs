@@ -3,6 +3,8 @@ use super::*;
 // Durable model-ergonomics and MCP tool-surface measurement integration tests.
 // Keep these separate from the general HTTP transport lifecycle coverage.
 
+// Explicit compact-schema=false keeps the full outputSchema projection. Use an
+// explicit runtime snapshot so no process-global env guard is needed.
 #[tokio::test]
 async fn http_mcp_tools_list_explicit_full_projection_audits_effective_policy() {
     let config = test_config(Some("secret"));

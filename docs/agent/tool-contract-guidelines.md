@@ -386,12 +386,14 @@ still be a meaningful model/environment interaction, and a ModelHidden tool can
 still represent real work.
 
 Contract consistency tests iterate `tool_definitions()` rather than maintaining a second
-complete name/risk/capability table. Curated membership remains in
-`TOOL_DISCOVERY_GROUPS`; `discovery_group_names_for_tool` supplies its ordered reverse
-view. Group/category compatibility, manifest intents and recommended flows remain
-independent selection policies. Structured-validation output family admission follows
-`ToolExecutionForm::StructuredValidation`; tool-specific output fields remain explicit.
-
+complete name/risk/capability table. Each ToolDefinition owns exactly one category;
+`group_tool_names_by_category` derives sorted, non-overlapping category projections
+from the caller's already-admitted tool selection. `list_tools` and `tool_manifest`
+use the same taxonomy. Intent ranking and recommended flows remain deliberately
+cross-category workflow views, not another category registry. Categories and Direct
+rank never grant authority or determine execution/Activity semantics. Structured-validation
+output family admission follows `ToolExecutionForm::StructuredValidation`; tool-specific
+output fields remain explicit.
 Input contract tests share `test_support::sample_tool_args_for_spec` in tool-contracts.
 It chooses declared const/default/enum values, then bounded type/required-child samples;
 unsupported constraints fail rather than silently inventing a fixture. Keep semantic
@@ -416,6 +418,24 @@ never permission to advertise implementation support. Only the legacy `shell`/`g
 implementation switches are copied from configuration; a new wire field cannot inherit
 advertisement merely from config. All-enabled fixtures are tests only and iterate the
 typed catalog.
+
+### Stable schemas and optional workflow guidance
+
+Host tool-schema refresh is an integration operation, not a workflow preference.
+Do not change Direct ranks, tool names, schemas, descriptions or App associations
+when an operator changes which workflow is recommended. Keep those contracts
+static; deliver current recommendations through the existing bounded context
+channel. An active conversation may retain older guidance: refresh context after
+an announced policy change, not the Host tool registration, and do not poll.
+
+Goal selection and Host interaction assumptions are separate, typed deployment
+facts in `ModelWorkflowPolicy`. The baseline is on-demand; detailed Goal recipes
+are an optional context chapter. Existing Goal/Wake/Job state is never retired,
+completed or replayed by changing preference. A message API or accepted dispatch
+is not proof that user confirmation is unnecessary. See
+[`model-workflow-policy.md`](model-workflow-policy.md) for configuration and the
+schema/data-refresh distinction. Extend this small boundary only for concrete
+workflows, not a per-tool feature-flag or general rules engine.
 
 ## 10. Compatibility follows concrete consumers, not historical implementation
 

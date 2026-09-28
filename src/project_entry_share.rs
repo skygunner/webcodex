@@ -482,6 +482,31 @@ struct CloudflareTunnelStartup {
     url_rx: mpsc::Receiver<String>,
 }
 
+/// Owns the startup-stage process group until it is either explicitly
+/// terminated or transferred into a live `CloudflareTunnel`. This closes the
+/// async-cancellation/error gap before the tunnel object itself exists: Tokio's
+/// `Child::kill_on_drop` only kills the direct child, not inherited descendants.
+struct CloudflareStartupProcessGroupGuard {
+    process_group_id: Option<u32>,
+}
+
+impl CloudflareStartupProcessGroupGuard {
+    fn new(process_group_id: Option<u32>) -> Self {
+        Self { process_group_id }
+    }
+
+    fn take(&mut self) -> Option<u32> {
+        self.process_group_id.take()
+    }
+}
+
+impl Drop for CloudflareStartupProcessGroupGuard {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        signal_cloudflare_process_group(self.process_group_id.take());
+    }
+}
+
 impl CloudflareTunnel {
     async fn wait_for_exit(&mut self) -> Result<(), ProductError> {
         let status = self
@@ -515,6 +540,9 @@ impl Drop for CloudflareTunnel {
     }
 }
 
+/// Put cloudflared in its own process group so the whole tree it spawns
+/// (including backgrounded descendants and the npm wrapper's children) can be
+/// reaped as a group. `process_group(0)` makes the child's pid its group id.
 #[cfg(unix)]
 fn configure_cloudflare_process_tree(command: &mut Command) {
     use std::os::unix::process::CommandExt;
@@ -524,18 +552,32 @@ fn configure_cloudflare_process_tree(command: &mut Command) {
 #[cfg(not(unix))]
 fn configure_cloudflare_process_tree(_command: &mut Command) {}
 
+/// Best-effort SIGKILL of the tunnel's whole process group (`kill(-pgid,
+/// SIGKILL)`; a negative target signals every process in the group). Reaps
+/// background descendants `cloudflared` or its npm wrapper may leave behind,
+/// which a direct child kill alone would leak. `pgid` is always our own
+/// child's pid (made a group leader via `process_group(0)`), so this only ever
+/// targets the tunnel's own subtree. Uses the direct syscall: the `kill`
+/// binary rejects negative pgid arguments on some coreutils builds. Failure
+/// (e.g. the group already fully exited, ESRCH) is expected and ignored.
 #[cfg(unix)]
 fn signal_cloudflare_process_group(process_group_id: Option<u32>) {
+    // Guard against ever signalling pid 0 / -1 ("current group" / "all
+    // processes") if a caller somehow passed a zero id.
     let Some(process_group_id) = process_group_id.filter(|value| *value > 0) else {
         return;
     };
     // SAFETY: the process group id is captured from our own child immediately
-    // after spawning it as a new group leader. ESRCH is an expected no-op.
+    // after spawning it as a new group leader. A stale/invalid pgid yields
+    // ESRCH, which we deliberately ignore.
     unsafe {
         libc::kill(-(process_group_id as i32), libc::SIGKILL);
     }
 }
 
+/// Tear down the tunnel process tree: on Unix signal the whole group (covering
+/// any background descendants a direct kill would miss), then reap the child.
+/// On non-Unix targets fall back to a direct child kill.
 async fn terminate_cloudflare_process_tree(child: &mut Child, process_group_id: Option<u32>) {
     #[cfg(unix)]
     signal_cloudflare_process_group(process_group_id);
@@ -1038,6 +1080,7 @@ async fn wait_for_cloudflare_quick_url(
         recent,
         mut url_rx,
     } = startup;
+    let mut process_group_guard = CloudflareStartupProcessGroupGuard::new(process_group_id);
     loop {
         if let Some(status) = child.try_wait().map_err(|_| tunnel_runtime_error())? {
             // The child can exit after writing a valid Quick Tunnel URL but before
@@ -1052,13 +1095,13 @@ async fn wait_for_cloudflare_quick_url(
                     url,
                     CloudflareTunnel {
                         child,
-                        process_group_id,
+                        process_group_id: process_group_guard.take(),
                         stdout_task,
                         stderr_task,
                     },
                 ));
             }
-            terminate_cloudflare_process_tree(&mut child, process_group_id).await;
+            terminate_cloudflare_process_tree(&mut child, process_group_guard.take()).await;
             // Kill any descendants first so inherited pipe handles are closed.
             // Bytes already written to the kernel pipes remain readable, letting
             // the reader tasks deterministically drain diagnostics to EOF instead
@@ -1078,7 +1121,7 @@ async fn wait_for_cloudflare_quick_url(
         }
         let now = Instant::now();
         if now >= deadline {
-            terminate_cloudflare_process_tree(&mut child, process_group_id).await;
+            terminate_cloudflare_process_tree(&mut child, process_group_guard.take()).await;
             stdout_task.abort();
             stderr_task.abort();
             return Err(ProductError::new(
@@ -1093,7 +1136,7 @@ async fn wait_for_cloudflare_quick_url(
                 url,
                 CloudflareTunnel {
                     child,
-                    process_group_id,
+                    process_group_id: process_group_guard.take(),
                     stdout_task,
                     stderr_task,
                 },
@@ -1689,9 +1732,96 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn tunnel_test_lock() -> &'static tokio::sync::Mutex<()> {
+        static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        &LOCK
+    }
+
+    #[cfg(unix)]
+    enum FakeCloudflaredLifecycle {
+        StartupTimeout,
+        Ready,
+        ParentExit,
+    }
+
+    /// Make a fake cloudflared parent that creates its own long-lived shell
+    /// descendant, writes that child's PID only after the background spawn
+    /// succeeds, then follows the requested tunnel lifecycle. The background
+    /// child inherits the parent's process group, exactly like a descendant
+    /// cloudflared or npm wrapper leaves behind in production. It traps the
+    /// term-able signals, so only the group-level SIGKILL used by cleanup can
+    /// reap it: a stray SIGTERM/SIGINT code path would leave it alive and
+    /// `assert_pid_gone` would fail. The subshell itself is the recorded
+    /// descendant (no extra `sleep` child), so a failed background spawn
+    /// leaves the PID file empty and the test fails instead of passing vacuously.
+    #[cfg(unix)]
+    fn fake_cloudflared_with_descendant(
+        lifecycle: FakeCloudflaredLifecycle,
+    ) -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let lifecycle_script = match lifecycle {
+            FakeCloudflaredLifecycle::StartupTimeout => "while :; do :; done\n",
+            FakeCloudflaredLifecycle::Ready => {
+                "echo https://cleanup-test.trycloudflare.com >&2\nwhile :; do :; done\n"
+            }
+            FakeCloudflaredLifecycle::ParentExit => {
+                "echo https://short-lived.trycloudflare.com >&2\nexit 9\n"
+            }
+        };
+        let script = format!(
+            "#!/bin/sh\n( trap '' TERM INT HUP; while :; do :; done ) &\ndescendant=$!\nprintf '%s\\n' \"$descendant\" > \"$0.descendant-pid\"\n{lifecycle_script}"
+        );
+        let (temp, binary) = fake_cloudflared(&script);
+        let pid_file = PathBuf::from(format!("{}.descendant-pid", binary.display()));
+        (temp, binary, pid_file)
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_pid_file(path: &Path, deadline: Instant) -> u32 {
+        loop {
+            if let Ok(value) = fs::read_to_string(path) {
+                if let Ok(pid) = value.trim().parse::<u32>() {
+                    assert!(pid > 0, "fake cloudflared published pid 0");
+                    return pid;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "fake cloudflared did not publish descendant pid at {}",
+                path.display()
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    #[cfg(unix)]
+    async fn assert_pid_gone(pid: u32, deadline: Instant) {
+        loop {
+            // SAFETY: `kill(pid, 0)` does not signal the process. It only checks
+            // whether the kernel still has a process table entry for this exact
+            // PID. The test's fake parent published this PID after spawning the
+            // descendant, so ESRCH is the required proof that cleanup reaped it.
+            let result = unsafe { libc::kill(pid as i32, 0) };
+            if result == -1 {
+                let error = std::io::Error::last_os_error();
+                assert_eq!(
+                    error.raw_os_error(),
+                    Some(libc::ESRCH),
+                    "descendant pid {pid} became inaccessible for an unexpected reason: {error}"
+                );
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "pid {pid} still exists after the process-tree cleanup deadline"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
-    async fn tunnel_startup_failure_is_reported() {
-        let _process_guard = TUNNEL_PROCESS_TEST_LOCK.lock().await;
+    async fn cloudflare_quick_tunnel_startup_failure_reports_bounded_diagnostics() {
+        let _lock = tunnel_test_lock().lock().await;
         let (_temp, binary) = fake_cloudflared("#!/bin/sh\necho startup-failed >&2\nexit 7\n");
         let error = start_cloudflare_quick_with_binary(
             &binary,
@@ -1706,35 +1836,41 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn tunnel_startup_timeout_kills_fake_process() {
-        let _process_guard = TUNNEL_PROCESS_TEST_LOCK.lock().await;
-        // Separate spawn from deadline observation so the test does not depend on
-        // the scheduler running a fake process within an arbitrary 100 ms window.
-        // The fake tunnel also owns a live descendant so this proves tree cleanup,
-        // not merely direct-child reaping.
-        let (_temp, binary) = fake_cloudflared(
-            "#!/bin/sh\nsh -c 'while :; do :; done' &\necho $! > \"$0.child-pid\"\nwhile :; do :; done\n",
-        );
-        let child_pid_file = PathBuf::from(format!("{}.child-pid", binary.display()));
+    async fn cloudflare_quick_tunnel_cancelled_startup_reaps_descendant() {
+        let _lock = tunnel_test_lock().lock().await;
+        let (_temp, binary, pid_file) =
+            fake_cloudflared_with_descendant(FakeCloudflaredLifecycle::StartupTimeout);
         let startup =
             spawn_cloudflare_quick_with_binary(&binary, "http://127.0.0.1:23456").unwrap();
-        let parent_pid = startup.child.id().expect("spawned fake cloudflared pid");
-        let descendant_pid = {
-            let deadline = Instant::now() + Duration::from_secs(2);
-            loop {
-                if let Ok(value) = fs::read_to_string(&child_pid_file) {
-                    break value
-                        .trim()
-                        .parse::<u32>()
-                        .expect("fake cloudflared descendant pid");
-                }
-                assert!(
-                    Instant::now() < deadline,
-                    "fake cloudflared did not publish descendant pid"
-                );
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        };
+        let parent_pid = startup.child.id().unwrap();
+        let descendant_pid =
+            wait_for_pid_file(&pid_file, Instant::now() + Duration::from_secs(2)).await;
+        assert_ne!(parent_pid, descendant_pid);
+
+        let cancelled = tokio::time::timeout(
+            Duration::from_millis(20),
+            wait_for_cloudflare_quick_url(startup, Instant::now() + Duration::from_secs(5)),
+        )
+        .await;
+        assert!(cancelled.is_err(), "startup future unexpectedly completed");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        assert_pid_gone(parent_pid, deadline).await;
+        assert_pid_gone(descendant_pid, deadline).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cloudflare_quick_tunnel_startup_timeout_reaps_descendant() {
+        let _lock = tunnel_test_lock().lock().await;
+        let (_temp, binary, pid_file) =
+            fake_cloudflared_with_descendant(FakeCloudflaredLifecycle::StartupTimeout);
+        let startup =
+            spawn_cloudflare_quick_with_binary(&binary, "http://127.0.0.1:23456").unwrap();
+        let parent_pid = startup.child.id().unwrap();
+        let descendant_pid =
+            wait_for_pid_file(&pid_file, Instant::now() + Duration::from_secs(2)).await;
+        assert_ne!(parent_pid, descendant_pid);
         let error = wait_for_cloudflare_quick_url(startup, Instant::now())
             .await
             .unwrap_err();
@@ -1744,34 +1880,17 @@ mod tests {
             "unexpected tunnel startup error: {}",
             error.message
         );
-        for (label, pid) in [
-            ("fake cloudflared parent", parent_pid),
-            ("fake cloudflared descendant", descendant_pid),
-        ] {
-            let deadline = Instant::now() + Duration::from_secs(2);
-            loop {
-                let probe = unsafe { libc::kill(pid as i32, 0) };
-                if probe == -1
-                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
-                {
-                    break;
-                }
-                assert!(
-                    Instant::now() < deadline,
-                    "timed-out {label} pid {pid} remained alive"
-                );
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        assert_pid_gone(parent_pid, deadline).await;
+        assert_pid_gone(descendant_pid, deadline).await;
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn tunnel_stop_reaps_fake_process() {
-        let _process_guard = TUNNEL_PROCESS_TEST_LOCK.lock().await;
-        let (_temp, binary) = fake_cloudflared(
-            "#!/bin/sh\necho https://cleanup-test.trycloudflare.com >&2\nsleep 5\n",
-        );
+    async fn cloudflare_quick_tunnel_stop_reaps_descendant() {
+        let _lock = tunnel_test_lock().lock().await;
+        let (_temp, binary, pid_file) =
+            fake_cloudflared_with_descendant(FakeCloudflaredLifecycle::Ready);
         let (_url, mut tunnel) = start_cloudflare_quick_with_binary(
             &binary,
             "http://127.0.0.1:23456",
@@ -1779,16 +1898,22 @@ mod tests {
         )
         .await
         .unwrap();
+        let parent_pid = tunnel.child.id().unwrap();
+        let descendant_pid =
+            wait_for_pid_file(&pid_file, Instant::now() + Duration::from_secs(2)).await;
+        assert_ne!(parent_pid, descendant_pid);
         tunnel.stop().await;
         assert!(tunnel.child.try_wait().unwrap().is_some());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        assert_pid_gone(descendant_pid, deadline).await;
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn tunnel_early_exit_after_url_is_supervised() {
-        let _process_guard = TUNNEL_PROCESS_TEST_LOCK.lock().await;
-        let (_temp, binary) =
-            fake_cloudflared("#!/bin/sh\necho https://short-lived.trycloudflare.com >&2\nexit 9\n");
+    async fn cloudflare_quick_tunnel_parent_exit_reaps_descendant() {
+        let _lock = tunnel_test_lock().lock().await;
+        let (_temp, binary, pid_file) =
+            fake_cloudflared_with_descendant(FakeCloudflaredLifecycle::ParentExit);
         let (url, mut tunnel) = start_cloudflare_quick_with_binary(
             &binary,
             "http://127.0.0.1:23456",
@@ -1797,8 +1922,12 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(url, "https://short-lived.trycloudflare.com");
+        let descendant_pid =
+            wait_for_pid_file(&pid_file, Instant::now() + Duration::from_secs(2)).await;
         let error = tunnel.wait_for_exit().await.unwrap_err();
         assert_eq!(error.code, "tunnel_unavailable");
         assert!(error.message.contains("stopped unexpectedly"));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        assert_pid_gone(descendant_pid, deadline).await;
     }
 }

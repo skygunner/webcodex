@@ -1520,6 +1520,14 @@ pub enum ToolCall {
         session_id: Option<String>,
     },
 
+    /// Work Result App-only lazy read of one completed call in the current
+    /// canonical Host Window. The Window identity is supplied only by Host sideband.
+    WorkResultActivityDetail {
+        project: String,
+        #[schemars(length(min = 1, max = 128))]
+        server_trace_id: String,
+    },
+
     /// Work Result App-only collaboration write. The App fixes the business kind
     /// to guidance + requires_ack and supplies one bounded replay key so uncertain
     /// Host delivery can be retried without duplicating the retained message.
@@ -5500,6 +5508,7 @@ impl ToolCall {
             Self::FinishCodingTask { .. } => "finish_coding_task",
             Self::PresentWorkResult { .. } => "present_work_result",
             Self::WorkResultState { .. } => "work_result_state",
+            Self::WorkResultActivityDetail { .. } => "work_result_activity_detail",
             Self::WorkResultSendMessage { .. } => "work_result_send_message",
             Self::ChangesFileDiff { .. } => "changes_file_diff",
             Self::SessionSummary { .. } => "session_summary",
@@ -5762,6 +5771,7 @@ impl ToolCall {
             // evidence. An optional Session selector is association evidence only.
             Self::PresentWorkResult { .. }
             | Self::WorkResultState { .. }
+            | Self::WorkResultActivityDetail { .. }
             | Self::WorkResultSendMessage { .. }
             | Self::ChangesFileDiff { .. }
             | Self::SessionHandoffState { .. } => None,
@@ -5913,6 +5923,7 @@ impl ToolCall {
             Self::FinishCodingTask { project, .. }
             | Self::PresentWorkResult { project, .. }
             | Self::WorkResultState { project, .. }
+            | Self::WorkResultActivityDetail { project, .. }
             | Self::WorkResultSendMessage { project, .. }
             | Self::ChangesFileDiff { project, .. } => Some(project.as_str()),
             Self::UpdateSessionContext { project, .. }

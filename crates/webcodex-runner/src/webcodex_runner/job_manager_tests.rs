@@ -152,15 +152,16 @@ fn heartbeat_delivery_is_minimal_liveness_only_payload() {
     snapshot.stdout.tail = "retained stdout\n".to_string();
     snapshot.stderr.tail = "retained stderr\n".to_string();
     snapshot.command_execution_state = Some(ShellCommandExecutionState::OutcomeUnknown);
+    snapshot.context.validation_steps = vec!["check".to_string(), "test".to_string()];
     snapshot.validation_progress = Some(ShellJobValidationProgress {
         completed: 1,
-        current_step: Some("check".to_string()),
+        current_step: Some("test".to_string()),
         failed_step: None,
     });
     snapshot.activity = Some(ShellJobActivity {
         state: ShellJobActivityState::Working,
-        phase: ShellJobActivityPhase::ProcessRunning,
-        source: ShellJobActivitySource::RunnerExecution,
+        phase: ShellJobActivityPhase::ValidationTest,
+        source: ShellJobActivitySource::ValidationPlan,
     });
     lock_unpoison(&manager.jobs).insert(
         job_id.to_string(),
@@ -198,7 +199,14 @@ fn heartbeat_delivery_is_minimal_liveness_only_payload() {
     assert!(update.duration_ms.is_none());
     assert!(update.error.is_none());
     assert!(update.command_execution_state.is_none());
-    assert!(update.validation_progress.is_none());
+    assert_eq!(
+        update.validation_progress,
+        Some(ShellJobValidationProgress {
+            completed: 1,
+            current_step: Some("test".to_string()),
+            failed_step: None,
+        })
+    );
     assert!(update.test_count_evidence.is_none());
     assert!(update.activity.is_none());
     assert!(!update.finished);

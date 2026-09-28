@@ -381,7 +381,9 @@ struct PendingJobUpdateDelivery {
     activity: Option<ShellJobActivity>,
     finished: bool,
     /// Sequence-only liveness marker. Delivery must not project the current
-    /// snapshot's logs/activity/result fields into this older sequence.
+    /// snapshot's logs/activity/result fields into this older sequence. Active
+    /// validation Jobs repeat their unchanged progress cursor because the Server
+    /// validation protocol requires that proof on every running validation update.
     liveness_only: bool,
 }
 
@@ -410,7 +412,7 @@ impl PendingJobUpdateDelivery {
             duration_ms: None,
             error: None,
             command_execution_state: None,
-            validation_progress: None,
+            validation_progress: job.snapshot.validation_progress.clone(),
             test_count_evidence: None,
             activity: None,
             finished: false,
@@ -549,7 +551,7 @@ fn job_update_from_delivery(
             duration_ms: None,
             error: None,
             command_execution_state: None,
-            validation_progress: None,
+            validation_progress: pending.validation_progress.clone(),
             test_count_evidence: None,
             activity: None,
             finished: false,

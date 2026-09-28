@@ -1681,15 +1681,7 @@ mod tests {
     #[cfg(unix)]
     fn fake_cloudflared(script: &str) -> (tempfile::TempDir, PathBuf) {
         use std::os::unix::fs::PermissionsExt;
-        // The host may intentionally mount /tmp with noexec. Keep executable
-        // process fixtures under Cargo's build tree instead. Anchor that path to
-        // CARGO_MANIFEST_DIR rather than the process cwd because unrelated
-        // parallel tests may temporarily change cwd.
-        let target_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
-        let temp = tempfile::Builder::new()
-            .prefix("webcodex-cloudflared-test-")
-            .tempdir_in(target_dir)
-            .unwrap();
+        let temp = crate::test_support::executable_tempdir();
         let path = temp.path().join("cloudflared");
         fs::write(&path, script).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();

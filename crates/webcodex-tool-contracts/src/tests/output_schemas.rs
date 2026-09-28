@@ -527,8 +527,16 @@ fn start_agent_task_attempt_schema_returns_ref_without_replacing_fence() {
         .unwrap()
         .contains("Not a credential"));
     let read = output_schema_for_tool("read_agent_task");
-    let latest_attempt = &read["properties"]["output"]["properties"]["task"]["properties"]
-        ["summary"]["properties"]["latest_attempt"]["anyOf"][0];
+    let summary = &read["properties"]["output"]["properties"]["task"]["properties"]["summary"];
+    let summary_properties = summary["properties"].as_object().unwrap();
+    assert!(summary_properties.contains_key("attempt_ref"));
+    assert!(!summary["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|field| field == "attempt_ref"));
+    assert!(!summary_properties.contains_key("attempt_fence"));
+    let latest_attempt = &summary_properties["latest_attempt"]["anyOf"][0];
     let read_properties = latest_attempt["properties"].as_object().unwrap();
     assert!(!read_properties.contains_key("attempt_ref"));
     assert!(!read_properties.contains_key("attempt_fence"));

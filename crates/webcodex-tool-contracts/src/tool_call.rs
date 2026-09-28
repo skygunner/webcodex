@@ -3414,24 +3414,34 @@ pub enum ToolCall {
 
     /// Renew only the exact latest unexpired fenced AgentTaskAttempt.
     HeartbeatAgentTaskAttempt {
-        /// Canonical durable AgentTask id. It is not a credential or Connector Task id.
+        /// Server-issued ~ta selector for one exact task, attempt, assignee, fence, and generation.
+        /// Not a credential. Omit it when passing the explicit tuple.
+        #[schemars(regex(pattern = "^~ta[1-9][0-9]{0,18}$"))]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempt_ref: Option<String>,
+        /// Canonical durable AgentTask id. Required with the explicit tuple. Omit it when using attempt_ref.
         #[schemars(regex(pattern = "^wc_agent_task_[A-Za-z0-9_-]{16}$"))]
-        task_id: String,
-        /// Exact durable AgentTaskAttempt id.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task_id: Option<String>,
+        /// Exact durable AgentTaskAttempt id. Required with the explicit tuple. Omit it with attempt_ref.
         #[schemars(regex(pattern = "^wc_agent_task_attempt_[A-Za-z0-9_-]{16}$"))]
-        attempt_id: String,
-        /// Explicit current durable Agent assignee. Agent identity does not grant Project or executor
-        /// authority.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempt_id: Option<String>,
+        /// Explicit current durable Agent assignee. Required with the explicit tuple. Agent identity does
+        /// not grant Project or executor authority. Omit it when using attempt_ref.
         #[schemars(regex(pattern = "^wc_dagent_[A-Za-z0-9_-]{16}$"))]
-        assignee_agent_id: String,
-        /// Opaque exact-Attempt freshness fence returned by start_agent_task_attempt. It is not a bearer
-        /// credential or idempotency key.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        assignee_agent_id: Option<String>,
+        /// Opaque exact-Attempt freshness fence returned by start_agent_task_attempt. Required with the
+        /// explicit tuple. Not a bearer credential. Omit it when using attempt_ref.
         #[schemars(regex(pattern = "^wc_agent_task_fence_[A-Za-z0-9_-]{21}[AQgw]$"))]
-        attempt_fence: String,
-        /// Exact current Attempt-local controller generation. Carrier replacement increments it without
-        /// creating a new Attempt.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempt_fence: Option<String>,
+        /// Exact current Attempt-local controller generation. Required with the explicit tuple. Stale
+        /// generations fail closed. Omit it when using attempt_ref.
         #[schemars(range(min = 1))]
-        attempt_controller_generation: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempt_controller_generation: Option<i64>,
         /// Optional exact consumed A4b agent_task_attempt Wake proving this model-turn lineage. It grants
         /// no Task, Project, Runner, Goal, Session, or Endpoint authority and must be paired with
         /// active_turn_consume_token.
@@ -3448,24 +3458,34 @@ pub enum ToolCall {
 
     /// Commit exact fenced terminal AgentTaskAttempt truth with independent keyed replay.
     CompleteAgentTaskAttempt {
-        /// Canonical durable AgentTask id. It is not a credential or Connector Task id.
+        /// Server-issued ~ta selector for one exact task, attempt, assignee, fence, and generation.
+        /// Not a credential. Omit it when passing the explicit tuple.
+        #[schemars(regex(pattern = "^~ta[1-9][0-9]{0,18}$"))]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempt_ref: Option<String>,
+        /// Canonical durable AgentTask id. Required with the explicit tuple. Omit it when using attempt_ref.
         #[schemars(regex(pattern = "^wc_agent_task_[A-Za-z0-9_-]{16}$"))]
-        task_id: String,
-        /// Exact durable AgentTaskAttempt id.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task_id: Option<String>,
+        /// Exact durable AgentTaskAttempt id. Required with the explicit tuple. Omit it with attempt_ref.
         #[schemars(regex(pattern = "^wc_agent_task_attempt_[A-Za-z0-9_-]{16}$"))]
-        attempt_id: String,
-        /// Explicit current durable Agent assignee. Agent identity does not grant Project or executor
-        /// authority.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempt_id: Option<String>,
+        /// Explicit current durable Agent assignee. Required with the explicit tuple. Agent identity does
+        /// not grant Project or executor authority. Omit it when using attempt_ref.
         #[schemars(regex(pattern = "^wc_dagent_[A-Za-z0-9_-]{16}$"))]
-        assignee_agent_id: String,
-        /// Opaque exact-Attempt freshness fence returned by start_agent_task_attempt. It is not a bearer
-        /// credential or idempotency key.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        assignee_agent_id: Option<String>,
+        /// Opaque exact-Attempt freshness fence returned by start_agent_task_attempt. Required with the
+        /// explicit tuple. Not a bearer credential. Omit it when using attempt_ref.
         #[schemars(regex(pattern = "^wc_agent_task_fence_[A-Za-z0-9_-]{21}[AQgw]$"))]
-        attempt_fence: String,
-        /// Exact current Attempt-local controller generation. Carrier replacement increments it without
-        /// creating a new Attempt.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempt_fence: Option<String>,
+        /// Exact current Attempt-local controller generation. Required with the explicit tuple. Stale
+        /// generations fail closed. Omit it when using attempt_ref.
         #[schemars(range(min = 1))]
-        attempt_controller_generation: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempt_controller_generation: Option<i64>,
         /// Terminal AgentTask outcome. In A3, failed completion is terminal; only lease expiry before
         /// completion permits a later Attempt.
         outcome: String,

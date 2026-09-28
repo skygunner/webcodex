@@ -177,6 +177,9 @@ impl From<PendingRequestEnqueueError> for EnqueueLspError {
             PendingRequestEnqueueError::QueueFull { client_id, limit } => {
                 Self::QueueFull { client_id, limit }
             }
+            PendingRequestEnqueueError::Maintenance => Self::InvalidRequest {
+                message: "runner admission is paused for maintenance".to_string(),
+            },
         }
     }
 }
@@ -2422,7 +2425,7 @@ impl RunnerRegistry {
         if let Some(required_feature) = required_features
             .iter()
             .copied()
-            .find(|feature| !current.runner_features.supports(*feature))
+            .find(|feature| !current.supports(*feature))
         {
             return Err(format!(
                 "runner {client_id} does not support {}",

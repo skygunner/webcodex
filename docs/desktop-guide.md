@@ -16,13 +16,13 @@ The Runner filesystem policy remains the authority boundary. A fresh Desktop loc
 
 ## First use
 
-1. Launch WebCodex Desktop. On a fresh local install, Desktop automatically prepares the local Server and Runner with no default Project.
-2. Start describing work in ChatGPT. When a request identifies a workspace path, the runtime resolves or registers that Project automatically within the Runner's allowed scope.
+1. Launch WebCodex Desktop and make the one-time local/remote environment choice. Local setup enables **Allow AI to work on this computer** by default, with no default Project. Confirm setup before persistent services or system authorization are requested; merely opening Desktop never binds a fresh machine to a local Server.
+2. Start describing work in ChatGPT. When a request identifies a workspace path, the runtime resolves or registers that Project automatically within the Runner's allowed scope. Later launches observe saved persistent services rather than silently restarting stopped components.
 3. **Projects** can be used to observe which Runtime Projects have appeared; there is no Add, Activate, Reactivate, or Unregister workflow in the normal Desktop UI.
 4. Configure **OpenAI Secure Tunnel** only when external ChatGPT reachability is needed. Tunnel setup controls connectivity; it does not define Project authority.
 5. A real observed project call verifies prior client use, not current host presence.
 
-If you already have a remote Server, open setup and choose the existing Server option, enter its address and pairing code, and select the local project used for that remote enrollment. The remote operator owns its Runner policy and external connectivity.
+If you already have a remote Server, choose the existing Server option and enter its address. Enable local work and provide a one-time pairing code to connect this computer's Runner; no project selection is needed. Disable local work to join as a viewer using a user API credential. Saved connections reuse their identity. The remote operator owns its Runner policy and external connectivity.
 
 For temporary sharing of one project, choose Quick Share and a connection provider. Quick Share keeps its own explicit project selection and temporary lifecycle.
 
@@ -35,6 +35,8 @@ Home prioritizes Runtime, Runner, connection, and observed ChatGPT status. A loc
 - **Connection** manages external reachability independently from Project authority.
 - **Settings** exposes Runner configuration, diagnostics, and explicit operational controls.
 
+Persistent environments use the shared setup and service lifecycle described in the [unified installation guide](unified-installation.md). Desktop also shows the Server-authorized fleet, including remote Runners and their projects; remote paths are display-only on this computer. A viewer has no local Runner. The [native acceptance record](unified-deployment-validation.md) distinguishes automated checks from real-machine installer and migration acceptance.
+
 You do not need to stop the runtime or OpenAI Secure Tunnel when ChatGPT moves between workspace directories. Compatible paths are resolved against current Runner policy and registered lazily by the runtime.
 ## Connections and recovery
 
@@ -46,7 +48,7 @@ A real observed project call verifies prior client use, not current host presenc
 
 | Situation | Next action |
 | --- | --- |
-| Local runtime is not ready | Restore it on Home or reopen Desktop; no Project selection is required |
+| A local Server or Runner is stopped | For a Core-managed persistent environment, explicitly start that component in Diagnostics; opening Desktop does not restart a deliberately stopped service |
 | A requested workspace is outside Runner policy | Narrowly update the Runner access policy for the intended workspace, then retry the natural-language request |
 | Tunnel ID or API key is missing | Enter and save the Tunnel ID and API key in Desktop; quitting and reopening is needed only for environment-variable changes |
 | Start failed with no active tunnel | Fix configuration or networking, then click Start again |
@@ -57,7 +59,7 @@ A real observed project call verifies prior client use, not current host presenc
 
 ## Instructions, Skills, and native Tool Plugins
 
-**Extensions** shows the selected project's conventional `AGENTS.md` location, global instruction file paths, configured Skill roots, and saved native Plugin IDs. A displayed `AGENTS.md` location is not a claim that the file exists; edit its contents using the project editor. Save up to 16 absolute instruction paths and 16 absolute Skill roots. Saves target the exact observed Runner configuration and reject stale path edits, preserving unrelated configuration, comments, credentials, and existing provider settings.
+When this computer has a local Runner and a selected local project, **Extensions** shows that project's conventional `AGENTS.md` location, global instruction file paths, configured Skill roots, and saved native Plugin IDs. A displayed `AGENTS.md` location is not a claim that the file exists; edit its contents using the project editor. Save up to 16 absolute instruction paths and 16 absolute Skill roots. Saves target the exact observed local Runner configuration and reject stale path edits, preserving unrelated configuration, comments, credentials, and existing provider settings. A viewer does not configure a remote Runner's local files through this panel.
 
 **Add a native Tool Plugin** registers a new trusted provider by ID, display name, executable, string-array arguments, and optional absolute working directory. Existing IDs are never overwritten. Arguments are write-only and cleared after submission; use configuration profiles for credentials. The saved registration list is not a live health check. Existing registration edits/removal and advanced provider fields remain in the shown Runner configuration file.
 
@@ -67,7 +69,7 @@ Saving paths or registering a Plugin does not start it or silently restart the R
 
 The first foreground launch with missing Desktop permissions presents an explanation with **Request Accessibility**, **Request screen recording**, and a continue action. Background/login launches do not open a permission dialog over other applications. Requests require an explicit button press; denying or dismissing them does not prevent ordinary project work. Recheck from Settings after changing system permissions.
 
-Desktop's own permission results do not prove that a separately launched Runner is authorized. Computer Use executes in the Runner: grant permissions to the actual process shown by macOS and follow the system's restart guidance. The UI labels unobserved Runner authorization honestly. Windows does not display macOS permission controls.
+Desktop's own permission results do not prove that a separately launched Runner is authorized. For a persistent Runner, GUI operations execute in its same-user interactive helper and require an active, unlocked session; the project service can remain online without GUI availability. Grant permissions to the actual helper process shown by macOS and follow the system's restart guidance. A legacy foreground Runner still uses its own Computer backend. The UI labels unobserved Runner authorization honestly. Native GUI helper and session behavior still requires the platform checks in [Deployment validation](unified-deployment-validation.md). Windows does not display macOS permission controls.
 
 ## Activity, settings, and background operation
 
@@ -77,7 +79,7 @@ If the local Server exits during startup, expand the error's **Details**. Deskto
 
 **Settings** contains language, launch at login, Computer Use permissions on macOS, Tunnel networking, and diagnostics. You can also switch language at the bottom of the sidebar. Supported languages are 简体中文, English, 日本語, 한국어, Deutsch, and Français. The selection is remembered across restarts, and activity times follow the selected locale. System tray menus and raw backend diagnostics remain in English; the operating system controls native file-picker language.
 
-Closing the window hides it in the menu bar or system tray; the runtime continues in the background. **Quit WebCodex** in the tray ends Desktop and its owned processes. Stopping the Desktop-managed runtime on Home also updates the saved runtime startup preference. These controls do not terminate independently started WebCodex processes.
+Closing the window hides Desktop in the menu bar or system tray. Persistent Server, Runner, and Tunnel services continue independently of that window, including when Desktop quits. **Quit WebCodex** ends Desktop and processes it directly owns, such as a temporary Quick Share and legacy Desktop-owned runtime or regular Tunnel. Use the explicit Diagnostics controls for Core-managed local services; they appear only for components this computer owns. A viewer has no local Runner control, and a Server-only computer has no Runner control. A custom legacy service can be observed through its Server connection without Desktop taking over its lifecycle. Home's legacy Desktop-managed runtime stop also updates its saved startup preference; it does not stop an independent service.
 
 Use **⌘ + 1–6** on macOS or **Ctrl + 1–6** on Windows to switch between Home, Projects, Connection, Extensions, Activity, and Settings. Navigation shortcuts also work inside inputs and language selectors; ordinary typing and text-editing shortcuts remain available. Use Tab to focus controls and Enter to activate them; diagnostic disclosure controls also support the keyboard.
 
@@ -85,8 +87,7 @@ Runtime controls on Home and technical diagnostics in Settings are collapsed by 
 
 ### Projectless Runtime
 
-A Full Runtime consists of the Server, Runner, and the Runner's observed Project inventory. A Desktop default/display Project is optional and a fresh local Desktop intentionally starts without one.
-
+A Full Runtime consists of the Server, Runner, and the Runner's observed Project inventory. A Desktop default/display Project is optional and a fresh local Desktop intentionally starts without one. A persistent environment can instead be Server-only or a viewer. Reopening Desktop observes persistent services without restarting components that were explicitly stopped.
 Desktop restart resumes the saved Server/Runner identity and Connections without registering a Project. Concrete Runtime Projects appear when model-driven work resolves a workspace path. A complete online Runner inventory is authoritative for those registrations; Desktop may reconcile stale display history, but the normal Desktop UI does not mutate Project registration state.
 
 Project directories, Git files, and Runner policy remain separate concerns: lazy Project registration creates or reuses runtime identity for an already-authorized path and does not broaden `allowed_roots`.

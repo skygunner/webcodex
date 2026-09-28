@@ -144,6 +144,10 @@ export function RuntimeView({
                   <small>
                     {runner.connected ? t("Runner online") : t("Runner unavailable")}
                     {runner.version ? " · " + runner.version : ""}
+                    {runner.computer_session_availability !== undefined && (
+                      " · " + t(overviewAvailability === "available" && runner.connected && runner.status !== "stale" && runner.computer_session_availability
+                        ? "GUI session available" : "GUI session unavailable")
+                    )}
                   </small>
                 </span>
                 <span className="runtime-row-meta runtime-row-jobs">
@@ -155,7 +159,7 @@ export function RuntimeView({
                 </span>
               </div>
             ))}
-            {!overview?.runners.length && <div className="empty-inline">{t(overviewAvailability === "loading" || overviewAvailability === "idle" ? "Loading…" : overview ? "No Runners connected" : "Runtime overview unavailable")}</div>}
+            {!overview?.runners.length && <div className="empty-inline">{t(overviewAvailability === "loading" || overviewAvailability === "idle" ? "Loading…" : overview ? "No authorized Runners yet" : "Runtime overview unavailable")}</div>}
           </section>
 
           {overview && <section className="runtime-section">

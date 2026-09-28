@@ -18,6 +18,7 @@ use std::ffi::OsString;
 use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 
+mod environment;
 mod webcodex_cli;
 
 use webcodex_admin as admin_cli;
@@ -107,6 +108,7 @@ fn default_runner_service_scope(effective_root: bool) -> ServiceScope {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CliAction {
+    Environment(Vec<String>),
     Project(Vec<String>),
     Controller(ControllerCommand),
     ProjectRegister(ProjectRegisterOptions),
@@ -200,6 +202,7 @@ struct ServerInitOptions {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ServerTunnelOptions {
     env_file: PathBuf,
+    stop_on_stdin_eof: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -321,6 +324,7 @@ where
         };
     }
     match args[0].as_str() {
+        "environment" => CliAction::Environment(args[1..].to_vec()),
         "--help" | "-h" => CliAction::Exit {
             code: 0,
             stdout: usage().to_string(),
@@ -1831,10 +1835,10 @@ fn parse_server_tunnel(args: &[String]) -> Result<ServerTunnelOptions, String> {
     if !json {
         return Err("server tunnel currently requires --json".to_string());
     }
-    if !stop_on_stdin_eof {
-        return Err("server tunnel currently requires --stop-on-stdin-eof".to_string());
-    }
-    Ok(ServerTunnelOptions { env_file })
+    Ok(ServerTunnelOptions {
+        env_file,
+        stop_on_stdin_eof,
+    })
 }
 
 fn parse_runner_run(args: &[String]) -> Result<InternalRunOptions, String> {
@@ -2647,11 +2651,11 @@ where
 
 /// Windows release boundary, evaluated before any command dispatch.
 ///
-/// Windows supports explicit local foreground Server initialization/execution
-/// and the platform-neutral project `share` path. Service-managed Server lifecycle
-/// operations and Runner service install remain unsupported and fail before
-/// platform-specific service logic. `--help` is exempt so help still renders.
-#[cfg(windows)]
+/// Windows supports persistent services through `environment`, foreground Server
+/// execution, and project `share`. Legacy service commands fail before dispatch
+/// and direct users to the shared environment setup/lifecycle path. `--help` is
+/// exempt so help still renders. The pure guard is also compiled in host tests.
+#[cfg(any(windows, test))]
 fn windows_unsupported_platform_action(args: &[String]) -> Option<&'static str> {
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         return None;
@@ -2660,14 +2664,14 @@ fn windows_unsupported_platform_action(args: &[String]) -> Option<&'static str> 
         Some("server") => match args.get(1).map(String::as_str) {
             Some("init") | Some("run") => None,
             Some("install" | "start" | "stop" | "restart" | "logs" | "uninstall") | None => Some(
-                "Windows service-managed Server lifecycle is not supported yet.\n\
-                 Use `webcodex server run` for foreground operation.",
+                "This legacy service command is unavailable on Windows.\n\
+                 Configure persistent services with `webcodex environment configure`, then use `webcodex environment start|stop|restart server`.",
             ),
             _ => None,
         },
         Some("runner") if args.get(1).map(String::as_str) == Some("install") => Some(
-            "Automatic Windows Runner startup is not supported yet.\n\
-             Use `webcodex connect` or `webcodex runner start --profile <name>.",
+            "This legacy Runner installer is unavailable on Windows.\n\
+             Configure persistent services with `webcodex environment configure`, then use `webcodex environment start|stop|restart runner`.",
         ),
         _ => None,
     }
@@ -2685,6 +2689,16 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
     match cli_action(args) {
+        CliAction::Environment(args) => match environment::run(&args).await {
+            Ok(output) => {
+                println!("{output}");
+                return Ok(());
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        },
         CliAction::Project(args) => {
             let output = webcodex::run_project_command(args).await;
             if !output.stdout.is_empty() {
@@ -3041,6 +3055,50 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(code);
         }
     }
+}
+
+#[cfg(windows)]
+pub fn validate_windows_tunnel_service_args(args: &[String]) -> Result<(), String> {
+    if args.get(0).map(String::as_str) != Some("server")
+        || args.get(1).map(String::as_str) != Some("tunnel")
+    {
+        return Err("Windows webcodex service mode requires server tunnel".into());
+    }
+    let opts = parse_server_tunnel(&args[2..])?;
+    if opts.stop_on_stdin_eof {
+        return Err("persistent Tunnel service cannot use --stop-on-stdin-eof".into());
+    }
+    webcodex_environment::runtime_entry::validate_service_env_file(&opts.env_file)
+}
+
+#[cfg(windows)]
+pub async fn run_windows_tunnel_service(
+    args: Vec<String>,
+    stop: webcodex_environment::service::runtime::ServiceStop,
+) -> Result<(), String> {
+    if args.get(0).map(String::as_str) != Some("server")
+        || args.get(1).map(String::as_str) != Some("tunnel")
+    {
+        return Err("Windows webcodex service mode requires server tunnel".into());
+    }
+    let opts = parse_server_tunnel(&args[2..])?;
+    if opts.stop_on_stdin_eof {
+        return Err("persistent Tunnel service cannot use --stop-on-stdin-eof".into());
+    }
+    validate_windows_tunnel_service_args(&args)?;
+    let log_dir = opts
+        .env_file
+        .parent()
+        .ok_or("Tunnel service env file has no parent directory")?;
+    let mut service_log = webcodex_environment::service::ServiceLogGuard::open(
+        log_dir,
+        webcodex_environment::service::Component::Tunnel,
+    )?;
+    let result = webcodex_cli::server::run_server_tunnel_with_stop(opts, stop.cancelled()).await;
+    if result.is_ok() {
+        service_log.stopped()?;
+    }
+    result
 }
 
 #[cfg(test)]

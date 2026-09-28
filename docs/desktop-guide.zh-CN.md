@@ -16,13 +16,13 @@ Runner 文件系统 policy 仍然是权限边界。全新 Desktop 的本机 Runn
 
 ## 第一次使用
 
-1. 启动 WebCodex Desktop。全新本机安装会自动准备 Server 和 Runner，不需要先配置默认 Project。
-2. 直接在 ChatGPT 中描述工作。请求给出工作目录后，Runtime 会在 Runner 允许的范围内自动解析或注册对应 Project。
+1. 启动 WebCodex Desktop，首次选择本机或远程环境。本机配置默认勾选**允许 AI 在此电脑上工作**，不需要默认 Project。确认配置后才会安装持久服务、请求系统授权；仅打开窗口不会抢先把新机器绑定到本地 Server。
+2. 直接在 ChatGPT 中描述工作。请求给出工作目录后，Runtime 会在 Runner 允许的范围内自动解析或注册对应 Project。后续打开 Desktop 只观察已保存的持久服务，不会自动重启被主动停止的组件。
 3. **项目**页仅用于观察已经出现的 Runtime Project；正常 Desktop UI 不再提供添加、激活、重新激活或取消注册 Project 的流程。
 4. 只有需要让 ChatGPT 从外部访问本机时，才配置 **OpenAI Secure Tunnel**。Tunnel 负责连接，不定义 Project 权限。
 5. 观察到真实项目调用只能证明此前发生过客户端使用，不能证明宿主此刻在线。
 
-如果已经有远程 Server，可在设置流程中选择 **连接现有 Server**，填写地址和配对码，并选择该远程 enrollment 使用的本机项目。远程 Runner policy 和外部连接由其管理者负责。
+如果已经有远程 Server，选择 **连接现有 Server** 并填写地址。勾选允许本机工作、输入一次性配对码即可接入本机 Runner，不需要选项目；取消勾选则通过用户 API 凭据作为 viewer 加入。已有连接会复用原身份。远程 Runner policy 和外部连接由其管理者负责。
 
 如果只想临时共享一个项目，选择 **快速共享项目** 和连接提供方。Quick Share 仍保留显式项目选择和独立的临时生命周期。
 
@@ -35,6 +35,8 @@ Runner 文件系统 policy 仍然是权限边界。全新 Desktop 的本机 Runn
 - **连接**：独立管理外部可达性，不改变 Project 权限。
 - **设置**：提供 Runner 配置、诊断和显式运维控制。
 
+持久环境使用[统一安装指南](unified-installation.zh-CN.md)中的共享配置和服务生命周期。Desktop 还显示 Server 授权的机器与项目清单；远程路径在此电脑仅作展示，不会作为本机目录使用。viewer 没有本机 Runner。[原生平台验收记录](unified-deployment-validation.md)明确区分自动检查与真实安装、迁移验收。
+
 ChatGPT 在不同工作目录之间切换时，不需要先停止 Runtime 或 OpenAI Secure Tunnel。Runtime 会根据当前 Runner policy 解析兼容路径，并按需注册 Project。
 ## 连接与故障恢复
 
@@ -46,7 +48,7 @@ ChatGPT 在不同工作目录之间切换时，不需要先停止 Runtime 或 Op
 
 | 看到的情况 | 下一步 |
 | --- | --- |
-| 本机 Runtime 未就绪 | 回首页恢复或重新打开 Desktop；不需要选择 Project |
+| 本机 Server 或 Runner 已停止 | Core 管理的持久环境可在诊断页明确启动相应服务；重新打开 Desktop 不会启动被主动停止的持久服务 |
 | 请求的工作目录超出 Runner policy | 只为目标工作区调整 Runner 访问范围，然后重新发送自然语言请求 |
 | Tunnel ID 或 API key 未检测到 | 在配置区填写并保存 Tunnel ID 和 API key；仅使用环境变量时才需退出重开 |
 | 启动失败且没有活动隧道 | 修复配置或网络后再次点击启动 |
@@ -57,7 +59,7 @@ ChatGPT 在不同工作目录之间切换时，不需要先停止 Runtime 或 Op
 
 ## 指令、Skills 与原生 Tool Plugins
 
-**扩展** 显示所选项目约定的 `AGENTS.md` 路径、全局指令文件、Skill 根目录，以及配置中保存的原生 Plugin ID。显示路径不表示文件一定存在；请用项目编辑器修改 `AGENTS.md` 内容。全局指令文件和 Skill 根目录各支持最多 16 个绝对路径。保存绑定到读到的精确 Runner 配置，拒绝过期编辑，保留其他配置、注释、凭据及已有插件设置。
+此电脑有本机 Runner 且选中了本机项目时，**扩展**显示该项目约定的 `AGENTS.md` 路径、全局指令文件、Skill 根目录，以及配置中保存的原生 Plugin ID。显示路径不表示文件一定存在；请用项目编辑器修改 `AGENTS.md` 内容。全局指令文件和 Skill 根目录各支持最多 16 个绝对路径。保存绑定到读到的精确本机 Runner 配置，拒绝过期编辑，保留其他配置、注释、凭据及已有插件设置。viewer 不能通过此页面配置远程 Runner 的本机文件。
 
 **添加原生 Tool Plugin** 可填写新插件 ID、名称、可执行程序、字符串数组形式的参数，以及可选的绝对工作目录。不会覆盖已有 ID；参数仅写入，提交后清空。凭据请使用配置中的 profile。注册列表不代表实时连接状态；已有插件的编辑、移除及高级字段仍通过页面展示的 Runner 配置文件管理。
 
@@ -67,7 +69,7 @@ ChatGPT 在不同工作目录之间切换时，不需要先停止 Runtime 或 Op
 
 首次前台启动且 Desktop 权限不全时，会显示权限说明，提供请求辅助功能、请求屏幕录制和稍后继续入口。后台登录启动不会弹出对话框抢占其他应用焦点。系统权限请求必须由按钮触发；拒绝或跳过不影响普通项目操作。授权后可在设置页重新检测。
 
-Desktop 的授权结果不等于独立 Runner 已获授权。Computer Use 实际在 Runner 中执行，应为 macOS 显示的实际进程授权，并按系统提示重启。未观测到的 Runner 授权状态不会被显示为已授权。Windows 不显示 macOS 专属权限按钮。
+Desktop 的授权结果不等于独立 Runner 已获授权。持久 Runner 的 GUI 操作由同用户交互会话中的 helper 执行，要求活动且未锁定的会话；GUI 不可用时，项目服务仍可在线。应为 macOS 显示的实际 helper 进程授权，并按系统提示重启。旧前台 Runner 仍使用自身的 Computer backend。未观测到的 Runner 授权状态不会被显示为已授权。原生 GUI helper 与会话行为仍需完成[部署验收清单](unified-deployment-validation.md)中的平台检查。Windows 不显示 macOS 专属权限按钮。
 
 ## 活动、设置和后台运行
 
@@ -77,7 +79,7 @@ Desktop 的授权结果不等于独立 Runner 已获授权。Computer Use 实际
 
 **设置** 包含语言、登录时启动、macOS Computer Use 权限、Tunnel 网络和诊断信息。语言也可以在左下角直接切换。支持简体中文、English、日本語、한국어、Deutsch、Français；选择会保存，重开后恢复，活动时间按所选语言格式显示。系统托盘菜单和原始后端诊断仍使用英文，系统文件选择器的语言由操作系统决定。
 
-关闭窗口只是隐藏到菜单栏或系统托盘，已启动的运行环境仍在后台工作。托盘中的 **退出 WebCodex** 才会结束 Desktop 及其管理的进程。首页的 **停止 Desktop 管理的运行环境** 会停止运行环境并更新保存的启动偏好；这些操作不会终止其他自行启动的 WebCodex 进程。
+关闭窗口只会把 Desktop 隐藏到菜单栏或系统托盘。持久的 Server、Runner 和 Tunnel 服务独立于窗口运行，退出 Desktop 后也会继续运行。托盘中的 **退出 WebCodex** 会结束 Desktop 及其直接管理的进程，例如临时 Quick Share、旧版由 Desktop 管理的 Runtime 或普通 Tunnel。Core 管理的本机服务需要使用诊断页的明确控制；仅此电脑拥有的组件才显示对应控制。viewer 没有本机 Runner 控制，只有 Server 的电脑也没有 Runner 控制。Desktop 可以通过 Server 连接观察自定义旧服务，但不会接管其生命周期。首页用于旧版 Desktop Runtime 的停止操作还会更新已保存的启动偏好，不会停止独立服务。
 
 macOS 使用 **⌘ + 1–6**，Windows 使用 **Ctrl + 1–6**，依次切换首页、项目、连接、扩展、活动和设置。这些导航快捷键在输入框和语言选择框内同样生效，普通输入及复制、粘贴等文本编辑快捷键不受影响。可用 Tab 聚焦按钮，用 Enter 激活；诊断折叠项也支持键盘操作。
 
@@ -85,8 +87,7 @@ macOS 使用 **⌘ + 1–6**，Windows 使用 **Ctrl + 1–6**，依次切换首
 
 ### 无默认 Project 的 Runtime
 
-Full Runtime 由 Server、Runner 和 Runner 已观察到的 Project 清单组成。Desktop 默认展示 Project 是可选状态；全新的本机 Desktop 会刻意在没有默认 Project 的情况下启动。
-
+Full Runtime 由 Server、Runner 和 Runner 已观察到的 Project 清单组成。Desktop 默认展示 Project 是可选状态；全新的本机 Desktop 会刻意在没有默认 Project 的情况下启动。持久环境也可以只有 Server，或仅作为 viewer。重新打开 Desktop 只观察持久服务，不会启动已主动停止的组件。
 Desktop 重启会恢复已保存的 Server/Runner 身份和 Connections，不会预先注册 Project。只有模型驱动的工作解析了具体目录时，才会出现对应 Runtime Project。在线且完整的 Runner inventory 是这些注册状态的权威来源；Desktop 可以清理过期的展示历史，但正常 Desktop UI 不负责修改 Project 注册状态。
 
 项目目录、Git 文件和 Runner policy 是彼此独立的边界：按需注册 Project 只是为已经获得授权的路径创建或复用 runtime identity，不会扩大 `allowed_roots`。

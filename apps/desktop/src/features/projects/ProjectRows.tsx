@@ -12,8 +12,7 @@ export function ProjectRows({ projects }: { projects: WorkspaceProject[] }) {
   const p = useProduct();
   const compact = useMediaQuery("(max-width: 600px)", undefined, { getInitialValueInEffect: false });
   if (compact) return <div className="workspace-project-mobile-list">
-    {projects.map(project => <ProjectRow key={project.id || project.path} project={project} compact />)}
-  </div>;
+    {projects.map(project => <ProjectRow key={project.id || project.path} project={project} compact />)}  </div>;
   return <Table.ScrollContainer minWidth={560} className="workspace-project-table" type="native">
     <Table striped={false} highlightOnHover={false} verticalSpacing="sm" horizontalSpacing="sm" layout="fixed" aria-label={p("projects")}>
       <Table.Thead><Table.Tr><Table.Th>{p("projects")}</Table.Th><Table.Th className="project-column-branch">{p("branch")}</Table.Th><Table.Th className="project-column-activity">{p("activeSessions")}</Table.Th><Table.Th className="project-column-updated">{p("lastUsed")}</Table.Th></Table.Tr></Table.Thead>
@@ -21,8 +20,7 @@ export function ProjectRows({ projects }: { projects: WorkspaceProject[] }) {
     </Table>
   </Table.ScrollContainer>;
 }
-function ProjectRow({ project, compact = false }: { project: WorkspaceProject; compact?: boolean }) {
-  const p = useProduct(); const { locale } = useLocale();
+function ProjectRow({ project, compact = false }: { project: WorkspaceProject; compact?: boolean }) {  const p = useProduct(); const { locale } = useLocale();
   const [git, setGit] = useState<GitSummary | null>(null);
   const { revision } = useWorkspace();
   useEffect(() => {
@@ -36,16 +34,17 @@ function ProjectRow({ project, compact = false }: { project: WorkspaceProject; c
   const activity = project.sessions ? `${project.sessions.active_sessions}${project.sessions.sessions_truncated ? "+" : ""} ${p("activeSessions")}` : p(project.id ? "unknown" : "setup");
   const activityValue = project.sessions ? `${project.sessions.active_sessions}${project.sessions.sessions_truncated ? "+" : ""}` : "—";
   const path = displayProjectPath(project.path);
+  const runner = project.client_id || (project.id?.startsWith("agent:") ? project.id.split(":")[1] : undefined);
+  const origin = runner ? <span className="project-table-meta">Runner · {runner}</span> : null;
   const updated = observationTime(project.sessions?.latest_updated_at ? project.sessions.latest_updated_at * 1000 : null, locale);
   if (compact) return <article className="workspace-project-mobile-row" aria-label={name}>
-    <h3>{name}</h3><div className="project-path" title={path}>{path}</div>
-    <div className="project-row-meta"><span>{branch}</span><span>{activity}</span><time>{updated}</time></div>
-  </article>;
+    <h3>{name}</h3><div className="project-path" title={path}>{path}</div>{origin}
+    <div className="project-row-meta"><span>{branch}</span><span>{activity}</span><time>{updated}</time></div>  </article>;
   return <Table.Tr aria-label={name}>
     <Table.Td>
       <div className="project-table-name">
         <div className="project-avatar" aria-hidden="true"><FolderClosed size={17} strokeWidth={1.75} /></div>
-        <div className="project-row-main"><div className="project-row-title"><h3>{name}</h3></div><span className="project-path" title={path}>{path}</span></div>
+        <div className="project-row-main"><div className="project-row-title"><h3>{name}</h3></div><span className="project-path" title={path}>{path}</span>{origin}</div>
       </div>
     </Table.Td>
     <Table.Td className="project-column-branch"><span className="project-table-meta"><GitBranch size={14} aria-hidden="true" />{branch}</span></Table.Td>

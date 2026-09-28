@@ -111,30 +111,29 @@ export function useDesktopWorkspace() {
           return;
         }
 
-        // Fresh local Desktop is a runtime bootstrap, not a Project setup flow.
-        // Start the local Server/Runner immediately with no default Project.
-        // Concrete project paths are resolved/registered later by model-driven
-        // runtime calls such as work_on_project(path).
+        // Installing persistent services is an explicit first-run choice. Do not
+        // bind a fresh machine to a local Server before it can choose Join, or
+        // trigger administrator/service-password prompts from a status read.
         if (!initial.topology) {
+          commitState(initial);
+          return;
+        }
+
+        commitState(initial);
+        if (initial.persistent_environment) {
+          // System services own persistence. Opening Desktop only observes them;
+          // it must not restart a service the user explicitly stopped.
           setRefreshing(true);
           try {
-            const next = await desktopApi.configureLocal();
-            if (!cancelled) {
-              commitState(next);
-              setShowSetup(false);
-            }
+            const observed = await desktopApi.refresh();
+            if (!cancelled) commitState(observed);
           } catch (value) {
-            if (!cancelled) {
-              commitState(initial);
-              setError(normalizeDesktopError(value));
-            }
+            if (!cancelled) setError(normalizeDesktopError(value));
           } finally {
             if (!cancelled) setRefreshing(false);
           }
           return;
         }
-
-        commitState(initial);
         const resumeExisting = Boolean(
           initial.runtime_autostart
           && initial.topology.experience === "full",
@@ -175,7 +174,9 @@ export function useDesktopWorkspace() {
         void (async () => {
           const observedVersion = stateVersionRef.current;
           try {
-            const next = await desktopApi.getState();
+            const next = state?.persistent_environment && !hasCurrentOperation && !refreshing
+              ? await desktopApi.refresh()
+              : await desktopApi.getState();
             if (!cancelled && stateVersionRef.current === observedVersion) {
               commitState(next);
             }
@@ -194,7 +195,7 @@ export function useDesktopWorkspace() {
       cancelled = true;
       if (timeoutId !== undefined) window.clearTimeout(timeoutId);
     };
-  }, [commitState, hasCurrentOperation, hasLoadedState, refreshing]);
+  }, [commitState, hasCurrentOperation, hasLoadedState, refreshing, state?.persistent_environment]);
 
   useEffect(() => {
     if (!shouldObserveChatgptActivity) return;

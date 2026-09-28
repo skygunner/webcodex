@@ -133,6 +133,15 @@ fn finalize_mcp_tool_observability(
         .is_some_and(|(event, _)| event.window_meaningful);
 
     if let Some(record) = model_ergonomics {
+        if let Some(target) = live_window_request
+            .as_ref()
+            .and_then(|active| active.instruction_read_after_complete_bootstrap(record))
+        {
+            crate::tool_runtime::runtime_metrics::observe_instruction_read_after_complete_bootstrap(
+                runtime.metrics.as_ref(),
+                target,
+            );
+        }
         crate::tool_runtime::runtime_metrics::observe_tool_call(runtime.metrics.as_ref(), record);
     }
     if audit_event.is_some() {
@@ -718,8 +727,9 @@ pub async fn mcp_post(req: &mut Request, depot: &mut Depot, res: &mut Response) 
     // The shared kernel timer is authoritative for completed runtime calls. Keep
     // one outer emergency timer only so the MCP hard-timeout path does not erase
     // an otherwise established runtime invocation from ergonomics telemetry.
-    let mut hard_timeout_model_ergonomics =
-        tool_name.as_deref().and_then(ModelErgonomicsTimer::start);
+    let mut hard_timeout_model_ergonomics = tool_name.as_deref().and_then(|name| {
+        ModelErgonomicsTimer::start_with_arguments(name, &request.params["arguments"])
+    });
     let mut tool_correlation = crate::tool_runtime::ToolCallCorrelation::default();
     let mut model_ergonomics = None;
     // Window liveness needs request correlation even when trace retention is off.

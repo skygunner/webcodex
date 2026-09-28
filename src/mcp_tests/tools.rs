@@ -1818,8 +1818,18 @@ async fn mcp_compact_preserves_safety_patterns_and_wrapper_bounds() {
         panic!("tools/list");
     };
     let tools = value["result"]["tools"].as_array().unwrap();
-    let schema =
-        |name: &str| &tools.iter().find(|tool| tool["name"] == name).unwrap()["inputSchema"];
+    let registered = webcodex_tool_contracts::registered_tool_specs();
+    let schema = |name: &str| -> &Value {
+        if let Some(tool) = tools.iter().find(|tool| tool["name"] == name) {
+            &tool["inputSchema"]
+        } else {
+            &registered
+                .iter()
+                .find(|spec| spec.name == name)
+                .unwrap_or_else(|| panic!("missing canonical schema for {name}"))
+                .input_schema
+        }
+    };
     for (name, field, pattern, min, max) in [
         (
             "project_artifact",
@@ -2343,14 +2353,14 @@ async fn mcp_tools_list_stateless_serialized_size_budget() {
     let mut admin = scoped.clone();
     admin.scopes.push(crate::auth::SCOPE_ADMIN.to_string());
     // Final Stateless result bytes include the optional _wc envelope and gateways,
-    // not the RPC envelope. Envelope V2 now leaves about 76/78/87 KB for
-    // anonymous/scoped/admin without Apps; App-on remains roughly +20 KB after
-    // adding the bounded App-only Work Result activity-detail reader.
-    // Keep small explicit growth headroom around the measured surface.
+    // not the RPC envelope. Envelope V2 plus review convergence leave about
+    // 76/78/87 KB for anonymous/scoped/admin without Apps; review_changes is
+    // primary, show_changes stays direct for Apps/presentation, and exact legacy
+    // review stays gateway-only. Keep small growth headroom around compact surface.
     for (label, auth, max_tools, max_bytes) in [
-        ("anonymous", None, 30, 77_000),
-        ("scoped", Some(&scoped), 31, 79_000),
-        ("admin", Some(&admin), 37, 88_000),
+        ("anonymous", None, 29, 77_000),
+        ("scoped", Some(&scoped), 30, 79_000),
+        ("admin", Some(&admin), 36, 88_000),
     ] {
         for app_enabled in [false, true] {
             let mut sizes = Vec::new();
@@ -3748,4 +3758,31 @@ async fn mcp_2026_control_sidecars_gateway_strip_and_closed_schema() {
             .get("_wc")
             .is_none()
     );
+}
+
+#[test]
+fn compact_bootstrap_description_teaches_explicit_context_and_reuse() {
+    use crate::mcp::discovery::compact_tool;
+    let mut tool =
+        json!({"name": "work_on_project", "description": "placeholder", "inputSchema": {}});
+    compact_tool(&mut tool);
+    let description = tool["description"].as_str().unwrap();
+    for phrase in [
+        "AGENTS.md/CLAUDE.md",
+        "_wc.context",
+        "project.instructions",
+        "webcodex.workflow",
+        "Reuse complete instruction bodies",
+        "workspace branch/HEAD/status",
+        "semantic navigation",
+        "sufficient catalogs",
+        "stale/incomplete",
+    ] {
+        assert!(
+            description.contains(phrase),
+            "missing {phrase}: {description}"
+        );
+    }
+    assert!(!description.contains("Defaults return"));
+    assert!(!description.contains("context_request"));
 }

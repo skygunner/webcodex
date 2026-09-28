@@ -656,44 +656,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn config_debug_redacts_bootstrap_token() {
-        let mut oauth2 = OAuth2Config::default();
-        oauth2.project_share_session_id = Some("private-session-fence".to_string());
-        let config = Config {
-            addr: "127.0.0.1:8080".to_string(),
-            data_dir: PathBuf::from("./data"),
-            token: Some("super-secret-bootstrap-token".to_string()),
-            max_text_size: 2 * 1024 * 1024,
-            oauth2,
-        };
-        let rendered = format!("{config:?}");
-        assert!(!rendered.contains("super-secret-bootstrap-token"));
-        assert!(!rendered.contains("private-session-fence"));
-        assert!(rendered.contains("[REDACTED]"));
-        assert!(rendered.contains("127.0.0.1:8080"));
-    }
-
-    #[test]
-    fn oauth2_config_debug_redacts_project_share_identity_and_client_ids() {
-        let oauth2 = OAuth2Config {
-            issuer: Some("https://issuer.example.com".to_string()),
-            enabled: true,
-            trusted_mcp_file_client_ids: vec!["wc_client_private-client-sentinel".to_string()],
-            project_share_grant_id: Some("private-project-grant-sentinel".to_string()),
-            project_share_session_id: Some("private-session-fence-sentinel".to_string()),
-            ..OAuth2Config::default()
-        };
-
-        let rendered = format!("{oauth2:?}");
-        assert!(!rendered.contains("private-project-grant-sentinel"));
-        assert!(!rendered.contains("private-session-fence-sentinel"));
-        assert!(!rendered.contains("private-client-sentinel"));
-        assert!(rendered.contains("project_share_grant_id: Some(\"[REDACTED]\")"));
-        assert!(rendered.contains("project_share_session_id: Some(\"[REDACTED]\")"));
-        assert!(rendered.contains("trusted_mcp_file_client_ids_count: 1"));
-    }
-
-    #[test]
     fn quic_server_config_defaults_to_disabled() {
         let cfg = QuicServerConfig::default();
         assert!(!cfg.enabled);

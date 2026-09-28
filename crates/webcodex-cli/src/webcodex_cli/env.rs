@@ -31,19 +31,6 @@ pub(crate) fn is_effective_root() -> bool {
     paths::is_effective_root()
 }
 
-pub(crate) fn server_init_direct_shared_key_enabled(opts: &ServerInitOptions) -> bool {
-    if opts.allow_remote_shared_key {
-        return true;
-    }
-    if opts.public_url.is_some() {
-        return false;
-    }
-    opts.listen
-        .trim()
-        .parse::<std::net::SocketAddr>()
-        .is_ok_and(|address| address.ip().is_loopback())
-}
-
 pub(crate) fn render_server_env(opts: &ServerInitOptions, token: &str) -> String {
     let mut content = String::new();
     content.push_str(&format!("WEBCODEX_ADDR={}\n", opts.listen.trim()));

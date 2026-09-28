@@ -1329,8 +1329,6 @@ mod tests {
 
     #[cfg(unix)]
     const TUNNEL_TEST_START_TIMEOUT: Duration = Duration::from_secs(10);
-    #[cfg(unix)]
-    static TUNNEL_PROCESS_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     #[test]
     fn parses_cloudflare_quick_tunnel_url_from_bounded_log_line() {

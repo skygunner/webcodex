@@ -7,23 +7,6 @@ use crate::webcodex_runner::{
     handle_prepare_managed_worktree, handle_project_lifecycle_op, handle_project_op,
     handle_resolve_or_register_project,
 };
-/// Create a test temp directory on the repository build filesystem.
-///
-/// Some hardened hosts mount the system temp directory with `noexec`. Tests
-/// that intentionally create and execute fake binaries/scripts must not assume
-/// `tempfile::tempdir()` is executable. Keep ordinary data-only temp dirs on
-/// the system temp filesystem; use this helper only for executable fixtures.
-pub(crate) fn executable_tempdir() -> tempfile::TempDir {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target")
-        .join("test-executables");
-    std::fs::create_dir_all(&root).expect("create executable test temp root");
-    tempfile::Builder::new()
-        .prefix("webcodex-runner-exec-")
-        .tempdir_in(root)
-        .expect("create executable test temp dir")
-}
-
 pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub(crate) fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {

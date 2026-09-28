@@ -43,9 +43,6 @@ pub struct RuntimeInfo {
     /// captured at Runtime construction.
     pub shared_key_remote_enabled: bool,
     pub configured_public_url: Option<String>,
-    pub shared_key_configured: bool,
-    pub shared_key_enabled: bool,
-    pub shared_key_remote_enabled: bool,
     pub oauth2_enabled: bool,
     pub oauth2_shared_key_bridge_enabled: bool,
     pub quic: Option<std::sync::Arc<std::sync::Mutex<crate::config::QuicRuntimeStatus>>>,
@@ -1629,11 +1626,6 @@ impl Default for RuntimeInfo {
             shared_key_enabled: false,
             shared_key_remote_enabled: false,
             configured_public_url: None,
-            mcp_compact_schemas: true,
-            mcp_apps_enabled: true,
-            shared_key_configured: false,
-            shared_key_enabled: false,
-            shared_key_remote_enabled: false,
             oauth2_enabled: false,
             oauth2_shared_key_bridge_enabled: false,
             quic: Some(std::sync::Arc::new(std::sync::Mutex::new(

@@ -195,7 +195,6 @@ struct ServerInitOptions {
     public_url: Option<String>,
     allow_remote_shared_key: bool,
     open: bool,
-    allow_remote_shared_key: bool,
     overwrite: bool,
     json: bool,
 }
@@ -2055,7 +2054,6 @@ fn parse_server_init(args: &[String]) -> Result<ServerInitOptions, String> {
         public_url: None,
         allow_remote_shared_key: false,
         open: false,
-        allow_remote_shared_key: false,
         overwrite: false,
         json: false,
     };
@@ -2068,7 +2066,6 @@ fn parse_server_init(args: &[String]) -> Result<ServerInitOptions, String> {
             "--public-url" => opts.public_url = Some(next_value(&mut iter, arg)?),
             "--allow-remote-shared-key" => opts.allow_remote_shared_key = true,
             "--open" => opts.open = true,
-            "--allow-remote-shared-key" => opts.allow_remote_shared_key = true,
             "--overwrite" => opts.overwrite = true,
             "--json" => opts.json = true,
             _ => return Err(format!("unknown server init flag: {}", arg)),

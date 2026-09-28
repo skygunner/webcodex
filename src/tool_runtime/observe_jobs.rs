@@ -131,6 +131,99 @@ fn observed_has_meaningful_change(observed: &[ObservedJob]) -> bool {
         .any(|item| item.result.output["meaningful_changed"].as_bool() == Some(true))
 }
 
+fn wake_policy_name(wake_on: ObserveJobsWakeOn) -> &'static str {
+    match wake_on {
+        ObserveJobsWakeOn::Change => "change",
+        ObserveJobsWakeOn::MeaningfulChange => "meaningful_change",
+        ObserveJobsWakeOn::Terminal => "terminal",
+        ObserveJobsWakeOn::AllTerminal => "all_terminal",
+    }
+}
+
+fn detailed_wake_reason(items: &[Value], wake_reason: WakeReason) -> &'static str {
+    match wake_reason {
+        WakeReason::Immediate => "immediate",
+        WakeReason::Terminal => "terminal",
+        WakeReason::ItemError => "item_error",
+        WakeReason::Timeout => "timeout",
+        WakeReason::Updated => {
+            if items.iter().any(|item| {
+                item["success"].as_bool() == Some(true)
+                    && item["output"]["meaningful_changed"].as_bool() == Some(true)
+            }) {
+                "meaningful_change"
+            } else if items.iter().any(|item| {
+                item["success"].as_bool() == Some(true)
+                    && item["output"]["heartbeat_changed"].as_bool() == Some(true)
+            }) {
+                "heartbeat"
+            } else {
+                "change"
+            }
+        }
+    }
+}
+
+fn trace_observe_jobs_diagnostics(
+    resolved: &[ResolvedObserveJobsItem],
+    completed: &[Value],
+    wake_reason: WakeReason,
+    wake_on: ObserveJobsWakeOn,
+    requested_wait_secs: Option<u64>,
+    waited_ms: u64,
+) {
+    let reason = detailed_wake_reason(completed, wake_reason);
+    tracing::debug!(
+        wake_on = wake_policy_name(wake_on),
+        requested_wait_secs = ?requested_wait_secs,
+        waited_ms,
+        wake_reason = reason,
+        item_count = completed.len(),
+        "observe_jobs wait completed"
+    );
+    for item in completed {
+        if item["success"].as_bool() != Some(true) {
+            continue;
+        }
+        let Some(index) = item["index"].as_u64().map(|value| value as usize) else {
+            continue;
+        };
+        let Some(request) = resolved.iter().find(|candidate| candidate.index == index) else {
+            continue;
+        };
+        let output = &item["output"];
+        let before = request
+            .item
+            .after_observation_token
+            .as_deref()
+            .and_then(|token| {
+                webcodex_core::job_observation::JobObservationToken::parse(token).ok()
+            });
+        let after = output["observation_token"].as_str().and_then(|token| {
+            webcodex_core::job_observation::JobObservationToken::parse(token).ok()
+        });
+        tracing::debug!(
+            job_id = %request.item.job_id,
+            before_revision = ?before.as_ref().map(|token| token.revision),
+            before_stdout_cursor = ?before.as_ref().and_then(|token| token.stdout_cursor),
+            before_stderr_cursor = ?before.as_ref().and_then(|token| token.stderr_cursor),
+            after_revision = ?after.as_ref().map(|token| token.revision),
+            after_stdout_cursor = ?after.as_ref().and_then(|token| token.stdout_cursor),
+            after_stderr_cursor = ?after.as_ref().and_then(|token| token.stderr_cursor),
+            last_update_seq = ?output["last_update_seq"].as_u64(),
+            stdout_returned_lines = ?output["stdout_returned_lines"].as_u64(),
+            stderr_returned_lines = ?output["stderr_returned_lines"].as_u64(),
+            stdout_returned_bytes = output["stdout_returned_bytes"].as_u64().unwrap_or(0),
+            stderr_returned_bytes = output["stderr_returned_bytes"].as_u64().unwrap_or(0),
+            changed = output["changed"].as_bool().unwrap_or(false),
+            meaningful_changed = output["meaningful_changed"].as_bool().unwrap_or(false),
+            heartbeat_changed = output["heartbeat_changed"].as_bool().unwrap_or(false),
+            terminal = output["terminal"].as_bool().unwrap_or(false),
+            "observe_jobs item observed"
+        );
+    }
+}
+
 fn bounded_error(error: Option<&str>) -> String {
     let error = error.unwrap_or("Job observation failed");
     let mut chars = error.chars();

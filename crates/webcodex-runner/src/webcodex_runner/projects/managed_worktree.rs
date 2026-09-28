@@ -23,6 +23,7 @@ use super::{project_registry_write_lock, structured_project_error_cmd, RunnerPro
 use crate::{ok_cmd, CommandResult};
 
 const MANAGED_WORKTREE_GIT_TIMEOUT: Duration = Duration::from_secs(20);
+const MANAGED_WORKTREE_NAMESPACE: &str = ".webcodex-worktrees";
 
 /// The slug is routing text, not recovery identity. Only a registered exact
 /// operation establishes whether an occupied path is ours or a collision.
@@ -124,7 +125,7 @@ fn exact_git_commit(source: &Path, base_ref: &str) -> Result<String, &'static st
     Ok(sha.to_ascii_lowercase())
 }
 
-fn choose_managed_worktree_root(
+fn managed_worktree_namespace_candidate(
     policy: &RunnerPolicy,
     source: &Path,
 ) -> Result<PathBuf, &'static str> {
@@ -135,21 +136,64 @@ fn choose_managed_worktree_root(
         if !webcodex_runner_config::paths::path_is_within(source, &root) {
             continue;
         }
-        let candidate = root.join(".webcodex-managed-worktrees");
+        let candidate = root.join(MANAGED_WORKTREE_NAMESPACE);
         if webcodex_runner_config::paths::path_is_within(&candidate, source) {
             continue;
         }
         return Ok(candidate);
     }
     if policy.allow_cwd_anywhere {
-        if let Some(parent) = source.parent() {
-            let candidate = parent.join(".webcodex-managed-worktrees");
-            if !webcodex_runner_config::paths::path_is_within(&candidate, source) {
-                return Ok(candidate);
-            }
+        let parent = source.parent().ok_or("managed_worktree_root_unavailable")?;
+        let parent =
+            canonicalize_existing(parent).map_err(|_| "managed_worktree_root_unavailable")?;
+        if !paths_equal(&parent, source) {
+            return Ok(parent.join(MANAGED_WORKTREE_NAMESPACE));
         }
     }
     Err("managed_worktree_root_unavailable")
+}
+
+/// Materialize the Runner-owned managed-worktree namespace inside the current
+/// Runner filesystem policy. The caller never selects this destination, but the
+/// resulting Project must remain usable by the ordinary file/shell/process paths,
+/// which continue to enforce `allowed_roots`.
+fn ensure_managed_worktree_root(
+    policy: &RunnerPolicy,
+    source: &Path,
+) -> Result<PathBuf, &'static str> {
+    let candidate = managed_worktree_namespace_candidate(policy, source)?;
+    match std::fs::symlink_metadata(&candidate) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err("managed_worktree_root_unsafe");
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            match std::fs::create_dir(&candidate) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(_) => return Err("managed_worktree_root_unavailable"),
+            }
+        }
+        Err(_) => return Err("managed_worktree_root_unavailable"),
+    }
+
+    let root =
+        canonicalize_existing(&candidate).map_err(|_| "managed_worktree_root_unavailable")?;
+    if !paths_equal(&root, &candidate)
+        || validate_project_path_policy(policy, &root).is_err()
+        || webcodex_runner_config::paths::path_is_within(&root, source)
+    {
+        return Err("managed_worktree_root_unsafe");
+    }
+    Ok(root)
+}
+fn valid_project_root_fingerprint(value: &str) -> bool {
+    value
+        .strip_prefix(webcodex_core::runner_protocol::PROJECT_ROOT_FINGERPRINT_PREFIX)
+        .is_some_and(|digest| {
+            digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
 }
 
 /// Render an already-authorized managed-worktree destination for Git's CLI.
@@ -408,6 +452,9 @@ fn resume_managed_worktree(
             )
         }
     };
+    // Persisted provenance proves identity, not current filesystem authority.
+    // Re-apply the current Runner policy so narrowing allowed_roots takes effect
+    // for exact resume just as it does for ordinary Projects.
     if validate_windows_project_root(&worktree).is_err()
         || validate_project_path_policy(policy, &worktree).is_err()
     {
@@ -496,7 +543,7 @@ pub(crate) fn handle_prepare_managed_worktree_operation(
     else {
         return managed_worktree_error(start, "invalid_request", false, None, None, None);
     };
-    if payload.len() != 4 {
+    if !matches!(payload.len(), 4 | 6) {
         return managed_worktree_error(start, "invalid_request", false, None, None, None);
     }
     let Some(path) = payload
@@ -546,6 +593,40 @@ pub(crate) fn handle_prepare_managed_worktree_operation(
             None,
         );
     };
+    let expected_source_identity = match (
+        payload.get("expected_source_project_id"),
+        payload.get("expected_source_root_fingerprint"),
+    ) {
+        (None, None) => None,
+        (
+            Some(serde_json::Value::String(project_id)),
+            Some(serde_json::Value::String(root_fingerprint)),
+        ) if validate_project_op_id(project_id).is_ok()
+            && valid_project_root_fingerprint(root_fingerprint) =>
+        {
+            Some((project_id.as_str(), root_fingerprint.as_str()))
+        }
+        _ => {
+            return managed_worktree_error(
+                start,
+                "invalid_request",
+                false,
+                Some(&base_ref),
+                None,
+                None,
+            )
+        }
+    };
+    if resume_project_id.is_some() && expected_source_identity.is_some() {
+        return managed_worktree_error(
+            start,
+            "invalid_request",
+            false,
+            Some(&base_ref),
+            None,
+            None,
+        );
+    }
     if validate_windows_project_root(Path::new(path)).is_err() {
         return managed_worktree_error(
             start,
@@ -654,6 +735,22 @@ pub(crate) fn handle_prepare_managed_worktree_operation(
                 )
             }
         };
+    if expected_source_identity.is_some_and(|(expected_project_id, expected_root_fingerprint)| {
+        expected_project_id != source_project_id
+            || expected_root_fingerprint != source_root_fingerprint
+    }) {
+        return structured_project_error_cmd(
+            start,
+            "managed_worktree_source_identity_changed",
+            false,
+            serde_json::json!({
+                "base_ref": base_ref,
+                "source_dirty": source_dirty,
+                "source_project_id": source_project_id,
+                "source_root_fingerprint": source_root_fingerprint,
+            }),
+        );
+    }
     let base_sha = match exact_git_commit(&source_root, &base_ref) {
         Ok(sha) => sha,
         Err(error) => {
@@ -667,7 +764,7 @@ pub(crate) fn handle_prepare_managed_worktree_operation(
             )
         }
     };
-    let managed_root = match choose_managed_worktree_root(policy, &source_root) {
+    let managed_root = match ensure_managed_worktree_root(policy, &source_root) {
         Ok(root) => root,
         Err(error) => {
             return managed_worktree_error(
@@ -680,39 +777,6 @@ pub(crate) fn handle_prepare_managed_worktree_operation(
             )
         }
     };
-    if std::fs::create_dir_all(&managed_root).is_err() {
-        return managed_worktree_error(
-            start,
-            "worktree_creation_failed",
-            false,
-            Some(&base_ref),
-            Some(&base_sha),
-            Some(source_dirty),
-        );
-    }
-    let managed_root = match canonicalize_existing(&managed_root) {
-        Ok(root) => root,
-        Err(_) => {
-            return managed_worktree_error(
-                start,
-                "worktree_creation_failed",
-                false,
-                Some(&base_ref),
-                Some(&base_sha),
-                Some(source_dirty),
-            )
-        }
-    };
-    if validate_project_path_policy(policy, &managed_root).is_err() {
-        return managed_worktree_error(
-            start,
-            "managed_worktree_root_unavailable",
-            false,
-            Some(&base_ref),
-            Some(&base_sha),
-            Some(source_dirty),
-        );
-    }
     let destination =
         match load_project_files_for_path_resolution(project_registry_dir).and_then(|projects| {
             choose_managed_destination(&managed_root, &source_root, operation_id, &projects)
@@ -918,10 +982,14 @@ pub(crate) fn handle_prepare_managed_worktree_operation(
         }
         worktree
     };
-    if validate_project_path_policy(policy, &canonical_worktree).is_err() {
+    if canonical_worktree
+        .parent()
+        .is_none_or(|parent| !paths_equal(parent, &managed_root))
+        || validate_project_path_policy(policy, &canonical_worktree).is_err()
+    {
         return managed_worktree_error(
             start,
-            "managed_worktree_root_unavailable",
+            "managed_worktree_root_unsafe",
             true,
             Some(&base_ref),
             Some(&base_sha),

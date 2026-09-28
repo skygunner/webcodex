@@ -279,7 +279,7 @@ A typical coding flow is:
 ```text
 work_on_project
 → read_files / search_project_texts / semantic navigation as needed
-→ apply_text_edits or other canonical edit tools
+→ edit_project_files or other canonical edit tools
 → present_work_result once when substantial work becomes materially stateful
 → run_process / run_shell / focused validation tools as needed
 → show_changes

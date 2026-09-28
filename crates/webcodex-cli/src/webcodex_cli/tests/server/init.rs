@@ -211,7 +211,6 @@ fn server_init_writes_env_file_and_0600_permissions() {
         env_file.to_str().unwrap(),
         "--public-url",
         "https://example.test/",
-        "--allow-remote-shared-key",
     ]))
     .unwrap();
     let output = run_server_init(opts).unwrap();

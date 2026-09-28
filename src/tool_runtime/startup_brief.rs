@@ -46,10 +46,13 @@ const MAX_FAILURE_FILE_JSON_BYTES: usize = 160;
 const MAX_ACTION_JSON_BYTES: usize = 384;
 const MAX_INSTRUCTION_EXCERPT_JSON_BYTES: usize = 768;
 
-#[cfg(test)]
-pub(crate) use webcodex_core::runtime_contract::BUILTIN_CODING_WORKFLOW_MAX_GUIDANCE_ITEMS;
 pub(crate) use webcodex_core::runtime_contract::{
     BUILTIN_CODING_WORKFLOW_CONTRACT, BUILTIN_CODING_WORKFLOW_VERSION,
+};
+#[cfg(test)]
+pub(crate) use webcodex_core::runtime_contract::{
+    BUILTIN_CODING_WORKFLOW_GUIDANCE_TARGET_ITEMS,
+    BUILTIN_CODING_WORKFLOW_GUIDANCE_TARGET_ITEM_CHARS,
 };
 
 /// Stable model-facing coding/review semantics owned by WebCodex itself.
@@ -172,11 +175,11 @@ fn tool_strategy_guidance(profile: CodingGuidanceProfile) -> &'static [&'static 
             "Host-native Code Mode is model guidance only. It grants no WebCodex capability/authority, changes no effects/retry/idempotency, and does not require WebCodex nested Code Mode.",
             "Known same-kind inputs: prefer native batches such as read_files(items), search_project_texts(queries), cargo_check(packages), or one edit_project_files batch; do not Promise.all same-kind micro-calls.",
             "Known independent cross-tool read-only observations: native batches first. For remaining fan-out, use Host Promise.allSettled when partial evidence is useful; use Promise.all only for true all-or-nothing. Prefer search_and_read for search→read; keep result-dependent chains in one Host cell when mechanically determined.",
-            "Do not return to the model merely because one child ToolResult arrived. If the next call is mechanically determined with no unresolved semantic choice/uncertainty/authority need, stay in the Host cell and return compact evidence for the next decision.",
-            "Natural model-turn boundaries are semantic choice, ambiguous result, new user decision, authority/permission, outcome_unknown or competing recovery, or unresolved mutation intent—not child-call completion.",
+            "Do not return to the model merely because one child ToolResult arrived. If the next call is mechanically determined, stay in the Host cell. reread_required=true or direct_retry_safe=false stops effectful replay; recovery is observation, not mutation retry authority.",
+            "Natural model-turn boundaries are semantic choice, ambiguous result, new user decision, authority/permission, stale revision/fence, outcome_unknown or competing recovery, or unresolved mutation intent—not child-call completion.",
             "Keep full ToolResults in the Host cell when possible; preserve revisions, exact pending continuations, observation_ref/read_revision, and failure/recovery fields. Normal pending results may intentionally hide top-level Job bookkeeping. Avoid text(JSON.stringify(fullResult)) dumps.",
             "On execution_state=pending, retain the continuation as fallback and finish independent calls. Its presence does not make observe_jobs mechanically determined. Do not keep a Host cell alive with repeated same-Job polling; return when useful DAG work is exhausted. Arm one terminal wait only when terminal blocks progress.",
-            "Development validation may overlap independent work. For final evidence freeze covered source; covered-source edits invalidate that evidence and require rerun. Host support is supplied by the Host, not verified by WebCodex.",
+            "Development validation may overlap independent work. For final evidence freeze covered source; covered-source edits invalidate that evidence and require rerun. Host support is supplied by the Host, not verified by WebCodex."
         ],
         #[cfg(feature = "experimental-code-mode")]
         CodingGuidanceProfile::CodeMode => &[
@@ -1550,7 +1553,10 @@ fn enforce_hard_size_limit(brief: &mut Value) {
     // larger guidance projection could trim unrelated instructions/evidence.
     let workflow_budget = serialized_len(&builtin_coding_workflow_projection(
         CodingGuidanceProfile::Direct,
-    ));
+    ))
+    .max(serialized_len(&builtin_coding_workflow_projection(
+        CodingGuidanceProfile::HostCodeMode,
+    )));
     #[cfg(feature = "experimental-code-mode")]
     let workflow_budget = workflow_budget.max(serialized_len(&builtin_coding_workflow_projection(
         CodingGuidanceProfile::CodeMode,
@@ -1559,6 +1565,46 @@ fn enforce_hard_size_limit(brief: &mut Value) {
         .saturating_sub(workflow_budget.saturating_sub(serialized_len(&brief["workflow"])));
     if serialized_len(brief) <= max_bytes {
         return;
+    }
+
+    // Extension entries are optional selection metadata and can be recovered
+    // through explicit discovery. Under aggregate startup pressure, trim them
+    // before repository facts or project instruction prose.
+    const EXTENSION_CATALOGS: &[(&str, &str)] = &[
+        (
+            "/extensions/skills",
+            "Use skills.catalog or skill_list for broader or refreshed discovery.",
+        ),
+        (
+            "/extensions/plugins",
+            "Use plugins.catalog or explicit plugin_tool list and describe for broader or current schema discovery.",
+        ),
+    ];
+    loop {
+        if serialized_len(brief) <= max_bytes {
+            return;
+        }
+        let mut removed = false;
+        for (pointer, discovery_hint) in EXTENSION_CATALOGS {
+            let Some(catalog) = brief.pointer_mut(pointer).and_then(Value::as_object_mut) else {
+                continue;
+            };
+            let Some(entries) = catalog.get_mut("entries").and_then(Value::as_array_mut) else {
+                continue;
+            };
+            if !entries.is_empty() {
+                entries.pop();
+                let returned_count = entries.len();
+                catalog.insert("returned_count".to_string(), json!(returned_count));
+                catalog.insert("truncated".to_string(), json!(true));
+                catalog.insert("discovery_hint".to_string(), json!(discovery_hint));
+                removed = true;
+                break;
+            }
+        }
+        if !removed {
+            break;
+        }
     }
 
     // Repository metadata is lower priority than rule prose: drop optional
@@ -1778,8 +1824,14 @@ fn enforce_hard_size_limit(brief: &mut Value) {
         brief["instructions"]["truncated"] = json!(true);
     }
 
+    // The common workflow allowance is an internal evidence-alignment target,
+    // not a tighter wire limit for smaller profiles. Synthetic or future
+    // untrimmed fields may make that target unreachable after every canonical
+    // degradable field is exhausted; in that case the real 30 KiB startup hard
+    // bound remains authoritative. HostCodeMode itself has max_bytes equal to
+    // the hard bound because its workflow envelope establishes the allowance.
     debug_assert!(
-        serialized_len(brief) <= max_bytes,
+        serialized_len(brief) <= STANDARD_STARTUP_HARD_MAX_BYTES,
         "startup brief base contract exceeded its hard byte budget"
     );
 }
@@ -2445,6 +2497,16 @@ mod tests {
         };
         let first = build(CodingGuidanceProfile::Direct);
         let second = build(CodingGuidanceProfile::Direct);
+        let host = build(CodingGuidanceProfile::HostCodeMode);
+        assert!(startup_brief_size(&host) <= STANDARD_STARTUP_HARD_MAX_BYTES);
+        let mut direct_facts = first.clone();
+        let mut host_facts = host.clone();
+        direct_facts.as_object_mut().unwrap().remove("workflow");
+        host_facts.as_object_mut().unwrap().remove("workflow");
+        assert_eq!(
+            direct_facts, host_facts,
+            "HostCodeMode guidance must not change which startup facts fit the byte budget"
+        );
         #[cfg(feature = "experimental-code-mode")]
         {
             let composed = build(CodingGuidanceProfile::CodeMode);

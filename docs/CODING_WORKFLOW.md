@@ -66,7 +66,7 @@ When `work_on_project`, `start_session`, `session_summary`, or an explicit hando
 `work_on_project` accepts an optional `guidance_profile`. An explicit value always
 wins. When omitted on MCP, the configured `WEBCODEX_MCP_HOST_PROFILE` supplies the
 model-guidance default; omission on non-MCP/internal calls falls back to `direct`.
-Workflow contract v21 returns shared `guidance`, `model_protocol` and review `roles`,
+Workflow contract v24 returns shared `guidance`, `model_protocol` and review `roles`,
 plus only the selected `tool_strategy`, when explicitly requested through
 `context_request=["webcodex.workflow"]`. The selection is request-local: choose again
 on exact resume without changing Session identity or business state. It is never
@@ -85,9 +85,12 @@ context refreshes use the same effective-profile rule.
   search/read/branch chains should stay in one Host cell when the next call is
   mechanically determined. A child ToolResult arriving is not itself a
   model-turn boundary: return to the model for semantic choices, ambiguity, new user
-  decisions, authority/permission requirements, uncertain outcomes, competing
-  recovery choices, or unresolved mutation intent. Keep full ToolResults in the Host
-  cell and return compact decision evidence. Treat each Host cell as a short dependency
+  decisions, authority/permission requirements, stale revisions/fences, uncertain outcomes,
+  competing recovery choices, or unresolved mutation intent. A recovery with
+  `reread_required=true` or `direct_retry_safe=false` is a hard boundary for effectful
+  replay: it may identify the next observation, but it is not authority to reread and
+  automatically retry the mutation. Keep full ToolResults in the Host cell and return
+  compact decision evidence. Treat each Host cell as a short dependency
   DAG, not a long-running Job lifetime. After Job handoff, retain exact identity and
   continue already-known independent work; if the remaining work is primarily waiting,
   end the cell and resume from the exact continuation instead of holding it open. Avoid

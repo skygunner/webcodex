@@ -5603,7 +5603,11 @@ fn assert_local_job_stdin_isolated(test_name: &str, validation: bool) {
     const FIXTURE_ENV: &str = "WEBCODEX_TEST_JOB_STDIN_FIXTURE";
     const PARENT_INPUT: &str = "parent-liveness-input-must-not-reach-jobs\n";
     if std::env::var(FIXTURE_ENV).as_deref() == Ok(test_name) {
-        let root = crate::tests::executable_tempdir();
+        let root = if validation {
+            crate::tests::executable_tempdir()
+        } else {
+            tempfile::tempdir().unwrap()
+        };
         let mut shell = ShellConfig::default();
         #[cfg(windows)]
         let probe =

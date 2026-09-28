@@ -36,6 +36,315 @@ fn retained_terminal_job(job_id: &str, ended_at: i64) -> RunningJob {
 }
 
 #[test]
+fn job_update_delivery_signal_wakes_all_worker_consumers() {
+    let signal = Arc::new(JobUpdateDeliverySignal::default());
+    let mut waiters = Vec::new();
+    for _ in 0..2 {
+        let signal = Arc::clone(&signal);
+        waiters.push(std::thread::spawn(move || {
+            let started = Instant::now();
+            let generation = signal
+                .wait_for_change(0, Duration::from_secs(2))
+                .expect("signal remains open");
+            (generation, started.elapsed())
+        }));
+    }
+
+    std::thread::sleep(Duration::from_millis(50));
+    signal.notify();
+
+    for waiter in waiters {
+        let (generation, elapsed) = waiter.join().expect("signal waiter");
+        assert_eq!(generation, 1);
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "all worker consumers must wake promptly from one update notification"
+        );
+    }
+}
+
+#[test]
+fn heartbeat_batch_advances_only_runner_owned_active_lifecycles() {
+    let manager = JobManager::new(1);
+    for (job_id, status) in [
+        ("heartbeat-agent-queued", "agent_queued"),
+        ("heartbeat-running", "running"),
+        ("heartbeat-stop-requested", "stop_requested"),
+        ("heartbeat-server-queued", "queued"),
+        ("heartbeat-legacy-started", "started"),
+        ("heartbeat-terminal", "completed"),
+    ] {
+        let mut snapshot = test_job_snapshot(job_id);
+        snapshot.status = status.to_string();
+        if status == "completed" {
+            snapshot.ended_at = Some(chrono::Utc::now().timestamp());
+            snapshot.exit_code = Some(0);
+            snapshot.duration_ms = Some(1);
+        }
+        lock_unpoison(&manager.jobs).insert(
+            job_id.to_string(),
+            RunningJob {
+                client_id: "test-agent".to_string(),
+                runner_instance_id: "test-instance".to_string(),
+                snapshot,
+                child: None,
+                stop_requested: Arc::new(AtomicBool::new(status == "stop_requested")),
+                slot_reserved: runner_job_is_active(status),
+            },
+        );
+    }
+
+    assert_eq!(
+        queue_job_heartbeat_batch(
+            &manager.jobs,
+            &manager.pending_job_updates,
+            &manager.job_update_delivery_order,
+            &manager.delivery_signal,
+        ),
+        3
+    );
+
+    let jobs = lock_unpoison(&manager.jobs);
+    for job_id in [
+        "heartbeat-agent-queued",
+        "heartbeat-running",
+        "heartbeat-stop-requested",
+    ] {
+        assert_eq!(jobs[job_id].snapshot.update_seq, 2, "{job_id}");
+    }
+    for job_id in [
+        "heartbeat-server-queued",
+        "heartbeat-legacy-started",
+        "heartbeat-terminal",
+    ] {
+        assert_eq!(jobs[job_id].snapshot.update_seq, 1, "{job_id}");
+    }
+    drop(jobs);
+
+    let pending = lock_unpoison(&manager.pending_job_updates);
+    for job_id in [
+        "heartbeat-agent-queued",
+        "heartbeat-running",
+        "heartbeat-stop-requested",
+    ] {
+        let marker = pending[job_id]
+            .output_only
+            .as_ref()
+            .expect("active Job heartbeat marker");
+        assert_eq!(marker.update_seq, 2);
+        assert!(marker.liveness_only);
+        assert!(!marker.finished);
+    }
+    for job_id in [
+        "heartbeat-server-queued",
+        "heartbeat-legacy-started",
+        "heartbeat-terminal",
+    ] {
+        assert!(!pending.contains_key(job_id), "{job_id}");
+    }
+}
+
+#[test]
+fn heartbeat_delivery_is_minimal_liveness_only_payload() {
+    let manager = JobManager::new(1);
+    let job_id = "heartbeat-minimal";
+    let mut snapshot = test_job_snapshot(job_id);
+    snapshot.stdout.tail = "retained stdout\n".to_string();
+    snapshot.stderr.tail = "retained stderr\n".to_string();
+    snapshot.command_execution_state = Some(ShellCommandExecutionState::OutcomeUnknown);
+    snapshot.validation_progress = Some(ShellJobValidationProgress {
+        completed: 1,
+        current_step: Some("check".to_string()),
+        failed_step: None,
+    });
+    snapshot.activity = Some(ShellJobActivity {
+        state: ShellJobActivityState::Working,
+        phase: ShellJobActivityPhase::ProcessRunning,
+        source: ShellJobActivitySource::RunnerExecution,
+    });
+    lock_unpoison(&manager.jobs).insert(
+        job_id.to_string(),
+        RunningJob {
+            client_id: "test-agent".to_string(),
+            runner_instance_id: "test-instance".to_string(),
+            snapshot,
+            child: None,
+            stop_requested: Arc::new(AtomicBool::new(false)),
+            slot_reserved: true,
+        },
+    );
+
+    assert_eq!(
+        queue_job_heartbeat_batch(
+            &manager.jobs,
+            &manager.pending_job_updates,
+            &manager.job_update_delivery_order,
+            &manager.delivery_signal,
+        ),
+        1
+    );
+    let marker = lock_unpoison(&manager.pending_job_updates)[job_id]
+        .output_only
+        .clone()
+        .expect("heartbeat marker");
+    let jobs = lock_unpoison(&manager.jobs);
+    let update = job_update_from_delivery(&jobs[job_id], &marker);
+    assert_eq!(update.update_seq, Some(2));
+    assert_eq!(update.status, "running");
+    assert!(update.stdout_chunk.is_none());
+    assert!(update.stderr_chunk.is_none());
+    assert!(update.log_snapshot.is_none());
+    assert!(update.exit_code.is_none());
+    assert!(update.duration_ms.is_none());
+    assert!(update.error.is_none());
+    assert!(update.command_execution_state.is_none());
+    assert!(update.validation_progress.is_none());
+    assert!(update.test_count_evidence.is_none());
+    assert!(update.activity.is_none());
+    assert!(!update.finished);
+}
+
+#[test]
+fn heartbeat_delivery_stays_behind_meaningful_updates_and_stops_at_terminal() {
+    let manager = JobManager::new(1);
+    let job_id = "heartbeat-order";
+    lock_unpoison(&manager.jobs).insert(
+        job_id.to_string(),
+        RunningJob {
+            client_id: "test-agent".to_string(),
+            runner_instance_id: "test-instance".to_string(),
+            snapshot: test_job_snapshot(job_id),
+            child: None,
+            stop_requested: Arc::new(AtomicBool::new(false)),
+            slot_reserved: true,
+        },
+    );
+
+    assert_eq!(
+        queue_job_heartbeat_batch(
+            &manager.jobs,
+            &manager.pending_job_updates,
+            &manager.job_update_delivery_order,
+            &manager.delivery_signal,
+        ),
+        1
+    );
+    manager.update_and_send(
+        job_id,
+        RunnerJobDelta {
+            status: "stop_requested".to_string(),
+            error: Some("stop requested".to_string()),
+            ..Default::default()
+        },
+    );
+    {
+        let pending = lock_unpoison(&manager.pending_job_updates);
+        let queue = &pending[job_id];
+        assert_eq!(queue.required.len(), 1);
+        assert_eq!(queue.required.front().unwrap().update_seq, 3);
+        assert!(queue.output_only.is_none());
+    }
+
+    assert_eq!(
+        queue_job_heartbeat_batch(
+            &manager.jobs,
+            &manager.pending_job_updates,
+            &manager.job_update_delivery_order,
+            &manager.delivery_signal,
+        ),
+        1
+    );
+    {
+        let pending = lock_unpoison(&manager.pending_job_updates);
+        let queue = &pending[job_id];
+        assert_eq!(queue.next().unwrap().update_seq, 3);
+        let heartbeat = queue.output_only.as_ref().expect("post-stop heartbeat");
+        assert_eq!(heartbeat.update_seq, 4);
+        assert!(heartbeat.liveness_only);
+    }
+
+    manager.update_and_send(
+        job_id,
+        RunnerJobDelta {
+            status: "stopped".to_string(),
+            error: Some("stopped".to_string()),
+            finished: true,
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        queue_job_heartbeat_batch(
+            &manager.jobs,
+            &manager.pending_job_updates,
+            &manager.job_update_delivery_order,
+            &manager.delivery_signal,
+        ),
+        0
+    );
+    let pending = lock_unpoison(&manager.pending_job_updates);
+    let queue = &pending[job_id];
+    assert!(queue.output_only.is_none());
+    assert_eq!(
+        queue
+            .required
+            .iter()
+            .map(|update| update.update_seq)
+            .collect::<Vec<_>>(),
+        vec![3, 5]
+    );
+}
+
+#[test]
+fn heartbeat_worker_keeps_fixed_cadence_across_signals_and_exits_on_shutdown() {
+    let jobs = Arc::new(Mutex::new(HashMap::new()));
+    let pending = Arc::new(Mutex::new(HashMap::new()));
+    let delivery_order = Arc::new(Mutex::new(()));
+    let shutting_down = Arc::new(AtomicBool::new(false));
+    let signal = Arc::new(JobUpdateDeliverySignal::default());
+    let job_id = "heartbeat-worker";
+    lock_unpoison(&jobs).insert(
+        job_id.to_string(),
+        RunningJob {
+            client_id: "test-agent".to_string(),
+            runner_instance_id: "test-instance".to_string(),
+            snapshot: test_job_snapshot(job_id),
+            child: None,
+            stop_requested: Arc::new(AtomicBool::new(false)),
+            slot_reserved: true,
+        },
+    );
+
+    let interval = Duration::from_millis(300);
+    let worker = spawn_job_heartbeat_worker_with_interval(
+        Arc::downgrade(&jobs),
+        Arc::downgrade(&pending),
+        Arc::downgrade(&delivery_order),
+        Arc::downgrade(&shutting_down),
+        Arc::downgrade(&signal),
+        interval,
+    );
+
+    std::thread::sleep(Duration::from_millis(180));
+    signal.notify();
+    assert!(
+        wait_until(Duration::from_millis(220), || lock_unpoison(&jobs)[job_id]
+            .snapshot
+            .update_seq
+            >= 2),
+        "ordinary delivery signals must not postpone the fixed heartbeat cadence"
+    );
+
+    shutting_down.store(true, Ordering::SeqCst);
+    let shutdown_started = Instant::now();
+    signal.close();
+    worker.join().expect("heartbeat worker must exit cleanly");
+    assert!(
+        shutdown_started.elapsed() < Duration::from_secs(1),
+        "closed shutdown signal must wake the heartbeat worker promptly"
+    );
+}
+
+#[test]
 fn delivery_queue_orders_semantic_truth_and_drops_stale_output_only_updates() {
     let mut queue = JobUpdateDeliveryQueue::default();
     let base = RunnerJobUpdateRequest {
@@ -207,6 +516,7 @@ fn delivery_worker_waits_for_sequence_barrier_before_selecting_candidate() {
         test_count_evidence: None,
         activity: None,
         finished: false,
+        liveness_only: false,
     };
     {
         let mut pending_map = lock_unpoison(&manager.pending_job_updates);

@@ -54,6 +54,10 @@ use crate::{
 use webcodex_core::runner_operation::{self, RunnerOperation};
 
 const JOB_UPDATE_INTERVAL_MS: u64 = 250;
+/// Runner-owned liveness cadence for active Jobs. The cadence is independent
+/// of stdout/stderr and other Job traffic so one noisy Job cannot starve
+/// liveness evidence for another silent Job.
+const JOB_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 
 /// At most the validated Job state machine's required semantic transitions are
 /// retained for live delivery. Output and advisory current-activity-only
@@ -77,7 +81,10 @@ impl JobUpdateDeliverySignal {
     fn notify(&self) {
         let mut state = lock_unpoison(&self.state);
         state.generation = state.generation.saturating_add(1);
-        self.wake.notify_one();
+        // Delivery and heartbeat workers both observe this generation. Wake
+        // both so a heartbeat waiter can never consume the delivery worker's
+        // only notification and delay a queued update.
+        self.wake.notify_all();
     }
 
     fn close(&self) {
@@ -282,6 +289,13 @@ impl JobManager {
             Arc::downgrade(&job_update_delivery_order),
             Arc::clone(&delivery_signal),
         );
+        spawn_job_heartbeat_worker(
+            Arc::downgrade(&jobs),
+            Arc::downgrade(&pending_job_updates),
+            Arc::downgrade(&job_update_delivery_order),
+            Arc::downgrade(&shutting_down),
+            Arc::downgrade(&delivery_signal),
+        );
         let owner_lifetime = Arc::new(JobManagerOwnerLifetime {
             jobs: Arc::downgrade(&jobs),
             detached_jobs: Arc::downgrade(&detached_jobs),
@@ -366,6 +380,9 @@ struct PendingJobUpdateDelivery {
     test_count_evidence: Option<ShellJobTestCountEvidence>,
     activity: Option<ShellJobActivity>,
     finished: bool,
+    /// Sequence-only liveness marker. Delivery must not project the current
+    /// snapshot's logs/activity/result fields into this older sequence.
+    liveness_only: bool,
 }
 
 impl PendingJobUpdateDelivery {
@@ -381,6 +398,23 @@ impl PendingJobUpdateDelivery {
             test_count_evidence: update.test_count_evidence.clone(),
             activity: update.activity,
             finished: update.finished,
+            liveness_only: false,
+        }
+    }
+
+    fn heartbeat(job: &RunningJob) -> Self {
+        Self {
+            update_seq: job.snapshot.update_seq,
+            status: job.snapshot.status.clone(),
+            exit_code: None,
+            duration_ms: None,
+            error: None,
+            command_execution_state: None,
+            validation_progress: None,
+            test_count_evidence: None,
+            activity: None,
+            finished: false,
+            liveness_only: true,
         }
     }
 }
@@ -500,6 +534,28 @@ fn job_update_from_delivery(
     job: &RunningJob,
     pending: &PendingJobUpdateDelivery,
 ) -> RunnerJobUpdateRequest {
+    if pending.liveness_only {
+        return RunnerJobUpdateRequest {
+            client_id: job.client_id.clone(),
+            runner_instance_id: job.runner_instance_id.clone(),
+            job_id: job.snapshot.job_id.clone(),
+            request_id: Some(job.snapshot.request_id.clone()),
+            update_seq: Some(pending.update_seq),
+            status: pending.status.clone(),
+            stdout_chunk: None,
+            stderr_chunk: None,
+            log_snapshot: None,
+            exit_code: None,
+            duration_ms: None,
+            error: None,
+            command_execution_state: None,
+            validation_progress: None,
+            test_count_evidence: None,
+            activity: None,
+            finished: false,
+        };
+    }
+
     let mut update =
         job_update_from_snapshot(&job.client_id, &job.runner_instance_id, &job.snapshot);
     update.update_seq = Some(pending.update_seq);
@@ -631,6 +687,110 @@ fn spawn_job_update_delivery_worker(
             }
         }
     });
+}
+
+fn queue_job_heartbeat_batch(
+    jobs_map: &Mutex<HashMap<String, RunningJob>>,
+    pending_map: &Mutex<HashMap<String, JobUpdateDeliveryQueue>>,
+    delivery_order: &Mutex<()>,
+    signal: &JobUpdateDeliverySignal,
+) -> usize {
+    let _delivery_order = lock_unpoison(delivery_order);
+    let pending_heartbeats = {
+        let mut jobs = lock_unpoison(jobs_map);
+        jobs.values_mut()
+            .filter(|job| runner_job_is_active(&job.snapshot.status))
+            .map(|job| {
+                job.snapshot.update_seq = job.snapshot.update_seq.saturating_add(1);
+                (
+                    job.snapshot.job_id.clone(),
+                    PendingJobUpdateDelivery::heartbeat(job),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    if pending_heartbeats.is_empty() {
+        return 0;
+    }
+
+    let active_jobs = pending_heartbeats.len();
+    let mut pending = lock_unpoison(pending_map);
+    for (job_id, heartbeat) in pending_heartbeats {
+        let _ = pending.entry(job_id).or_default().enqueue(heartbeat, false);
+    }
+    drop(pending);
+    signal.notify();
+    active_jobs
+}
+
+fn spawn_job_heartbeat_worker(
+    jobs: Weak<Mutex<HashMap<String, RunningJob>>>,
+    pending_job_updates: Weak<Mutex<HashMap<String, JobUpdateDeliveryQueue>>>,
+    job_update_delivery_order: Weak<Mutex<()>>,
+    shutting_down: Weak<AtomicBool>,
+    signal: Weak<JobUpdateDeliverySignal>,
+) {
+    let _ = spawn_job_heartbeat_worker_with_interval(
+        jobs,
+        pending_job_updates,
+        job_update_delivery_order,
+        shutting_down,
+        signal,
+        JOB_HEARTBEAT_INTERVAL,
+    );
+}
+
+fn spawn_job_heartbeat_worker_with_interval(
+    jobs: Weak<Mutex<HashMap<String, RunningJob>>>,
+    pending_job_updates: Weak<Mutex<HashMap<String, JobUpdateDeliveryQueue>>>,
+    job_update_delivery_order: Weak<Mutex<()>>,
+    shutting_down: Weak<AtomicBool>,
+    signal: Weak<JobUpdateDeliverySignal>,
+    interval: Duration,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let Some(signal) = signal.upgrade() else {
+            return;
+        };
+        let mut observed_generation = signal.generation();
+        let mut next_heartbeat = Instant::now() + interval;
+        loop {
+            let remaining = next_heartbeat.saturating_duration_since(Instant::now());
+            let Some(next) = signal.wait_for_change(observed_generation, remaining) else {
+                break;
+            };
+            observed_generation = next;
+            if shutting_down
+                .upgrade()
+                .is_none_or(|flag| flag.load(Ordering::SeqCst))
+            {
+                break;
+            }
+            if Instant::now() < next_heartbeat {
+                continue;
+            }
+
+            let Some(jobs_map) = jobs.upgrade() else {
+                break;
+            };
+            let Some(pending_map) = pending_job_updates.upgrade() else {
+                break;
+            };
+            let Some(delivery_order) = job_update_delivery_order.upgrade() else {
+                break;
+            };
+            let active_jobs =
+                queue_job_heartbeat_batch(&jobs_map, &pending_map, &delivery_order, &signal);
+            next_heartbeat = Instant::now() + interval;
+            if active_jobs > 0 {
+                tracing::debug!(
+                    active_jobs,
+                    interval_secs = interval.as_secs(),
+                    "runner job heartbeat batch queued"
+                );
+            }
+        }
+    })
 }
 
 #[cfg(test)]
@@ -1609,6 +1769,7 @@ impl JobManager {
                         test_count_evidence: snapshot.test_count_evidence.clone(),
                         activity: snapshot.activity,
                         finished: runner_job_is_terminal(&snapshot.status),
+                        liveness_only: false,
                     };
                     let _ = queue.enqueue(marker, true);
                 } else {

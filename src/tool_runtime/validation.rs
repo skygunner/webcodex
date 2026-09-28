@@ -1,11 +1,13 @@
 use serde_json::{json, Value};
 use std::time::Duration;
 
+#[cfg(test)]
+use super::helpers::DEFAULT_CARGO_FMT_TIMEOUT_SECS;
 use super::helpers::{
     bounded_tail, command_outcome_unknown_message, command_rejected_message,
     command_timeout_message, looks_like_command_timeout, validate_project_relative_path,
-    DEFAULT_CARGO_CHECK_TIMEOUT_SECS, DEFAULT_CARGO_FMT_TIMEOUT_SECS,
-    DEFAULT_CARGO_TEST_TIMEOUT_SECS, MAX_VALIDATION_TIMEOUT_SECS, MIN_VALIDATION_TIMEOUT_SECS,
+    DEFAULT_CARGO_CHECK_TIMEOUT_SECS, DEFAULT_CARGO_TEST_TIMEOUT_SECS, MAX_VALIDATION_TIMEOUT_SECS,
+    MIN_VALIDATION_TIMEOUT_SECS,
 };
 use super::shell::{command_execution_state_name, ProjectCommandOutput};
 use super::structured_execution::{
@@ -13,9 +15,12 @@ use super::structured_execution::{
     StructuredExecutionBudget, StructuredJobHandoffFailure, STRUCTURED_EXECUTION_SYNC_WAIT_SECS,
 };
 use super::tool_result::ToolResult;
+#[cfg(test)]
+use super::validation_profile::ValidationCommandOptions;
 use super::validation_profile::{
-    validation_adapter_for_tool, ValidationAdapter, ValidationCommandOptions,
-    ValidationFailureEvidence,
+    requires_multi_package_cargo_check, runtime_profile, validation_adapter_for_tool,
+    CargoReadOnlyValidationOperation, GoReadOnlyValidationOperation, ReadOnlyValidationOperation,
+    ValidationAdapter, ValidationFailureEvidence,
 };
 use super::ToolRuntime;
 use crate::auth::AuthContext;
@@ -360,6 +365,91 @@ pub(super) fn reject_structured_validation_ssh_resource(
     })
 }
 
+fn validation_identity_arguments(
+    operation: &ReadOnlyValidationOperation,
+    cwd: Option<&str>,
+    require_tests: Option<bool>,
+    minimum_tests: Option<u64>,
+) -> Value {
+    match operation {
+        ReadOnlyValidationOperation::Cargo(CargoReadOnlyValidationOperation::FormatCheck) => {
+            json!({
+                "cwd": cwd,
+                "check": true,
+                "filter": null,
+                "lib": null,
+                "all_targets": null,
+                "all_features": null,
+                "no_default_features": null,
+                "features": null,
+                "package": null,
+                "no_run": null,
+                "require_tests": require_tests,
+                "min_tests": minimum_tests,
+                "packages": null,
+            })
+        }
+        ReadOnlyValidationOperation::Cargo(CargoReadOnlyValidationOperation::Check(options)) => {
+            json!({
+                "cwd": cwd,
+                "check": false,
+                "filter": null,
+                "lib": null,
+                "all_targets": options.all_targets,
+                "all_features": options.all_features,
+                "no_default_features": options.no_default_features,
+                "features": options.features.as_deref(),
+                "package": options.package.as_deref(),
+                "no_run": null,
+                "require_tests": require_tests,
+                "min_tests": minimum_tests,
+                "packages": options.packages.as_ref(),
+            })
+        }
+        ReadOnlyValidationOperation::Cargo(CargoReadOnlyValidationOperation::Test(options)) => {
+            json!({
+                "cwd": cwd,
+                "check": false,
+                "filter": options.filter.as_deref(),
+                "lib": options.lib,
+                "all_targets": options.all_targets,
+                "all_features": options.all_features,
+                "no_default_features": options.no_default_features,
+                "features": options.features.as_deref(),
+                "package": options.package.as_deref(),
+                "no_run": options.no_run,
+                "require_tests": require_tests,
+                "min_tests": minimum_tests,
+                "packages": null,
+            })
+        }
+        ReadOnlyValidationOperation::Go(GoReadOnlyValidationOperation::Test(options)) => json!({
+            "cwd": cwd,
+            "check": false,
+            "filter": null,
+            "lib": null,
+            "all_targets": null,
+            "all_features": null,
+            "no_default_features": null,
+            "features": null,
+            "package": null,
+            "no_run": null,
+            "require_tests": require_tests,
+            "min_tests": minimum_tests,
+            "packages": options.packages.as_ref(),
+        }),
+    }
+}
+
+fn validation_no_run(operation: &ReadOnlyValidationOperation) -> Option<bool> {
+    match operation {
+        ReadOnlyValidationOperation::Cargo(CargoReadOnlyValidationOperation::Test(options)) => {
+            options.no_run
+        }
+        _ => None,
+    }
+}
+
 impl ToolRuntime {
     pub(crate) async fn project_validate(
         &self,
@@ -494,20 +584,17 @@ impl ToolRuntime {
 
     pub(super) async fn run_readonly_validation(
         &self,
-        tool_name: &str,
+        operation: ReadOnlyValidationOperation,
         request: ValidationRunRequest<'_>,
     ) -> ToolResult {
-        let default = match tool_name {
-            "cargo_check" => DEFAULT_CARGO_CHECK_TIMEOUT_SECS,
-            "cargo_test" | "go_test" => DEFAULT_CARGO_TEST_TIMEOUT_SECS,
-            "cargo_fmt" => DEFAULT_CARGO_FMT_TIMEOUT_SECS,
-            _ => unreachable!("unknown read-only validation tool"),
-        };
+        let runtime_profile = runtime_profile(&operation);
+        let compatibility = operation.compatibility_profile();
+        let tool_name = compatibility.tool_identity;
         let budget = match resolve_validation_budget(
             tool_name,
             request.timeout_secs,
             request.sync_wait_secs,
-            default,
+            runtime_profile.default_timeout_secs,
         ) {
             Ok(budget) => budget,
             Err(result) => return result,
@@ -521,63 +608,30 @@ impl ToolRuntime {
                 ))
             }
         };
-        let adapter = validation_adapter_for_tool(tool_name)
-            .expect("structured validation profile must register the read-only tool");
-        let validation_identity_kind =
-            webcodex_tool_contracts::runtime_tool_session_evidence_policy(tool_name)
-                .validation_identity;
-        let validation_target_id = super::tool_audit::structured_validation_target_identity(
-            validation_identity_kind,
-            &json!({
-                "cwd": cwd.as_deref(),
-                "check": request.check,
-                "filter": request.filter.as_deref(),
-                "lib": request.lib,
-                "all_targets": request.all_targets,
-                "all_features": request.all_features,
-                "no_default_features": request.no_default_features,
-                "features": request.features.as_deref(),
-                "package": request.package.as_deref(),
-                "no_run": request.no_run,
-                "require_tests": request.require_tests,
-                "min_tests": request.minimum_tests,
-                "packages": request.cargo_packages.as_ref().or(request.go_packages.as_ref()),
-            }),
+        let adapter = operation.adapter();
+        let no_run = validation_no_run(&operation);
+        let identity_arguments = validation_identity_arguments(
+            &operation,
+            cwd.as_deref(),
+            request.require_tests,
+            request.minimum_tests,
         );
-        let options = ValidationCommandOptions {
-            check: request.check,
-            filter: request.filter,
-            lib: request.lib,
-            all_targets: request.all_targets,
-            all_features: request.all_features,
-            no_default_features: request.no_default_features,
-            features: request.features,
-            package: request.package,
-            cargo_packages: request.cargo_packages,
-            no_run: request.no_run,
-            go_packages: request.go_packages,
-        };
-        let plan = match adapter.build_readonly_plan(options.clone()) {
+        let validation_target_id = super::tool_audit::structured_validation_target_identity(
+            compatibility.validation_identity,
+            &identity_arguments,
+        );
+        let plan = match operation.build_readonly_plan() {
             Ok(plan) => plan,
             Err(e) => {
                 return ToolResult::err(command_rejected_message(
                     e,
-                    if tool_name == "go_test" {
-                        "fix the Go package pattern format, then retry."
-                    } else {
-                        "fix the cargo argument format, then retry."
-                    },
+                    runtime_profile.invalid_argument_guidance,
                 ))
             }
         };
         let command = plan.compatibility_command;
         let step = plan.structured_step;
-        let requires_multi_package_cargo_check = tool_name == "cargo_check"
-            && crate::runner_protocol::normalize_cargo_packages(
-                options.package.as_deref(),
-                options.cargo_packages.as_deref(),
-            )
-            .is_ok_and(|packages| packages.is_some_and(|packages| packages.len() > 1));
+        let requires_multi_package_cargo_check = requires_multi_package_cargo_check(&operation);
         // Pre-execution validation happens before any execution is created, so
         // a rejection never leaves a Job or a running process behind.
         let resolved = match self
@@ -631,7 +685,7 @@ impl ToolRuntime {
             return result;
         }
         let source_fence = self.validation_sources.capture(&source_project);
-        let mut result = if tool_name == "go_test" || sync_wait_secs < timeout_secs {
+        let mut result = if runtime_profile.force_agent_handoff || sync_wait_secs < timeout_secs {
             // The effective synchronous grace is shorter than the total
             // validation budget, so there is headroom to expose the same
             // execution as a Job. The agent path enqueues exactly one
@@ -654,7 +708,7 @@ impl ToolRuntime {
                 source_fence.clone(),
                 request.minimum_tests,
                 request.require_tests,
-                request.no_run,
+                no_run,
                 ssh_resource.as_deref(),
                 request.auth,
             )
@@ -696,7 +750,7 @@ impl ToolRuntime {
                 false,
                 request.minimum_tests,
                 request.require_tests,
-                request.no_run,
+                no_run,
             )
             .await
         };
@@ -1337,19 +1391,8 @@ impl ToolRuntime {
 pub(super) struct ValidationRunRequest<'a> {
     pub(super) project: String,
     pub(super) cwd: Option<String>,
-    pub(super) check: bool,
-    pub(super) filter: Option<String>,
-    pub(super) lib: Option<bool>,
-    pub(super) all_targets: Option<bool>,
-    pub(super) all_features: Option<bool>,
-    pub(super) no_default_features: Option<bool>,
-    pub(super) features: Option<String>,
-    pub(super) package: Option<String>,
-    pub(super) cargo_packages: Option<Vec<String>>,
-    pub(super) no_run: Option<bool>,
     pub(super) require_tests: Option<bool>,
     pub(super) minimum_tests: Option<u64>,
-    pub(super) go_packages: Option<Vec<String>>,
     pub(super) timeout_secs: Option<u64>,
     pub(super) sync_wait_secs: Option<u64>,
     pub(super) session_id: Option<String>,

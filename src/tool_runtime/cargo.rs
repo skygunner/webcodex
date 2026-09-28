@@ -9,7 +9,11 @@ use super::validation::{
     cargo_fmt_check_is_stable_diff, reject_structured_validation_ssh_resource,
     resolve_cargo_test_minimum, validate_cwd, ValidationRunRequest,
 };
-use super::validation_profile::{validation_adapter_for_tool, ValidationCommandOptions};
+use super::validation_profile::{
+    validation_adapter_for_tool, CargoCheckOptions, CargoReadOnlyValidationOperation,
+    CargoTestOptions, GoReadOnlyValidationOperation, GoTestOptions, ReadOnlyValidationOperation,
+    ValidationCommandOptions,
+};
 use super::ToolRuntime;
 use crate::auth::AuthContext;
 use crate::runner_protocol::ShellCommandExecutionState;
@@ -273,23 +277,12 @@ impl ToolRuntime {
             result
         } else {
             self.run_readonly_validation(
-                "cargo_fmt",
+                ReadOnlyValidationOperation::Cargo(CargoReadOnlyValidationOperation::FormatCheck),
                 ValidationRunRequest {
                     project,
                     cwd,
-                    check: true,
-                    filter: None,
-                    lib: None,
-                    all_targets: None,
-                    all_features: None,
-                    no_default_features: None,
-                    features: None,
-                    package: None,
-                    cargo_packages: None,
-                    no_run: None,
                     require_tests: None,
                     minimum_tests: None,
-                    go_packages: None,
                     timeout_secs,
                     sync_wait_secs,
                     session_id,
@@ -386,23 +379,21 @@ impl ToolRuntime {
         auth: Option<&AuthContext>,
     ) -> ToolResult {
         self.run_readonly_validation(
-            "cargo_check",
+            ReadOnlyValidationOperation::Cargo(CargoReadOnlyValidationOperation::Check(
+                CargoCheckOptions {
+                    all_targets,
+                    all_features,
+                    no_default_features,
+                    features,
+                    package: None,
+                    packages,
+                },
+            )),
             ValidationRunRequest {
                 project,
                 cwd,
-                check: false,
-                filter: None,
-                lib: None,
-                all_targets,
-                all_features,
-                no_default_features,
-                features,
-                package: None,
-                cargo_packages: packages,
-                no_run: None,
                 require_tests: None,
                 minimum_tests: None,
-                go_packages: None,
                 timeout_secs,
                 sync_wait_secs,
                 session_id,
@@ -519,23 +510,23 @@ impl ToolRuntime {
             Err(result) => return result,
         };
         self.run_readonly_validation(
-            "cargo_test",
+            ReadOnlyValidationOperation::Cargo(CargoReadOnlyValidationOperation::Test(
+                CargoTestOptions {
+                    filter,
+                    lib,
+                    all_targets,
+                    all_features,
+                    no_default_features,
+                    features,
+                    package,
+                    no_run,
+                },
+            )),
             ValidationRunRequest {
                 project,
                 cwd,
-                check: false,
-                filter,
-                lib,
-                all_targets,
-                all_features,
-                no_default_features,
-                features,
-                package,
-                cargo_packages: None,
-                no_run,
                 require_tests,
                 minimum_tests,
-                go_packages: None,
                 timeout_secs,
                 sync_wait_secs,
                 session_id,
@@ -569,23 +560,14 @@ impl ToolRuntime {
         auth: Option<&AuthContext>,
     ) -> ToolResult {
         self.run_readonly_validation(
-            "go_test",
+            ReadOnlyValidationOperation::Go(GoReadOnlyValidationOperation::Test(GoTestOptions {
+                packages,
+            })),
             ValidationRunRequest {
                 project,
                 cwd,
-                check: false,
-                filter: None,
-                lib: None,
-                all_targets: None,
-                all_features: None,
-                no_default_features: None,
-                features: None,
-                package: None,
-                cargo_packages: None,
-                no_run: None,
                 require_tests: None,
                 minimum_tests: None,
-                go_packages: packages,
                 timeout_secs,
                 sync_wait_secs,
                 session_id,

@@ -18,8 +18,10 @@ mod recipe_tests;
 
 pub use adapters::{
     execution_purpose_for_validation_kind, validation_adapter_for_recipe,
-    validation_adapter_for_tool, ReadOnlyValidationPlan, ValidationAdapter,
-    ValidationCommandOptions, ValidationFailureEvidence,
+    validation_adapter_for_tool, CargoCheckOptions, CargoReadOnlyValidationOperation,
+    CargoTestOptions, GoReadOnlyValidationOperation, GoTestOptions, ReadOnlyValidationOperation,
+    ReadOnlyValidationPlan, ValidationAdapter, ValidationCommandOptions,
+    ValidationCompatibilityProfile, ValidationFailureEvidence,
 };
 pub use evidence::{
     current_validation_evidence_for_session, event_is_job_acceptance_only,

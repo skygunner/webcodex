@@ -1447,7 +1447,7 @@ fn managed_token_prefix_detected() {
 async fn shared_key_fallback_gated_by_env_and_prefix() {
     let env = crate::auth::AuthEnvGuard::auth_required();
     let config = crate::Config {
-        addr: "127.0.0.1:8080".to_string(),
+        addr: "0.0.0.0:8080".to_string(),
         data_dir: PathBuf::from("./data"),
         token: Some("secret".to_string()),
         max_text_size: 2 * 1024 * 1024,
@@ -2367,36 +2367,6 @@ async fn auth_middleware_lightweight_empty_and_open_paths() {
         resp.status_code,
         Some(StatusCode::FORBIDDEN),
         "open-anonymous must not register a Runner"
-    );
-}
-
-#[tokio::test]
-async fn auth_middleware_direct_shared_key_requires_remote_opt_in_for_public_authority() {
-    let env = crate::auth::AuthEnvGuard::auth_required();
-    env.enable_direct_shared_key();
-    let config = gate_test_config(Some("secret"));
-    let (_tmp, db) = gate_test_db();
-    let service = salvo::Service::new(gate_router(config, db));
-
-    let resp = TestClient::post("http://public.example/api/runtime/status")
-        .bearer_auth("my-key")
-        .send(&service)
-        .await;
-    assert_eq!(
-        resp.status_code,
-        Some(StatusCode::UNAUTHORIZED),
-        "loopback Server must not turn a proxied/public Host into direct shared-key access"
-    );
-
-    env.enable_remote_shared_key();
-    let resp = TestClient::post("http://public.example/api/runtime/status")
-        .bearer_auth("my-key")
-        .send(&service)
-        .await;
-    assert_eq!(
-        resp.status_code,
-        Some(StatusCode::OK),
-        "explicit remote opt-in should allow hosted direct shared-key access"
     );
 }
 

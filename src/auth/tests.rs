@@ -1573,7 +1573,7 @@ fn direct_shared_key_policy_treats_remote_quic_as_remote_boundary() {
 async fn shared_key_fallback_and_oauth_bridge_flags_are_independent() {
     let env = crate::auth::AuthEnvGuard::auth_required();
     let config = crate::Config {
-        addr: "127.0.0.1:8080".to_string(),
+        addr: "0.0.0.0:8080".to_string(),
         data_dir: PathBuf::from("./data"),
         token: Some("secret".to_string()),
         max_text_size: 2 * 1024 * 1024,

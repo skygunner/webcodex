@@ -131,7 +131,7 @@ async fn job_log_wait_observation_update_between_calls_is_immediate() {
 }
 
 #[tokio::test]
-async fn job_log_wait_distinguishes_seq_only_heartbeat_from_meaningful_output() {
+async fn job_log_wait_distinguishes_sequence_only_heartbeat_from_meaningful_output() {
     let registry = RunnerRegistry::default();
     let job = start_wait_job(&registry).await;
     registry
@@ -151,9 +151,6 @@ async fn job_log_wait_distinguishes_seq_only_heartbeat_from_meaningful_output() 
         .unwrap();
     let token = baseline.observation_token.unwrap();
 
-    // Same public snapshot with only a newer Runner sequence is the canonical
-    // liveness heartbeat: legacy change observers wake, meaningful observers
-    // can suppress it without changing token format.
     registry
         .update_job(wait_job_update(
             "inst-wait",

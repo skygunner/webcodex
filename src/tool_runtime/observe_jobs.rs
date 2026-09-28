@@ -77,14 +77,21 @@ fn final_wake_reason(
     wake_on: ObserveJobsWakeOn,
     wait_reason: WakeReason,
 ) -> WakeReason {
-    final_readiness_reason(
+    let reason = final_readiness_reason(
         observed_has_error(observed),
         observed_terminal_satisfied(observed, wake_on),
         observed_has_change(observed),
-        observed_has_meaningful_change(observed),
         wake_on,
         wait_reason,
-    )
+    );
+    if reason == WakeReason::Timeout
+        && wake_on == ObserveJobsWakeOn::MeaningfulChange
+        && observed_has_meaningful_change(observed)
+    {
+        WakeReason::Updated
+    } else {
+        reason
+    }
 }
 
 // Shared final-snapshot rule, including the existing any/all deadline asymmetry.
@@ -92,7 +99,6 @@ fn final_readiness_reason(
     has_error: bool,
     terminal_satisfied: bool,
     changed: bool,
-    meaningful_changed: bool,
     wake_on: ObserveJobsWakeOn,
     wait_reason: WakeReason,
 ) -> WakeReason {
@@ -104,9 +110,8 @@ fn final_readiness_reason(
         WakeReason::Timeout
     } else if terminal_satisfied || wait_reason == WakeReason::Terminal {
         WakeReason::Terminal
-    } else if (wake_on == ObserveJobsWakeOn::Change && changed)
-        || (wake_on == ObserveJobsWakeOn::MeaningfulChange && meaningful_changed)
-        || wait_reason == WakeReason::Updated
+    } else if wake_on == ObserveJobsWakeOn::Change
+        && (changed || wait_reason == WakeReason::Updated)
     {
         WakeReason::Updated
     } else {
@@ -124,99 +129,6 @@ fn observed_has_meaningful_change(observed: &[ObservedJob]) -> bool {
     observed
         .iter()
         .any(|item| item.result.output["meaningful_changed"].as_bool() == Some(true))
-}
-
-fn wake_policy_name(wake_on: ObserveJobsWakeOn) -> &'static str {
-    match wake_on {
-        ObserveJobsWakeOn::Change => "change",
-        ObserveJobsWakeOn::MeaningfulChange => "meaningful_change",
-        ObserveJobsWakeOn::Terminal => "terminal",
-        ObserveJobsWakeOn::AllTerminal => "all_terminal",
-    }
-}
-
-fn detailed_wake_reason(items: &[Value], wake_reason: WakeReason) -> &'static str {
-    match wake_reason {
-        WakeReason::Immediate => "immediate",
-        WakeReason::Terminal => "terminal",
-        WakeReason::ItemError => "item_error",
-        WakeReason::Timeout => "timeout",
-        WakeReason::Updated => {
-            if items.iter().any(|item| {
-                item["success"].as_bool() == Some(true)
-                    && item["output"]["meaningful_changed"].as_bool() == Some(true)
-            }) {
-                "meaningful_change"
-            } else if items.iter().any(|item| {
-                item["success"].as_bool() == Some(true)
-                    && item["output"]["heartbeat_changed"].as_bool() == Some(true)
-            }) {
-                "heartbeat"
-            } else {
-                "change"
-            }
-        }
-    }
-}
-
-fn trace_observe_jobs_diagnostics(
-    resolved: &[ResolvedObserveJobsItem],
-    completed: &[Value],
-    wake_reason: WakeReason,
-    wake_on: ObserveJobsWakeOn,
-    requested_wait_secs: Option<u64>,
-    waited_ms: u64,
-) {
-    let reason = detailed_wake_reason(completed, wake_reason);
-    tracing::debug!(
-        wake_on = wake_policy_name(wake_on),
-        requested_wait_secs = ?requested_wait_secs,
-        waited_ms,
-        wake_reason = reason,
-        item_count = completed.len(),
-        "observe_jobs wait completed"
-    );
-    for item in completed {
-        if item["success"].as_bool() != Some(true) {
-            continue;
-        }
-        let Some(index) = item["index"].as_u64().map(|value| value as usize) else {
-            continue;
-        };
-        let Some(request) = resolved.iter().find(|candidate| candidate.index == index) else {
-            continue;
-        };
-        let output = &item["output"];
-        let before = request
-            .item
-            .after_observation_token
-            .as_deref()
-            .and_then(|token| {
-                webcodex_core::job_observation::JobObservationToken::parse(token).ok()
-            });
-        let after = output["observation_token"].as_str().and_then(|token| {
-            webcodex_core::job_observation::JobObservationToken::parse(token).ok()
-        });
-        tracing::debug!(
-            job_id = %request.item.job_id,
-            before_revision = ?before.as_ref().map(|token| token.revision),
-            before_stdout_cursor = ?before.as_ref().and_then(|token| token.stdout_cursor),
-            before_stderr_cursor = ?before.as_ref().and_then(|token| token.stderr_cursor),
-            after_revision = ?after.as_ref().map(|token| token.revision),
-            after_stdout_cursor = ?after.as_ref().and_then(|token| token.stdout_cursor),
-            after_stderr_cursor = ?after.as_ref().and_then(|token| token.stderr_cursor),
-            last_update_seq = ?output["last_update_seq"].as_u64(),
-            stdout_returned_lines = ?output["stdout_returned_lines"].as_u64(),
-            stderr_returned_lines = ?output["stderr_returned_lines"].as_u64(),
-            stdout_returned_bytes = output["stdout_returned_bytes"].as_u64().unwrap_or(0),
-            stderr_returned_bytes = output["stderr_returned_bytes"].as_u64().unwrap_or(0),
-            changed = output["changed"].as_bool().unwrap_or(false),
-            meaningful_changed = output["meaningful_changed"].as_bool().unwrap_or(false),
-            heartbeat_changed = output["heartbeat_changed"].as_bool().unwrap_or(false),
-            terminal = output["terminal"].as_bool().unwrap_or(false),
-            "observe_jobs item observed"
-        );
-    }
 }
 
 fn bounded_error(error: Option<&str>) -> String {
@@ -694,6 +606,8 @@ fn sparse_success_item(item: &Value) -> Option<Value> {
     let status = observation.get("status")?.as_str()?.to_string();
     let terminal = observation.get("terminal")?.as_bool()?;
     let changed = observation.get("changed")?.as_bool()?;
+    let meaningful_changed = observation.get("meaningful_changed")?.as_bool()?;
+    let heartbeat_changed = observation.get("heartbeat_changed")?.as_bool()?;
     let log_delta_status = observation.get("log_delta_status")?.as_str()?;
     if !matches!(
         log_delta_status,
@@ -725,8 +639,8 @@ fn sparse_success_item(item: &Value) -> Option<Value> {
     sparse.insert("status".to_string(), json!(status));
     sparse.insert("terminal".to_string(), json!(terminal));
     sparse.insert("changed".to_string(), json!(changed));
-    copy_present(observation, &mut sparse, "meaningful_changed");
-    copy_present(observation, &mut sparse, "heartbeat_changed");
+    sparse.insert("meaningful_changed".to_string(), json!(meaningful_changed));
+    sparse.insert("heartbeat_changed".to_string(), json!(heartbeat_changed));
     sparse.insert("log_delta_status".to_string(), json!(log_delta_status));
     sparse.insert("observation_token".to_string(), json!(observation_token));
     copy_non_null(observation, &mut sparse, "project");
@@ -1210,11 +1124,9 @@ impl ToolRuntime {
                 }
                 final_snapshots.push(snapshot);
             }
-            let reason =
-                final_readiness_reason(
+            let reason = final_readiness_reason(
                 false,
                 satisfied(&final_snapshots),
-                false,
                 false,
                 wake_on,
                 reason,

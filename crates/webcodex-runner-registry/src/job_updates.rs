@@ -80,11 +80,11 @@ pub struct JobLogWait {
     /// Whether the job changed relative to the supplied `after_observation_token`.
     /// Always false when no `after_observation_token` was provided.
     pub changed: bool,
-    /// Whether a public semantic/log/activity/lifecycle change happened after
-    /// the supplied observation token. False for a heartbeat-only revision.
+    /// Whether a semantic/log/activity/lifecycle/recovery change happened after
+    /// the supplied observation token. False for a sequence-only heartbeat.
     pub meaningful_changed: bool,
     /// Whether the only observed revision advance since the supplied token was
-    /// Runner liveness heartbeat traffic.
+    /// sequence-only liveness traffic.
     pub heartbeat_changed: bool,
     /// Whether the job is terminal per the canonical job terminal definition.
     pub terminal: bool,

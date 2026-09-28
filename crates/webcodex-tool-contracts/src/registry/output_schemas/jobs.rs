@@ -555,7 +555,7 @@ fn observe_jobs_output_schema() -> Value {
                 "required": ["stdout", "stderr"]
             },
             "changed": schema_type("boolean", "Whether the lifecycle revision or Server epoch differs from the item's supplied token. Token format upgrades alone do not set changed."),
-            "meaningful_changed": schema_type("boolean", "Whether a semantic/log/activity/lifecycle/recovery change occurred since the supplied token; false for heartbeat-only revisions."),
+            "meaningful_changed": schema_type("boolean", "Whether a semantic/log/activity/lifecycle/recovery change occurred since the supplied token; false for sequence-only heartbeat revisions."),
             "heartbeat_changed": schema_type("boolean", "Whether the observed revision advance was heartbeat-only with no semantic/log/activity/lifecycle/recovery change."),
             "terminal": schema_type("boolean", "Canonical terminal classification."),
             "executor": {
@@ -599,7 +599,7 @@ fn observe_jobs_output_schema() -> Value {
             "status": schema_type("string", "Canonical current Job status."),
             "terminal": schema_type("boolean", "Stable terminal/nonterminal abstraction over Job lifecycle variants; never inferred from batch counts."),
             "changed": schema_type("boolean", "Whether lifecycle revision or Server epoch differs from the supplied observation token."),
-            "meaningful_changed": schema_type("boolean", "Whether a semantic/log/activity/lifecycle/recovery change occurred since the supplied token; false for heartbeat-only revisions."),
+            "meaningful_changed": schema_type("boolean", "Whether a semantic/log/activity/lifecycle/recovery change occurred since the supplied token; false for sequence-only heartbeat revisions."),
             "heartbeat_changed": schema_type("boolean", "Whether the observed revision advance was heartbeat-only with no semantic/log/activity/lifecycle/recovery change."),
             "log_delta_status": {
                 "type": "string",
@@ -657,8 +657,8 @@ fn observe_jobs_output_schema() -> Value {
             "validation": validation_job_projection_schema()
         },
         "required": [
-            "job_id", "status", "terminal", "changed", "meaningful_changed", "heartbeat_changed",
-            "log_delta_status", "observation_token"
+            "job_id", "status", "terminal", "changed", "meaningful_changed", "heartbeat_changed", "log_delta_status",
+            "observation_token"
         ]
     });
     let summary_detail_call = suggested_tool_call_schema(

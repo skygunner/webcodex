@@ -1083,7 +1083,7 @@ fn observe_jobs_wake_policy_schema_is_closed_and_compatible() {
         "No token",
         "no wait_secs",
         "wake_on=change",
-        "meaningful_change",
+        "wake_on=meaningful_change",
         "wake_on=terminal",
         "useful progress is blocked on terminal outcome",
         "independent work remains",

@@ -555,10 +555,9 @@ pub(super) fn notify_job_update(job: &ShellJobRecord) {
     notify_job_observation(job, true);
 }
 
-/// Broadcast a Runner liveness heartbeat. Heartbeats deliberately advance the
-/// ordinary observation revision so existing `wake_on=change` callers keep
-/// seeing liveness, while `last_meaningful_revision` stays unchanged for
-/// callers that opt into meaningful-change filtering.
+/// Broadcast a sequence-only liveness update. Existing change observers still
+/// wake because the ordinary revision advances; meaningful-change observers
+/// can distinguish it through `last_meaningful_revision`.
 pub(super) fn notify_job_heartbeat(job: &ShellJobRecord) {
     notify_job_observation(job, false);
 }

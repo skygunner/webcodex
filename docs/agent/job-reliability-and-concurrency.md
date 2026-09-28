@@ -35,9 +35,11 @@ required. Every Job is independently re-authorized before waiting; an
 invalid/invisible target fails the entire set without partial evidence. It shares
 `observe_jobs`' canonical Notify/revision waiter, private cursors and one absolute
 deadline. Nonterminal updates do not satisfy readiness or extend the deadline.
-The final snapshot reports only ready `job_id/status/outcome` and
-`pending_job_ids`, plus `mode`, `wait_state` and `waited_ms`. Failed, stopped,
-lost and timed-out Jobs are terminal-ready. `deadline` is successful observation
+The model-facing final snapshot reports only ready `job_id/status/outcome`,
+`pending_job_ids`, and `wait_state`. Request `mode` and measured `waited_ms` remain
+in canonical ActionAudit/model-ergonomics telemetry rather than repeating facts the
+caller already knows in the happy-path receipt. Failed, stopped, lost and timed-out
+Jobs are terminal-ready. `deadline` is successful observation
 of an unsatisfied bounded wait, not Job failure. Existing observation deadline
 semantics apply: an expired `all` wait stays deadline even if its final snapshot
 races completion; `any` can recognize terminal truth in that final snapshot.
@@ -319,15 +321,26 @@ Detached recovery preserves the same logical Job/execution fence and does not
 permit duplicate payload dispatch.
 
 For normal sync-first execution, model-facing handoff is intentionally sparse:
-`execution_state=pending` plus one exact fallback continuation. The canonical
+`execution_state=pending` plus one exact fallback continuation. Static
+scheduling policy lives in builtin workflow, Host Code Mode guidance and
+tool descriptions, rather than a repeated `pending_strategy` result field. The canonical
 registry and Session ledger retain the Job id, lifecycle, validation identity,
 source fence, and structured execution metadata. A handoff in an exact
 authenticated Window/Project/Workflow Session establishes the passive
 `JobAttentionCursor` baseline without echoing a second active notification.
 Subsequent ordinary coding calls in that same scope may attach `job_attention`
-only when terminal truth or the canonical Server recovery overlay changes. Terminal attention contains
-bounded outcome / exit truth, conservative validation/source-freshness truth
-when applicable, and an explicit details call, but never stdout/stderr bodies.
+only when terminal truth or the canonical Server recovery overlay changes.
+Proven terminal success contains `job_id`, `tool`, and `outcome=passed`.
+Successful validation additionally retains its kind, test-count/policy evidence,
+target identity when present, and explicit source state. `unproven/uncrossed`
+still does not certify current source. A distinct validation adapter is retained.
+Redundant status, exit-zero, command-success and validation-success fields, and
+the success-only details call, are omitted. Unknown/stale source, incomplete or
+truncated evidence, failures and recovery retain the explanatory receipt and
+explicit details call. No passive receipt contains stdout/stderr bodies.
+This is the shared Runtime model presentation (including REST, MCP and admitted
+legacy Actions), not a change to retained Job or Session evidence. Published
+output schemas describe both sparse success and rich exceptional shapes.
 The same terminal revision is delivered at most once per process-local cursor;
 after Server restart a bounded active-state duplicate is allowed, while
 historical terminal Jobs establish baseline and are not replayed as new

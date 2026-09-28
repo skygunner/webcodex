@@ -29,6 +29,30 @@ async fn attention(
             Some(auth),
         )
         .await;
+    if let Some(sidecar) = result.output.get("job_attention") {
+        assert!(sidecar.get("changed").is_none());
+        assert!(!sidecar["items"].as_array().unwrap().is_empty());
+        let after = serde_json::to_vec(&result).unwrap().len();
+        let mut previous = serde_json::to_value(&result).unwrap();
+        previous["output"]["job_attention"]["changed"] = json!(true);
+        let before = serde_json::to_vec(&previous).unwrap().len();
+        eprintln!("job_attention: {before} -> {after} bytes");
+        assert_eq!(before - after, 15);
+        let schema = crate::tool_runtime::registry::output_schema_for_tool("git_status");
+        crate::tool_runtime::startup_brief::validate_schema_instance_for_test(
+            &serde_json::to_value(&result).unwrap(),
+            &schema,
+        )
+        .unwrap();
+        let sidecar_schema = &schema["properties"]["output"]["properties"]["job_attention"];
+        assert!(
+            crate::tool_runtime::startup_brief::validate_schema_instance_for_test(
+                &json!({"items":[]}),
+                sidecar_schema
+            )
+            .is_err()
+        );
+    }
     result
 }
 
@@ -218,11 +242,6 @@ async fn passive_attention_requires_exact_business_relation_and_deduplicates_sta
         .unwrap();
     let terminal = attention(&runtime, &project, Some(&session), &window, &auth).await;
     assert_eq!(
-        terminal.output["job_attention"]["items"][0]["status"],
-        "completed"
-    );
-    assert_eq!(terminal.output["job_attention"]["items"][0]["exit_code"], 0);
-    assert_eq!(
         attention(&runtime, &project, Some(&session), &another_window, &auth)
             .await
             .output["job_attention"]["items"][0]["job_id"],
@@ -246,14 +265,8 @@ async fn passive_attention_requires_exact_business_relation_and_deduplicates_sta
         "historical terminal must not replay"
     );
     let terminal_item = &terminal.output["job_attention"]["items"][0];
-    assert_eq!(terminal_item["state"], "terminal");
     assert_eq!(terminal_item["outcome"], "passed");
-    assert_eq!(terminal_item["command_ok"], true);
-    assert_eq!(terminal_item["details"]["tool"], "observe_jobs");
-    assert_eq!(
-        terminal_item["details"]["arguments"]["items"][0]["job_id"],
-        job_id
-    );
+    assert_eq!(terminal_item.as_object().unwrap().len(), 3);
     assert!(!terminal.output["job_attention"]
         .to_string()
         .contains("secret output"));
@@ -355,11 +368,8 @@ async fn initiating_handoff_is_cursor_baseline_then_terminal_is_delivered_once()
     let ordinary = attention(&runtime, &project, Some(&session), &window, &auth).await;
     let item = &ordinary.output["job_attention"]["items"][0];
     assert_eq!(item["job_id"], job_id);
-    assert_eq!(item["state"], "terminal");
     assert_eq!(item["outcome"], "passed");
-    assert_eq!(item["command_ok"], true);
-    assert_eq!(item["exit_code"], 0);
-    assert_eq!(item["details"]["tool"], "observe_jobs");
+    assert_eq!(item.as_object().unwrap().len(), 3);
     assert!(
         !ordinary.output["job_attention"]
             .to_string()

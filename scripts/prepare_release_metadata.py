@@ -56,7 +56,8 @@ def validate_source_manifest(path: Path, version: str, platform: str, source_sha
         if not isinstance(record, dict) or not isinstance(record.get("build_info"), dict):
             raise SystemExit(f"source manifest build identity is invalid: {path}: {name}")
         info = record["build_info"]
-        if info.get("version") != version or info.get("source_sha") != value["source_sha"] or info.get("environment_data_format") != 1:
+        if (info.get("version") != version or info.get("git_commit") != value["source_sha"]
+                or info.get("git_dirty") is not False or info.get("environment_data_format") != 1):
             raise SystemExit(f"source manifest component provenance/data format mismatch: {path}: {name}")
     return value
 
@@ -230,7 +231,12 @@ def main() -> int:
     if installers:
         manifest["installers"] = installers
 
-    atomic_write(args.output_dir / "manifest.json", json.dumps(manifest, indent=2) + "\n")
+    manifest_path = args.output_dir / "manifest.json"
+    atomic_write(manifest_path, json.dumps(manifest, indent=2) + "\n")
+    if installers:
+        # The same retained bytes serve npm, the download page, and Desktop.
+        # Legacy runtime-only manifests remain outside the public asset set.
+        checksum_lines.append(f"{sha256(manifest_path)}  manifest.json")
     atomic_write(args.output_dir / "SHA256SUMS", "\n".join(checksum_lines) + "\n")
 
     print(f"release metadata prepared for {version}")

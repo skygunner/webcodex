@@ -1495,13 +1495,24 @@ mod tests {
     /// session interprets it with the connecting account's login shell.
     /// Integration tests that assert exact POSIX program behavior therefore
     /// need a login shell that actually implements POSIX constructs.
+    #[cfg(target_os = "linux")]
     fn local_login_shell_is_posix() -> bool {
-        let Ok(user) = std::env::var("USER") else {
+        let Ok(user) = Command::new("id").args(["-un"]).output() else {
             return false;
         };
+        if !user.status.success() {
+            return false;
+        }
+        let user = String::from_utf8_lossy(&user.stdout).trim().to_string();
+        if user.is_empty() {
+            return false;
+        }
         let Ok(passwd) = Command::new("getent").arg("passwd").arg(&user).output() else {
             return false;
         };
+        if !passwd.status.success() {
+            return false;
+        }
         let passwd_line = String::from_utf8_lossy(&passwd.stdout).trim().to_string();
         let Some(shell) = passwd_line
             .rsplit(':')
@@ -1517,6 +1528,11 @@ mod tests {
             return false;
         };
         probe.status.success() && probe.stdout == b"posix-ok"
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn local_login_shell_is_posix() -> bool {
+        true
     }
 
     #[test]

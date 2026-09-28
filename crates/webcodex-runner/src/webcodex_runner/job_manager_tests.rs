@@ -560,7 +560,6 @@ fn delivery_worker_waits_for_sequence_barrier_before_selecting_candidate() {
     );
     assert_eq!(updates[0].status, "running");
     assert_eq!(updates[1].status, "stop_requested");
-
 }
 
 #[test]

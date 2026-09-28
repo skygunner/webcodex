@@ -970,7 +970,6 @@ impl ToolRuntime {
                     // Private cursor only; detailed observation still uses the original token.
                     let token = job
                         .observation_token
-
                         .filter(|token| !token.is_empty())
                         .ok_or("canonical Job wait returned no observation token")?;
                     if item.after_observation_token.as_deref() == Some(token.as_str()) {
@@ -1124,13 +1123,8 @@ impl ToolRuntime {
                 }
                 final_snapshots.push(snapshot);
             }
-            let reason = final_readiness_reason(
-                false,
-                satisfied(&final_snapshots),
-                false,
-                wake_on,
-                reason,
-            );
+            let reason =
+                final_readiness_reason(false, satisfied(&final_snapshots), false, wake_on, reason);
             (final_snapshots, reason, waited_ms)
         };
         let mut ready = Vec::new();

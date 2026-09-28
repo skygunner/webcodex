@@ -648,7 +648,7 @@ async fn job_log_wait_unsequenced_update_between_calls_and_noop_update() {
             owner: Some("alice".to_string()),
             hostname: None,
             host_context: None,
-            capabilities: capabilities,
+            capabilities,
             policy: None,
         }))
         .await

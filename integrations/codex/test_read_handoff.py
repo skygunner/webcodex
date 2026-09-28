@@ -76,6 +76,128 @@ class ReadHandoffTests(unittest.TestCase):
         self.assertEqual(request.get_header("Authorization"), "Bearer fixture")
         self.assertNotIn("Bearer fixture", json.dumps(result))
 
+
+    def valid_goal_context(self):
+        return {
+            "version": 1,
+            "source": "explicit_workflow_session_correlation",
+            "status": "available",
+            "reason_code": None,
+            "truncated": False,
+            "goal": {
+                "goal_id": "wc_goal_fixture",
+                "title": "Recovery goal",
+                "title_truncated": False,
+                "lifecycle": "active",
+                "revision": 3,
+                "objective": {"excerpt": "Recover the exact work", "truncated": False},
+                "plan": {
+                    "completion_conditions": {
+                        "items": ["Focused verification"],
+                        "total": 1,
+                        "returned": 1,
+                        "truncated": False,
+                        "content_truncated": False,
+                    },
+                    "steps": {
+                        "items": [{
+                            "id": "verify",
+                            "title": "Verify",
+                            "title_truncated": False,
+                            "status": "in_progress",
+                        }],
+                        "total": 1,
+                        "returned": 1,
+                        "truncated": False,
+                    },
+                    "current_step_id": "verify",
+                    "checkpoint": {
+                        "summary": {"excerpt": "Implementation complete", "truncated": False},
+                        "at_unix_ms": 1234,
+                    },
+                },
+            },
+            "candidates": [],
+        }
+
+    def test_optional_goal_context_is_validated_and_preserved(self):
+        goal_context = self.valid_goal_context()
+        self.body["output"]["goal_context"] = goal_context
+        result, _ = self.read()
+        self.assertEqual(result["goal_context"], goal_context)
+
+        selection = {
+            "version": 1,
+            "source": "explicit_workflow_session_correlation",
+            "status": "selection_required",
+            "reason_code": "multiple_active_goals",
+            "truncated": False,
+            "goal": None,
+            "candidates": [
+                {
+                    "goal_id": "wc_goal_a",
+                    "title": "A",
+                    "title_truncated": False,
+                    "lifecycle": "active",
+                    "revision": 1,
+                },
+                {
+                    "goal_id": "wc_goal_b",
+                    "title": "B",
+                    "title_truncated": False,
+                    "lifecycle": "active",
+                    "revision": 2,
+                },
+            ],
+        }
+        self.body["output"]["goal_context"] = selection
+        result, _ = self.read()
+        self.assertEqual(result["goal_context"], selection)
+
+    def test_goal_context_never_accepts_implicit_selection_or_malformed_bounds(self):
+        cases = []
+
+        wrong_source = self.valid_goal_context()
+        wrong_source["source"] = "project_recency"
+        cases.append(wrong_source)
+
+        leaked_selection = {
+            "version": 1,
+            "source": "explicit_workflow_session_correlation",
+            "status": "selection_required",
+            "reason_code": "multiple_active_goals",
+            "truncated": False,
+            "goal": self.valid_goal_context()["goal"],
+            "candidates": [
+                {
+                    "goal_id": "wc_goal_a",
+                    "title": "A",
+                    "title_truncated": False,
+                    "lifecycle": "active",
+                    "revision": 1,
+                },
+                {
+                    "goal_id": "wc_goal_b",
+                    "title": "B",
+                    "title_truncated": False,
+                    "lifecycle": "active",
+                    "revision": 2,
+                },
+            ],
+        }
+        cases.append(leaked_selection)
+
+        oversized = self.valid_goal_context()
+        oversized["goal"]["objective"]["excerpt"] = "x" * 1025
+        cases.append(oversized)
+
+        for goal_context in cases:
+            with self.subTest(status=goal_context["status"], source=goal_context["source"]):
+                self.body["output"]["goal_context"] = goal_context
+                with self.assertRaisesRegex(AdapterError, "handoff_goal_context_invalid"):
+                    self.read()
+        self.body["output"].pop("goal_context", None)
+
     def test_wrong_project_or_session_or_nested_brief_is_rejected(self):
         for edit in (
             lambda: self.body["output"].update(project="agent:fixture:other"),

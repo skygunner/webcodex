@@ -506,6 +506,129 @@ fn request_visibility_budget_available(
     })
 }
 
+const GOAL_RECOVERY_MAX_CANDIDATES: usize = 8;
+const GOAL_RECOVERY_MAX_TITLE_BYTES: usize = 256;
+const GOAL_RECOVERY_MAX_OBJECTIVE_BYTES: usize = 1_024;
+const GOAL_RECOVERY_MAX_CONDITION_ITEMS: usize = 8;
+const GOAL_RECOVERY_MAX_CONDITION_BYTES: usize = 256;
+const GOAL_RECOVERY_MAX_STEPS: usize = 32;
+const GOAL_RECOVERY_MAX_STEP_TITLE_BYTES: usize = 128;
+const GOAL_RECOVERY_MAX_CHECKPOINT_BYTES: usize = 512;
+
+fn bounded_goal_recovery_text(value: &str, max_bytes: usize) -> (String, bool) {
+    let redacted = super::sessions::redact_and_bound_instruction(value, usize::MAX);
+    let mut output = String::new();
+    let mut used = 0usize;
+    let mut changed = redacted != value;
+    for ch in redacted.chars() {
+        let safe = if ch.is_control() { ' ' } else { ch };
+        let width = safe.len_utf8();
+        if used.saturating_add(width) > max_bytes {
+            changed = true;
+            break;
+        }
+        if safe != ch {
+            changed = true;
+        }
+        output.push(safe);
+        used += width;
+    }
+    (output, changed)
+}
+
+fn goal_recovery_excerpt(value: Option<&str>, max_bytes: usize) -> serde_json::Value {
+    let Some(value) = value else {
+        return json!({"excerpt": null, "truncated": false});
+    };
+    let (excerpt, truncated) = bounded_goal_recovery_text(value, max_bytes);
+    json!({"excerpt": excerpt, "truncated": truncated})
+}
+
+fn goal_recovery_candidate(goal: &GoalDetail) -> serde_json::Value {
+    let (title, title_truncated) =
+        bounded_goal_recovery_text(&goal.summary.title, GOAL_RECOVERY_MAX_TITLE_BYTES);
+    json!({
+        "goal_id": goal.summary.goal_id,
+        "title": title,
+        "title_truncated": title_truncated,
+        "lifecycle": goal.summary.lifecycle.as_str(),
+        "revision": goal.summary.revision,
+    })
+}
+
+fn goal_recovery_detail(goal: &GoalDetail) -> serde_json::Value {
+    let (title, title_truncated) =
+        bounded_goal_recovery_text(&goal.summary.title, GOAL_RECOVERY_MAX_TITLE_BYTES);
+
+    let condition_total = goal.plan.completion_conditions.len();
+    let mut condition_content_truncated = false;
+    let conditions = goal
+        .plan
+        .completion_conditions
+        .iter()
+        .take(GOAL_RECOVERY_MAX_CONDITION_ITEMS)
+        .map(|condition| {
+            let (condition, truncated) =
+                bounded_goal_recovery_text(condition, GOAL_RECOVERY_MAX_CONDITION_BYTES);
+            condition_content_truncated |= truncated;
+            condition
+        })
+        .collect::<Vec<_>>();
+
+    let step_total = goal.plan.steps.len();
+    let steps = goal
+        .plan
+        .steps
+        .iter()
+        .take(GOAL_RECOVERY_MAX_STEPS)
+        .map(|step| {
+            let (title, title_truncated) =
+                bounded_goal_recovery_text(&step.title, GOAL_RECOVERY_MAX_STEP_TITLE_BYTES);
+            json!({
+                "id": step.id,
+                "title": title,
+                "title_truncated": title_truncated,
+                "status": step.status,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    json!({
+        "goal_id": goal.summary.goal_id,
+        "title": title,
+        "title_truncated": title_truncated,
+        "lifecycle": goal.summary.lifecycle.as_str(),
+        "revision": goal.summary.revision,
+        "objective": goal_recovery_excerpt(
+            Some(&goal.objective),
+            GOAL_RECOVERY_MAX_OBJECTIVE_BYTES,
+        ),
+        "plan": {
+            "completion_conditions": {
+                "items": conditions,
+                "total": condition_total,
+                "returned": condition_total.min(GOAL_RECOVERY_MAX_CONDITION_ITEMS),
+                "truncated": condition_total > GOAL_RECOVERY_MAX_CONDITION_ITEMS,
+                "content_truncated": condition_content_truncated,
+            },
+            "steps": {
+                "items": steps,
+                "total": step_total,
+                "returned": step_total.min(GOAL_RECOVERY_MAX_STEPS),
+                "truncated": step_total > GOAL_RECOVERY_MAX_STEPS,
+            },
+            "current_step_id": goal.plan.current_step().map(|step| step.id.clone()),
+            "checkpoint": {
+                "summary": goal_recovery_excerpt(
+                    goal.plan.progress_summary.as_deref(),
+                    GOAL_RECOVERY_MAX_CHECKPOINT_BYTES,
+                ),
+                "at_unix_ms": goal.plan.checkpoint_at_unix_ms,
+            },
+        },
+    })
+}
+
 impl ToolRuntime {
     pub(crate) async fn prepare_goal_workflow(
         &self,
@@ -869,6 +992,67 @@ impl ToolRuntime {
             })),
             Ok(_) => None,
             Err(_) => Some(json!({"available": false, "truncated": false, "goals": []})),
+        }
+    }
+
+    /// Bounded read-only Goal context for local/exact Workflow Session recovery.
+    /// The Session has already been independently authorized by the caller.
+    /// Only explicit active Goal correlations owned by the same principal are
+    /// considered; this never selects one of several Goals, mutates Goal liveness
+    /// or progress, creates work, or grants Goal/Session/Project authority.
+    pub(crate) fn recovery_goal_context_for_session(
+        &self,
+        auth: Option<&AuthContext>,
+        session_id: &str,
+    ) -> Option<serde_json::Value> {
+        if !auth.is_some_and(|auth| auth.has_scope(SCOPE_COMMUNICATION_READ)) {
+            return None;
+        }
+        let principal = goal_principal(auth).ok()?;
+        let Some(db) = self.communication_db.as_ref() else {
+            return Some(json!({
+                "version": 1,
+                "source": "explicit_workflow_session_correlation",
+                "status": "unavailable",
+                "reason_code": "store_unavailable",
+                "truncated": false,
+                "goal": null,
+                "candidates": [],
+            }));
+        };
+        match db.active_goals_for_workflow_session(
+            &principal,
+            session_id,
+            GOAL_RECOVERY_MAX_CANDIDATES,
+        ) {
+            Ok((goals, _)) if goals.is_empty() => None,
+            Ok((goals, truncated)) if goals.len() == 1 && !truncated => Some(json!({
+                "version": 1,
+                "source": "explicit_workflow_session_correlation",
+                "status": "available",
+                "reason_code": null,
+                "truncated": false,
+                "goal": goal_recovery_detail(&goals[0]),
+                "candidates": [],
+            })),
+            Ok((goals, truncated)) => Some(json!({
+                "version": 1,
+                "source": "explicit_workflow_session_correlation",
+                "status": "selection_required",
+                "reason_code": "multiple_active_goals",
+                "truncated": truncated,
+                "goal": null,
+                "candidates": goals.iter().map(goal_recovery_candidate).collect::<Vec<_>>(),
+            })),
+            Err(_) => Some(json!({
+                "version": 1,
+                "source": "explicit_workflow_session_correlation",
+                "status": "unavailable",
+                "reason_code": "store_unavailable",
+                "truncated": false,
+                "goal": null,
+                "candidates": [],
+            })),
         }
     }
 

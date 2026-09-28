@@ -1,6 +1,6 @@
 use super::*;
 use crate::db::{GoalCheckpoint, NewAgentEndpoint, NewGoal, NewGoalStep};
-use crate::tool_runtime::{AgentWaitEventSelectorCall, AgentWaitModeCall, ToolResult};
+use crate::tool_runtime::{AgentWaitEventSelectorCall, AgentWaitModeCall, ToolCall, ToolResult};
 
 const T0: i64 = 100_000_000;
 const THRESHOLD: i64 = crate::db::GOAL_ACTIVITY_ATTENTION_AFTER_MS;
@@ -1830,6 +1830,250 @@ async fn goal_workflow_checkpoint_card_and_closeout_are_sparse_canonical_and_own
         .unwrap();
     assert_eq!(goal.summary.lifecycle.as_str(), "active");
     assert_eq!(goal.summary.revision, 3);
+}
+
+#[tokio::test]
+async fn session_handoff_goal_context_is_read_only_exact_and_preserves_ambiguity() {
+    let fixture = Workflow::new(true).await;
+    let checkpoint = fixture.runtime.checkpoint_goal(
+        Some(&fixture.auth),
+        fixture.goal_id.clone(),
+        2,
+        GoalCheckpoint {
+            completed_step_ids: vec!["inspect".into(), "implement".into()],
+            current_step_id: Some("validate".into()),
+            summary: "Implementation complete; run focused validation".into(),
+        },
+        "handoff-goal-context-checkpoint".into(),
+    );
+    assert!(checkpoint.success, "{:?}", checkpoint.output);
+
+    let before_goal = fixture
+        .db
+        .read_goal(&fixture.principal(), &fixture.goal_id)
+        .unwrap();
+    let before_session = fixture
+        .runtime
+        .sessions
+        .summary(&fixture.session_id, Some(200))
+        .unwrap();
+
+    let handoff = fixture
+        .runtime
+        .session_handoff_summary(
+            fixture.session_id.clone(),
+            Some(fixture.project.clone()),
+            Some(false),
+            Some(false),
+            Some(false),
+            false,
+            Some(20),
+            Some(&fixture.auth),
+        )
+        .await;
+    assert!(handoff.success, "{:?}", handoff.output);
+    let context = &handoff.output["goal_context"];
+    assert_eq!(context["version"], 1);
+    assert_eq!(context["source"], "explicit_workflow_session_correlation");
+    assert_eq!(context["status"], "available");
+    assert!(context["reason_code"].is_null());
+    assert_eq!(context["truncated"], false);
+    assert_eq!(context["candidates"], json!([]));
+
+    let goal = &context["goal"];
+    assert_eq!(goal["goal_id"], fixture.goal_id);
+    assert_eq!(goal["lifecycle"], "active");
+    assert_eq!(goal["revision"], 3);
+    assert_eq!(
+        goal["objective"]["excerpt"],
+        "PRIVATE_OBJECTIVE_NOT_IN_CARD_OR_WAKE"
+    );
+    assert_eq!(goal["objective"]["truncated"], false);
+    assert_eq!(
+        goal["plan"]["completion_conditions"]["items"],
+        json!(["Fresh focused verification and independent review"])
+    );
+    assert_eq!(goal["plan"]["completion_conditions"]["truncated"], false);
+    assert_eq!(goal["plan"]["steps"]["total"], 5);
+    assert_eq!(goal["plan"]["steps"]["returned"], 5);
+    assert_eq!(goal["plan"]["steps"]["truncated"], false);
+    assert_eq!(goal["plan"]["current_step_id"], "validate");
+    assert_eq!(
+        goal["plan"]["checkpoint"]["summary"]["excerpt"],
+        "Implementation complete; run focused validation"
+    );
+    assert!(goal["plan"]["checkpoint"]["at_unix_ms"].is_i64());
+
+    let step_statuses = goal["plan"]["steps"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|step| {
+            (
+                step["id"].as_str().unwrap().to_string(),
+                step["status"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(step_statuses["inspect"], "completed");
+    assert_eq!(step_statuses["implement"], "completed");
+    assert_eq!(step_statuses["validate"], "in_progress");
+    assert_eq!(step_statuses["review"], "pending");
+    assert_eq!(step_statuses["closeout"], "pending");
+
+    let after_goal = fixture
+        .db
+        .read_goal(&fixture.principal(), &fixture.goal_id)
+        .unwrap();
+    let after_session = fixture
+        .runtime
+        .sessions
+        .summary(&fixture.session_id, Some(200))
+        .unwrap();
+    assert_eq!(
+        after_goal, before_goal,
+        "handoff Goal read must not mutate Goal state"
+    );
+    assert_eq!(after_session.events_total, before_session.events_total);
+    assert_eq!(after_session.updated_at, before_session.updated_at);
+
+    // Codex recovery uses the hidden adapter-only handoff tool, not the public
+    // model-facing summary. Prove that the hidden route carries the same exact
+    // Goal context without turning the read into business-Session activity.
+    let hidden_before_goal = fixture
+        .db
+        .read_goal(&fixture.principal(), &fixture.goal_id)
+        .unwrap();
+    let hidden_before_session = fixture
+        .runtime
+        .sessions
+        .summary(&fixture.session_id, Some(200))
+        .unwrap();
+    let hidden = fixture
+        .runtime
+        .dispatch_with_auth(
+            ToolCall::SessionHandoffState {
+                project: fixture.project.clone(),
+                session_id: fixture.session_id.clone(),
+            },
+            Some(&fixture.auth),
+        )
+        .await;
+    assert!(hidden.success, "{:?}", hidden.output);
+    assert_eq!(hidden.output["project"], fixture.project);
+    assert_eq!(hidden.output["session_id"], fixture.session_id);
+    assert_eq!(hidden.output["goal_context"]["status"], "available");
+    assert_eq!(
+        hidden.output["goal_context"]["goal"]["goal_id"],
+        fixture.goal_id
+    );
+    assert_eq!(hidden.output["goal_context"]["goal"]["revision"], 3);
+    assert_eq!(
+        fixture
+            .db
+            .read_goal(&fixture.principal(), &fixture.goal_id)
+            .unwrap(),
+        hidden_before_goal
+    );
+    let hidden_after_session = fixture
+        .runtime
+        .sessions
+        .summary(&fixture.session_id, Some(200))
+        .unwrap();
+    assert_eq!(
+        hidden_after_session.events_total,
+        hidden_before_session.events_total
+    );
+    assert_eq!(
+        hidden_after_session.updated_at,
+        hidden_before_session.updated_at
+    );
+    let mut unavailable_runtime = fixture.runtime.clone();
+    unavailable_runtime.communication_db = None;
+    let unavailable = unavailable_runtime
+        .recovery_goal_context_for_session(Some(&fixture.auth), &fixture.session_id)
+        .expect("missing Goal store must be explicit recovery uncertainty");
+    assert_eq!(unavailable["status"], "unavailable");
+    assert_eq!(unavailable["reason_code"], "store_unavailable");
+    assert!(unavailable["goal"].is_null());
+    assert_eq!(unavailable["candidates"], json!([]));
+
+    let second = fixture.runtime.create_goal(
+        Some(&fixture.auth),
+        "Second correlated Goal".into(),
+        "SECOND_OBJECTIVE_MUST_NOT_BE_AUTO_SELECTED".into(),
+        "handoff-goal-context-second".into(),
+    );
+    assert!(second.success, "{:?}", second.output);
+    let second_goal_id = second.output["goal"]["summary"]["goal_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let associated = fixture
+        .runtime
+        .associate_goal_workflow_session(
+            Some(&fixture.auth),
+            second_goal_id.clone(),
+            fixture.session_id.clone(),
+            "handoff-goal-context-second-link".into(),
+        )
+        .await;
+    assert!(associated.success, "{:?}", associated.output);
+
+    let first_before_ambiguous = fixture
+        .db
+        .read_goal(&fixture.principal(), &fixture.goal_id)
+        .unwrap();
+    let second_before_ambiguous = fixture
+        .db
+        .read_goal(&fixture.principal(), &second_goal_id)
+        .unwrap();
+    let ambiguous = fixture
+        .runtime
+        .session_handoff_summary(
+            fixture.session_id.clone(),
+            Some(fixture.project.clone()),
+            Some(false),
+            Some(false),
+            Some(false),
+            false,
+            Some(20),
+            Some(&fixture.auth),
+        )
+        .await;
+    assert!(ambiguous.success, "{:?}", ambiguous.output);
+    let context = &ambiguous.output["goal_context"];
+    assert_eq!(context["status"], "selection_required");
+    assert_eq!(context["reason_code"], "multiple_active_goals");
+    assert!(context["goal"].is_null());
+    assert_eq!(context["truncated"], false);
+    let mut candidate_ids = context["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|candidate| candidate["goal_id"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    candidate_ids.sort();
+    let mut expected_ids = vec![fixture.goal_id.clone(), second_goal_id.clone()];
+    expected_ids.sort();
+    assert_eq!(candidate_ids, expected_ids);
+    let serialized = context.to_string();
+    assert!(!serialized.contains("PRIVATE_OBJECTIVE_NOT_IN_CARD_OR_WAKE"));
+    assert!(!serialized.contains("SECOND_OBJECTIVE_MUST_NOT_BE_AUTO_SELECTED"));
+    assert_eq!(
+        fixture
+            .db
+            .read_goal(&fixture.principal(), &fixture.goal_id)
+            .unwrap(),
+        first_before_ambiguous
+    );
+    assert_eq!(
+        fixture
+            .db
+            .read_goal(&fixture.principal(), &second_goal_id)
+            .unwrap(),
+        second_before_ambiguous
+    );
 }
 
 #[tokio::test]

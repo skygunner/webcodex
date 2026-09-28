@@ -13,6 +13,177 @@ use super::common::{
     validation_delta_schema, wrapped_output_schema,
 };
 
+fn session_handoff_goal_context_schema() -> Value {
+    let nullable = |schema: Value| json!({"anyOf": [schema, {"type": "null"}]});
+    let excerpt = |max_length: usize, description: &str| {
+        json!({
+            "type": "object",
+            "description": description,
+            "additionalProperties": false,
+            "properties": {
+                "excerpt": nullable(json!({"type": "string", "maxLength": max_length})),
+                "truncated": {"type": "boolean"}
+            },
+            "required": ["excerpt", "truncated"]
+        })
+    };
+    let candidate = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "goal_id": {"type": "string", "maxLength": 128},
+            "title": {"type": "string", "maxLength": 256},
+            "title_truncated": {"type": "boolean"},
+            "lifecycle": {"type": "string", "const": "active"},
+            "revision": {"type": "integer", "minimum": 1}
+        },
+        "required": ["goal_id", "title", "title_truncated", "lifecycle", "revision"]
+    });
+    let condition_list = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "items": {
+                "type": "array",
+                "maxItems": 8,
+                "items": {"type": "string", "maxLength": 256}
+            },
+            "total": {"type": "integer", "minimum": 0},
+            "returned": {"type": "integer", "minimum": 0, "maximum": 8},
+            "truncated": {"type": "boolean"},
+            "content_truncated": {"type": "boolean"}
+        },
+        "required": ["items", "total", "returned", "truncated", "content_truncated"]
+    });
+    let step_list = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "items": {
+                "type": "array",
+                "maxItems": 32,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "id": {"type": "string", "maxLength": 32},
+                        "title": {"type": "string", "maxLength": 128},
+                        "title_truncated": {"type": "boolean"},
+                        "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]}
+                    },
+                    "required": ["id", "title", "title_truncated", "status"]
+                }
+            },
+            "total": {"type": "integer", "minimum": 0},
+            "returned": {"type": "integer", "minimum": 0, "maximum": 32},
+            "truncated": {"type": "boolean"}
+        },
+        "required": ["items", "total", "returned", "truncated"]
+    });
+    let goal = json!({
+        "type": "object",
+        "description": "One exact caller-owned active Goal already explicitly correlated to the recovered Workflow Session. This is read-only recovery context and grants no authority.",
+        "additionalProperties": false,
+        "properties": {
+            "goal_id": {"type": "string", "maxLength": 128},
+            "title": {"type": "string", "maxLength": 256},
+            "title_truncated": {"type": "boolean"},
+            "lifecycle": {"type": "string", "const": "active"},
+            "revision": {"type": "integer", "minimum": 1},
+            "objective": excerpt(1024, "Bounded redacted Goal objective for recovery only."),
+            "plan": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "completion_conditions": condition_list,
+                    "steps": step_list,
+                    "current_step_id": nullable(json!({"type": "string", "maxLength": 32})),
+                    "checkpoint": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "summary": excerpt(512, "Bounded latest Goal checkpoint/progress summary."),
+                            "at_unix_ms": nullable(json!({"type": "integer"}))
+                        },
+                        "required": ["summary", "at_unix_ms"]
+                    }
+                },
+                "required": ["completion_conditions", "steps", "current_step_id", "checkpoint"]
+            }
+        },
+        "required": [
+            "goal_id", "title", "title_truncated", "lifecycle", "revision",
+            "objective", "plan"
+        ]
+    });
+
+    json!({
+        "type": "object",
+        "description": "Optional read-only durable Goal recovery context selected only through an existing explicit Workflow Session correlation. Zero correlated active Goals omit this field; multiple active Goals remain selection_required and never expose one Goal as selected.",
+        "additionalProperties": false,
+        "properties": {
+            "version": {"type": "integer", "const": 1},
+            "source": {"type": "string", "const": "explicit_workflow_session_correlation"},
+            "status": {"type": "string", "enum": ["available", "selection_required", "unavailable"]},
+            "reason_code": nullable(json!({
+                "type": "string",
+                "enum": ["multiple_active_goals", "store_unavailable"]
+            })),
+            "truncated": {"type": "boolean"},
+            "goal": nullable(goal),
+            "candidates": {
+                "type": "array",
+                "maxItems": 8,
+                "items": candidate
+            }
+        },
+        "required": ["version", "source", "status", "reason_code", "truncated", "goal", "candidates"],
+        "allOf": [
+            {
+                "if": {
+                    "properties": {"status": {"const": "available"}},
+                    "required": ["status"]
+                },
+                "then": {
+                    "properties": {
+                        "reason_code": {"type": "null"},
+                        "truncated": {"const": false},
+                        "goal": {"not": {"type": "null"}},
+                        "candidates": {"maxItems": 0}
+                    }
+                }
+            },
+            {
+                "if": {
+                    "properties": {"status": {"const": "selection_required"}},
+                    "required": ["status"]
+                },
+                "then": {
+                    "properties": {
+                        "reason_code": {"const": "multiple_active_goals"},
+                        "goal": {"type": "null"},
+                        "candidates": {"minItems": 2}
+                    }
+                }
+            },
+            {
+                "if": {
+                    "properties": {"status": {"const": "unavailable"}},
+                    "required": ["status"]
+                },
+                "then": {
+                    "properties": {
+                        "reason_code": {"const": "store_unavailable"},
+                        "truncated": {"const": false},
+                        "goal": {"type": "null"},
+                        "candidates": {"maxItems": 0}
+                    }
+                }
+            }
+        ]
+    })
+}
+
 pub(super) fn output_schema_for_tool(name: &str) -> Option<Value> {
     match name {
         "record_external_observation" => Some(wrapped_output_schema(vec![
@@ -705,6 +876,10 @@ pub(super) fn output_schema_for_tool(name: &str) -> Option<Value> {
             (
                 "continuation_feedback",
                 continuation_feedback_schema("Deterministic continuation feedback retained only in diagnostic=true handoff output. A read-only attempt summary plus validation delta over existing handoff evidence; never an LLM summary, never an Agent loop, never a new verdict, and it never re-runs validation, mutates the ledger, refreshes activity, or consumes guidance."),
+            ),
+            (
+                "goal_context",
+                session_handoff_goal_context_schema(),
             ),
             (
                 "handoff_brief",

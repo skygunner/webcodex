@@ -27,6 +27,14 @@ projection is not evidence that the Session has no active Goal. This normal re-e
 path prevents a new model turn from creating a duplicate Goal merely because it lost
 the earlier Goal identity.
 
+Explicit `session_handoff_summary` recovery follows the same identity boundary but may
+return a richer bounded sibling `goal_context` for an already-correlated active Goal:
+Goal identity/lifecycle/revision, objective, current plan and checkpoint context. Zero
+active correlations omit it; multiple active correlations remain `selection_required`
+and expose only candidate identities until a caller chooses explicitly. This recovery
+read never establishes a new correlation, refreshes Goal liveness, records Goal
+progress, schedules continuation, or grants Goal/Session/Project authority.
+
 Use `checkpoint_goal` at recoverable milestones: exact Goal revision and idempotency
 key, atomic completed-step ids and optional current step, and a bounded recovery
 summary. Complete all steps and freshly verify/review before explicitly completing

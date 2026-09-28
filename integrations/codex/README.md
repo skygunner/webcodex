@@ -4,9 +4,9 @@ This integration records bounded **external reports** in an explicitly selected
 WebCodex Workflow Session. It does not install Hooks, change trust, create a
 Session/Goal, execute commands, or migrate a conversation. The Server now projects
 these claims read-only in `session_handoff_summary`. The optional read-only local
-consumer and optional automatic entry below can inspect that brief; export and
-Goal linkage remain follow-up work. This does not establish real
-two-sided UI acceptance.
+consumer and optional automatic entry below can inspect that brief and the optional
+read-only Goal recovery context described below; export remains follow-up work. This
+does not establish real two-sided UI acceptance.
 
 ## Server contract
 
@@ -133,6 +133,16 @@ the brief was obtained; inspect current project rules, files, Git status, Jobs a
 unknown operations before continuing. The command does not select a Session by
 directory or recency, bind the new local conversation, mark work complete, replay
 an operation, install a Hook, or write a handoff file.
+
+When the exact Workflow Session already has one caller-owned active Goal linked by an
+explicit Workflow Session↔Goal correlation, the Server may also return sibling
+`goal_context`. This projection is separate from the 8 KiB `handoff_brief` and contains
+bounded Goal identity/lifecycle/revision, objective, current plan and checkpoint
+context. Zero correlated active Goals omit it. Multiple active Goals return only a
+bounded `selection_required` candidate set and never choose or expose one Goal as the
+default. Reading this context does not create or associate a Goal, checkpoint/update/
+complete progress, refresh Goal liveness, schedule work, or grant Goal/Session/Project
+authority.
 
 `read_handoff.py` itself remains a deliberate recovery command.
 It requires an already selected Workflow Session and the normal authorized

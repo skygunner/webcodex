@@ -65,6 +65,26 @@ class SessionRecoveryTests(unittest.TestCase):
         self.assertEqual(value["status"], "read")
         self.assertEqual(value["handoff_brief"]["events"][-1]["event_id"], "event-two")
 
+
+    def test_goal_context_change_refreshes_automatic_recovery_snapshot(self):
+        self.value["goal_context"] = {
+            "version": 1,
+            "source": "explicit_workflow_session_correlation",
+            "status": "available",
+            "reason_code": None,
+            "truncated": False,
+            "goal": {"goal_id": "wc_goal_fixture", "revision": 1},
+            "candidates": [],
+        }
+        first = self.read()
+        self.assertEqual(first["goal_context"]["goal"]["revision"], 1)
+        self.value["goal_context"]["goal"]["revision"] = 2
+        second = self.read()
+        self.assertEqual(second["status"], "read")
+        self.assertEqual(second["goal_context"]["goal"]["revision"], 2)
+        saved = json.loads(Path(second["snapshot_path"]).read_text())
+        self.assertEqual(saved["evidence"]["goal_context"]["goal"]["revision"], 2)
+
     def test_new_session_and_compaction_get_complete_brief(self):
         self.read()
         self.payload["session_id"] = "local-two"

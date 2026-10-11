@@ -80,4 +80,3 @@ for bin in webcodex webcodex-server webcodex-runner; do
 done
 
 webcodex doctor
-

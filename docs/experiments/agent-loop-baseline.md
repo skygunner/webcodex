@@ -54,13 +54,18 @@ It accepts the following evidence sources:
    thought, command, file content, credential, deployment identity, Project id,
    Workflow Session id, ClientWindow, tunnel id, or instance id.
 
-On the current runtime, `WEBCODEX_TOOL_REQUEST_TRACE=true`/metadata mode does not
-persist a per-trace `events.jsonl` tree. That is not a blocker for the core
-baseline because ActionAudit already persists the payload-safe outer/Window facts.
-If Runner enqueue observations are required, a capture made with full request
-trace can be passed with `--trace-root`; the profiler still ignores all full
-payload blobs. A missing trace root makes Runner-request metrics unavailable
-rather than zero.
+Current `WEBCODEX_TOOL_REQUEST_TRACE=true`/metadata capture persists bounded
+per-trace `events.jsonl`, including observed Runner request correlation and MCP
+request-policy selection. Pass that directory with `--trace-root`; full capture
+is not required and the profiler never opens raw payload blobs. Historical
+journal-only metadata captures are not backfilled. A missing trace root makes
+Runner-request metrics unavailable, not zero.
+
+The deterministic coding-loop harness uses `/api/tools/call`; it is not an MCP
+or Codex Apps client benchmark. Its canonical edit name is `edit_project_files`.
+For live Agent comparisons record the connection path (Apps, direct MCP or native),
+Host mode and model configuration separately; a Server manifest cannot prove which
+schemas a Host loaded. See [MCP client contracts](../implementation/mcp-client-contract-alignment.md).
 
 Trace persistence is fail-open observability, so `runner.requests_observed` means
 exactly that: enqueue records observed in the supplied trace tree. The report does
@@ -174,7 +179,8 @@ expectation.
 The profiler includes a deterministic case fingerprint so changed case definitions
 cannot silently compare as the same pair.
 
-The corpus contains ten cases:
+The corpus contains sixteen cases: ten coding/inspection cases and six general
+file/command cases. The coding/inspection cases are:
 
 - `readonly_review`: read-only status/read/search/diff inspection.
 - `focused_edit_validation`: one focused edit, diff review, and successful
@@ -198,9 +204,31 @@ The corpus contains ten cases:
 - `compact_projection`: larger child read evidence distilled into exactly three
   concise final facts.
 
-The fixture-oriented cases reuse the disposable Rust project recipe already owned
-by `eval_coding_loop.sh`; this protocol does not create a second runtime harness.
+The general cases are:
+
+- `generic_mixed_files_conflict`: copy mixed files, preserve inputs and a
+  destination conflict, and independently verify bytes/hashes and file counts.
+- `generic_encoded_csv`: reconcile encodings/columns and independently verify
+  the actual CSV rows, statistics and output receipts.
+- `generic_failure_repair`: inspect an intentional nonzero exit and repair it;
+  expected business failures are not contract-repair turns.
+- `generic_pending_independent_join`: do independent work before one readiness
+  join, then observe the original interactive Job without redispatch.
+- `generic_stale_read_revision`: reject a stale edit, reread, and preserve an
+  external writer's exact bytes through successful recovery.
+- `generic_missing_output`: verify that a declared missing output blocks closeout;
+  this expected negative case requires the output-receipt contract.
+
+The coding fixture cases reuse the disposable Rust project recipe already owned
+by `eval_coding_loop.sh`; general cases reuse the fixture recipes in
+`e2e_generic_agent_ws.py`. This protocol does not create a second runtime harness.
 Read-only WebCodex-repository cases must leave the workspace clean.
+The generic manifest entries specify preparation and independent checks. Real
+stale-edit replay requires an operator write after the model's first read; do not
+silently substitute a model-issued write. The scripted driver is deterministic
+runtime acceptance, not a real ChatGPT sample. See
+[General Agent experience](general-agent-experience.md) for the implementation,
+replay protocol and observed acceptance results.
 
 The corpus records an expected `code_mode_surface` for every current case:
 read-only cases use `read_only`, the long validation/Job case uses `validation`,
@@ -355,6 +383,62 @@ The schema-v1 JSON summary reports, when evidence is available:
 
 The summary includes an explicit `availability` object. Consumers must inspect it
 rather than assuming an absent metric is zero.
+
+### Input ergonomics (ModelErgonomics v13+)
+
+`input_ergonomics` reads the existing `action_events.summary_json.model_ergonomics`
+record. It adds no production table or migration. The report envelope stays schema
+v1, consistent with its existing additive metric sections; the persisted telemetry
+producer moves from v12 to v13 so old missing fields are not counted as zero use.
+
+The section reports `normalization_events`, `normalization_by_code`, and
+`normalization_by_tool`, plus `invalid_argument_rejections` and
+`invalid_arguments_by_tool`. Only successful canonical outer invocation records
+with a known closed normalization code contribute to normalization counts. Success
+is the invocation outcome, including successful durable admission, not a promise
+that an asynchronous command eventually succeeds. Failed results do not contribute
+even if malformed historical data contains a normalization field.
+
+Coverage is explicit: `measured_canonical_calls`, `eligible_events` (v13+),
+`eligible_successful_events`, `legacy_schema_events`, and
+`missing_or_invalid_record_events`. The rate is exactly
+`normalization_events / eligible_successful_events`; legacy v12 rows and records
+missing canonical identity/outcome evidence never enter that denominator. Zero
+eligible successes yields null, not zero. Unknown/malformed codes are omitted and
+counted in `unrecognized_normalization_events`; they make rate availability false
+rather than silently reporting an artificially low rate. The offline reader has a
+closed v13 wire-contract allowlist, not a runtime normalization/alias registry.
+Consult `availability.input_ergonomics` before interpreting the rate.
+
+`immediate_same_tool_repair_proxy` considers each selected canonical meaningful
+`success=false, error_kind=invalid_arguments` call. It inspects only the next
+meaningful call in the same exact ClientWindow and principal correlation. Both
+calls must have non-streaming, eligible continuity and ordered request/handoff
+timestamps; the successor must persist the exact predecessor trace relation with
+`window_transition_kind=serial`, have canonical telemetry, and not have ambiguous
+trace/predecessor identity. Count only a same-tool successful successor. Never skip
+an intervening meaningful call (including one without telemetry), cross principals,
+or use an arbitrary seconds threshold. Existing continuity lookup may resolve an
+unlinked intervening call or the exact successor outside the selected Session;
+those context rows never expand the normalization denominator.
+
+This is a **WebCodex-observed immediate same-tool corrective-call proxy**. It does
+not prove model turn identity, a causal repair, or that field spelling caused the
+failure. Legacy canonical records may contribute when they retain all necessary
+continuity evidence. Missing successor, streaming/overlap, incomplete identities,
+or context limits make the proxy `available=false` with null `count`/`by_tool`.
+`observed_count`/`observed_by_tool` retain only the proven subset; coverage and
+`unavailable_by_reason` explain the gap. A different immediate tool is a measured
+non-match, not permission to search ahead for eventual same-tool success. Existing
+manually annotated `repair_turns` remain separate and are never filled from this
+proxy. Trace-only reports mark input ergonomics unavailable.
+
+No raw arguments, parser error text, hints, stdout, Window/principal identities or
+per-event payloads are emitted by this section. Normalization counts describe use,
+not an experiment proving saved model turns. Collect v13 coverage after an explicit
+deployment, compare repeated correction patterns and known provider spellings,
+and measure proposed descriptor bytes before deciding whether another alias has
+concrete value. Do not infer the misspelled field from this aggregate alone.
 
 ### Authoritative, annotated, and unavailable facts
 

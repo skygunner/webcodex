@@ -43,7 +43,7 @@ const nextState = {
     ...baseState.activity,
     active: true,
     current: { label: "Running checks", kind: "test", started_at_ms: 1789812010000 },
-    last: { label: "Edited code", kind: "edit", at_ms: 1789812009000 },
+    last: { label: "Edited files", kind: "edit", at_ms: 1789812009000 },
     last_meaningful_activity_at_ms: 1789812009000,
   },
   window_activity: {
@@ -54,7 +54,7 @@ const nextState = {
     events_observed: 3,
     last_activity_at_ms: 1789812010000,
     events: [
-      { label: "Edited code", kind: "edit", status: "success", meaningful: true, started_at_ms: 1789812008000, ended_at_ms: 1789812009000, duration_ms: 1000 },
+      { label: "Edited files", kind: "edit", status: "success", meaningful: true, started_at_ms: 1789812008000, ended_at_ms: 1789812009000, duration_ms: 1000 },
       ...baseState.window_activity.events,
     ],
   },
@@ -67,6 +67,190 @@ function contentOnly(result) {
 function privateOnly(result) {
   return { _meta: { "webcodex/workResult": result.structuredContent } };
 }
+
+function threadResult(state, selectedSession = null) {
+  const result = toolResult({ work_result: state });
+  result._meta = { "webcodex/workResultThread": { session_id: selectedSession } };
+  return result;
+}
+
+for (const resultFirst of [false, true]) test(`thread initialization preserves the explicit Session on refresh (result-first=${resultFirst})`, async () => {
+  const view = app("mcp_work_result_app.html");
+  if (!resultFirst) view.toolInput({});
+  view.notification("ui/notifications/tool-result", threadResult(baseState, session_id));
+  if (resultFirst) view.toolInput({});
+  await view.initialize();
+  view.nodes.refresh.onclick();
+  const call = view.calls("work_result_state")[0];
+  assert.deepEqual(JSON.parse(JSON.stringify(call.params.arguments)), input);
+  await view.reply(call, toolResult({ work_result: nextState }));
+  assert.equal(view.nodes.sessionIdentity.textContent, "Session · " + session_id);
+});
+
+test("thread initialization never promotes a Window-linked Session into refresh authority", async () => {
+  const view = app("mcp_work_result_app.html");
+  view.toolInput({});
+  view.notification("ui/notifications/tool-result", threadResult(baseState));
+  await view.initialize();
+  view.nodes.refresh.onclick();
+  assert.deepEqual(JSON.parse(JSON.stringify(view.calls("work_result_state")[0].params.arguments)), { project });
+});
+
+for (const context of [undefined, {}, { session_id: "invalid" }, { session_id: `wc_sess_${"2".repeat(32)}` }]) {
+  test(`thread rejects missing or conflicting initialization context: ${JSON.stringify(context)}`, async () => {
+    const view = app("mcp_work_result_app.html");
+    view.toolInput({});
+    const result = toolResult({ work_result: baseState });
+    if (context !== undefined) result._meta = { "webcodex/workResultThread": context };
+    view.notification("ui/notifications/tool-result", result);
+    await view.initialize();
+    assert.equal(view.nodes.badge.textContent, "Unavailable");
+    assert.equal(view.calls("work_result_state").length, 0);
+  });
+}
+
+test("a mounted thread cannot be retargeted by a later presentation", async () => {
+  const view = app("mcp_work_result_app.html");
+  view.toolInput({});
+  view.notification("ui/notifications/tool-result", threadResult(baseState, session_id));
+  await view.initialize();
+  view.notification("ui/notifications/tool-result", threadResult({ ...baseState, session_id: `wc_sess_${"2".repeat(32)}` }, `wc_sess_${"2".repeat(32)}`));
+  assert.equal(view.nodes.badge.textContent, "Unavailable");
+});
+
+test("thread review prioritizes files and checks while keeping diagnostics folded", async () => {
+  const view = app("mcp_work_result_app.html");
+  view.notification("ui/notifications/tool-result", threadResult(baseState, session_id));
+  await view.initialize();
+  assert.equal(view.nodes.panelResults.hidden, false);
+  assert.equal(view.nodes.panelActivity.hidden, true);
+  assert.equal(view.nodes.tabResults.textContent, "Review");
+  assert.equal(view.nodes.workspaceHeading.textContent, "Changed files");
+  assert.deepEqual(view.nodes.viewTabs.children, [view.nodes.tabResults, view.nodes.tabActivity, view.nodes.tabCollaboration]);
+  assert.deepEqual(view.nodes.panelResults.children.slice(0, 3), [view.nodes.workspaceChangesSection, view.nodes.resultChecks, view.nodes.finalChanges]);
+  assert.equal(view.nodes.diagnostics.open, false);
+  assert.deepEqual(view.nodes.diagnosticContent.children, [view.nodes.taskContext]);
+  view.nodes.tabResults.onkeydown({ key: "ArrowRight", preventDefault() {} });
+  assert.equal(view.nodes.panelActivity.hidden, false);
+});
+
+test("thread refresh and repeated initialization preserve the user's pane and draft", async () => {
+  const view = app("mcp_work_result_app.html");
+  const initial = threadResult(baseState, session_id);
+  view.notification("ui/notifications/tool-result", initial);
+  await view.initialize();
+  view.nodes.tabCollaboration.onclick();
+  view.nodes.messageInput.value = "Review this change";
+  view.nodes.refresh.onclick();
+  await view.reply(view.calls("work_result_state")[0], toolResult({ work_result: nextState }));
+  view.notification("ui/notifications/tool-result", initial);
+  assert.equal(view.nodes.panelCollaboration.hidden, false);
+  assert.equal(view.nodes.messageInput.value, "Review this change");
+});
+
+test("thread binding also initializes from the private Work Result fallback", async () => {
+  const view = app("mcp_work_result_app.html");
+  view.toolInput({});
+  const result = privateOnly(toolResult({ work_result: baseState }));
+  result._meta["webcodex/workResultThread"] = { session_id };
+  view.notification("ui/notifications/tool-result", result);
+  await view.initialize();
+  view.nodes.refresh.onclick();
+  assert.equal(view.nodes.panelResults.hidden, false);
+  assert.equal(view.calls("work_result_state")[0].params.arguments.session_id, session_id);
+});
+
+const outputState = {
+  ...baseState,
+  workspace: { ...baseState.workspace, git_available: false },
+  task_outputs: {
+    items: [{ path: "results/report.csv", status: "verified", file_bytes: 42,
+      mime_type: "text/csv", sha256: "d".repeat(64) },
+    { path: "results/missing.pdf", status: "missing" },
+    { path: "results/unavailable.png", status: "unavailable" }],
+    verified_count: 1, missing_count: 1, unavailable_count: 1, observed_at: 1789812000,
+  },
+};
+
+test("non-Git task outputs show independently observed files and partial failures", async () => {
+  const view = app("mcp_work_result_app.html");
+  view.toolResult({ work_result: outputState });
+  await view.initialize();
+  assert.equal(view.nodes.taskOutputsSection.hidden, false);
+  assert.equal(view.nodes.workspaceChangesSection.hidden, true);
+  assert.equal(view.nodes.taskOutputsList.children.length, 3);
+  assert.match(view.nodes.taskOutputsSummary.textContent, /1 observed.*1 missing.*1 unavailable/);
+  assert.match(view.nodes.taskOutputsObserved.textContent, /files may change after this observation/);
+  const rows = view.nodes.taskOutputsList.children;
+  assert.equal(rows[0].children[0].textContent, "results/report.csv");
+  assert.equal(rows[0].children[2].children[1].textContent, "SHA-256 · " + "d".repeat(64));
+  assert.equal(rows[1].children.length, 2);
+  assert.equal(rows[2].children.length, 2);
+  assert.equal(view.sent.filter(r => r.method === "ui/message").length, 0);
+});
+
+test("explicit output export request preserves Project path and observed SHA", async () => {
+  const view = app("mcp_work_result_app.html");
+  view.toolResult({ work_result: outputState });
+  await view.initialize();
+  const button = view.nodes.taskOutputsList.children[0].children[3];
+  const pending = button.onclick();
+  const request = view.sent.find(r => r.method === "ui/message");
+  assert.equal(button.disabled, true);
+  assert.equal(request.params.role, "user");
+  const text = request.params.content[0].text;
+  assert.ok(text.includes(project));
+  assert.ok(text.includes('"results/report.csv"'));
+  assert.ok(text.includes("d".repeat(64)));
+  assert.match(text, /First check.*if it changed/);
+  assert.equal(view.calls("project_artifact").length, 0);
+  await view.reply(request, {});
+  await pending;
+  assert.equal(button.disabled, false);
+  assert.equal(view.nodes.taskOutputsAction.textContent, "File requested in chat.");
+});
+
+test("malformed or unlinked output evidence cannot populate the task card", async () => {
+  for (const mutate of [
+    s => { delete s.session_id; },
+    s => { s.task_outputs.verified_count = 2; },
+    s => { s.task_outputs.items[0].sha256 = "invalid"; },
+    s => { s.task_outputs.items[0].path = "../report.csv"; },
+    s => { s.task_outputs.items[0].path = "汉".repeat(171); },
+    s => { s.task_outputs.items[1].sha256 = "d".repeat(64); },
+  ]) {
+    const state = structuredClone(outputState);
+    mutate(state);
+    const view = app("mcp_work_result_app.html");
+    view.toolInput(input);
+    view.toolResult({ work_result: state });
+    await view.initialize();
+    assert.equal(view.nodes.taskOutputsList?.children.length || 0, 0);
+    assert.equal(view.sent.filter(r => r.method === "ui/message").length, 0);
+  }
+});
+
+test("output request failure remains retryable and teardown ignores a late reply", async () => {
+  const view = app("mcp_work_result_app.html");
+  view.toolResult({ work_result: outputState });
+  await view.initialize();
+  const button = view.nodes.taskOutputsList.children[0].children[3];
+  const failed = button.onclick();
+  await view.reject(view.sent.find(r => r.method === "ui/message"));
+  await failed;
+  assert.equal(button.disabled, false);
+  assert.match(view.nodes.taskOutputsAction.textContent, /Try again/);
+  const pending = button.onclick();
+  await button.onclick();
+  const requests = view.sent.filter(r => r.method === "ui/message");
+  assert.equal(requests.length, 2);
+  const previous = view.nodes.taskOutputsAction.textContent;
+  await view.teardown();
+  await view.reply(requests[1], {});
+  await pending;
+  assert.equal(view.nodes.taskOutputsAction.textContent, previous);
+  assert.equal(button.disabled, true);
+});
 
 test("initial private Work Result fallback renders when Host omits structuredContent", async () => {
   const view = app("mcp_work_result_app.html");
@@ -106,7 +290,7 @@ test("Window card renders and refreshes before any Workflow Session exists", asy
   assert.equal(view.timers.size, 1);
   await view.fireTimers(10000);
   assert.equal(view.calls("work_result_state").length, 1);
-  assert.deepEqual({ ...view.calls("work_result_state")[0].params.arguments }, { project });
+  assert.deepEqual({ ...view.calls("work_result_state")[0].params.arguments }, { project, automatic: true });
 });
 
 test("missing initial machine result recovers once through app-only content fallback", async () => {
@@ -145,14 +329,14 @@ test("recent inactive work keeps the lightweight last-active state before the id
     state_version: `wr2_${"c".repeat(64)}`,
     activity: {
       ...baseState.activity,
-      last: { label: "Edited code", kind: "edit", at_ms: 1_999_999_990_000 },
+      last: { label: "Edited files", kind: "edit", at_ms: 1_999_999_990_000 },
       last_meaningful_activity_at_ms: 1_999_999_990_000,
     },
   };
   const view = app("mcp_work_result_app.html");
   view.toolResult({ work_result: quietState });
   await view.initialize();
-  assert.equal(view.nodes.activityStatus.textContent, "Edited code");
+  assert.equal(view.nodes.activityStatus.textContent, "Edited files");
   assert.equal(view.nodes.activityAge.textContent, "Last active 10s ago");
   assert.equal(view.nodes.badge.textContent, "Waiting");
 });
@@ -400,7 +584,7 @@ test("input-only bootstrap waits for a user Refresh before reading state", async
   view.nodes.refresh.onclick();
   await flush();
   assert.equal(view.calls("work_result_state").length, 1);
-  assert.deepEqual({ ...view.calls("work_result_state")[0].params.arguments }, { project });
+  assert.deepEqual({ ...view.calls("work_result_state")[0].params.arguments }, { project, session_id });
   await view.reply(view.calls("work_result_state")[0], toolResult({ work_result: baseState }));
   assert.equal(view.nodes.windowCoverage.textContent, "2 observed events");
   assert.equal(view.nodes.status.textContent, "Updated");
@@ -418,6 +602,22 @@ test("matching Work input/result identity is idempotent and unchanged initial st
   assert.equal(view.nodes.activityDetail.textContent, "sentinel");
 });
 
+test("automatic workspace reuse is explicit and manual Refresh always requests a new observation", async () => {
+  const view = app("mcp_work_result_app.html");
+  view.toolInput(input); view.toolResult({ work_result: baseState }); await view.initialize();
+  await view.fireTimers(10000);
+  const automatic = view.calls("work_result_state").at(-1);
+  assert.equal(automatic.params.arguments.automatic, true);
+  await view.reply(automatic, toolResult({work_result: {...baseState,
+    workspace_observation: {reused: true, max_reuse_ms: 30000, semantics: "bounded_snapshot_not_filesystem_freshness"}}}));
+  assert.match(view.nodes.status.title, /at most 30 seconds/);
+  view.nodes.refresh.onclick(); await flush();
+  const manual = view.calls("work_result_state").at(-1);
+  assert.equal(manual.params.arguments.automatic, undefined);
+  await view.reply(manual, toolResult({work_result: {...baseState, workspace_observation: {reused: false}}}));
+  assert.equal(view.nodes.status.title, "");
+});
+
 test("live progress performs bounded app-only polling and adapts to visibility", async () => {
   const view = app("mcp_work_result_app.html");
   view.toolInput(input);
@@ -426,7 +626,7 @@ test("live progress performs bounded app-only polling and adapts to visibility",
   assert.equal(view.calls("work_result_state").length, 0);
   await view.fireTimers(10000);
   assert.equal(view.calls("work_result_state").length, 1);
-  assert.deepEqual({ ...view.calls("work_result_state")[0].params.arguments }, { project });
+  assert.deepEqual({ ...view.calls("work_result_state")[0].params.arguments }, { project, session_id, automatic: true });
   await view.reply(view.calls("work_result_state")[0], toolResult({ work_result: nextState }));
   assert.equal(view.nodes.activityStatus.textContent, "Running checks");
   assert.equal(view.nodes.activityAge.textContent, "Active now");
@@ -456,7 +656,7 @@ test("closed linked Session does not stop Window-level automatic polling", async
   assert.equal(view.timers.size, 1);
   await view.fireTimers(10000);
   assert.equal(view.calls("work_result_state").length, 1);
-  assert.deepEqual({ ...view.calls("work_result_state")[0].params.arguments }, { project });
+  assert.deepEqual({ ...view.calls("work_result_state")[0].params.arguments }, { project, session_id, automatic: true });
   await view.reply(view.calls("work_result_state")[0], toolResult({ work_result: closedState }));
   assert.equal(view.nodes.refresh.disabled, false);
   assert.equal(view.nodes.status.textContent, "Live");
@@ -491,7 +691,7 @@ test("user Refresh performs one exact state read and updates the snapshot", asyn
   view.nodes.refresh.onclick();
   await flush();
   assert.equal(view.calls("work_result_state").length, 1);
-  assert.deepEqual({ ...view.calls("work_result_state")[0].params.arguments }, { project });
+  assert.deepEqual({ ...view.calls("work_result_state")[0].params.arguments }, { project, session_id });
   assert.equal(view.nodes.refresh.disabled, true);
   assert.equal(view.nodes.refresh.textContent, "Refreshing…");
   await view.reply(view.calls("work_result_state")[0], toolResult({ work_result: nextState }));
@@ -516,7 +716,7 @@ test("in-flight Refresh clicks coalesce and a later user click performs one new 
   view.nodes.refresh.onclick();
   await flush();
   assert.equal(view.calls("work_result_state").length, 2);
-  assert.deepEqual({ ...view.calls("work_result_state")[1].params.arguments }, { project });
+  assert.deepEqual({ ...view.calls("work_result_state")[1].params.arguments }, { project, session_id });
 });
 
 test("failed Refresh preserves the last valid snapshot and remains retryable", async () => {
@@ -1329,4 +1529,156 @@ test("unsafe live file paths fail closed and clear previously displayed results"
   assert.equal(view.nodes.workspaceFiles.children.length, 0);
   assert.equal(view.nodes.workspaceStatus.textContent, 'Changes unavailable');
   assert.equal(view.nodes.refresh.disabled, true);
+});
+
+const runningJobs = { available: true, active: true, truncated: false, items: [
+  { job_id: "job-one", tool: "cargo_test", status: "running", state: "active" },
+] };
+
+test("exact Session Job transitions through normal refresh without a model tool result", async () => {
+  const view = app("mcp_work_result_app.html");
+  view.toolInput(input);
+  view.toolResult({ work_result: { ...baseState, jobs: runningJobs } });
+  await view.initialize();
+  assert.equal(view.nodes.jobsSection.hidden, false);
+  assert.equal(view.nodes.jobsList.children[0].children[0].children[1].textContent, "Running");
+  assert.equal(view.nodes.badge.textContent, "Working");
+  const terminal = { ...baseState, state_version: `wr2_${"c".repeat(64)}`, jobs: {
+    available: true, active: false, truncated: false,
+    items: [{ ...runningJobs.items[0], status: "completed", state: "terminal", outcome: "passed" }],
+  } };
+  await view.fireTimers(10000);
+  const call = view.calls("work_result_state").at(-1);
+  assert.deepEqual({ ...call.params.arguments }, { project, session_id, automatic: true });
+  await view.reply(call, toolResult({ work_result: terminal }));
+  await flush();
+  assert.equal(view.nodes.jobResultsList.children[0].children[0].children[1].textContent, "Passed");
+  assert.equal(view.calls("observe_jobs").length, 0);
+  assert.equal(view.calls("ui/message").length, 0);
+});
+
+test("background executions separate live work from folded outcomes without declaring task completion", async () => {
+  const view = app("mcp_work_result_app.html");
+  view.toolInput(input);
+  view.toolResult({ work_result: { ...baseState, jobs: { ...runningJobs, items: [
+    { ...runningJobs.items[0], job_id: "failed-one", state: "terminal", status: "failed", outcome: "failed" },
+    runningJobs.items[0],
+    { ...runningJobs.items[0], job_id: "passed-one", state: "terminal", status: "completed", outcome: "passed" },
+  ] } } });
+  await view.initialize();
+  assert.equal(view.nodes.jobsList.children.length, 1);
+  assert.equal(view.nodes.jobResultsList.children.length, 2);
+  assert.equal(view.nodes.jobResults.hidden, false);
+  assert.equal(view.nodes.jobResults.open, false);
+  assert.equal(view.nodes.jobResultsSummary.textContent, "Recent background results · 1 failed · 1 passed");
+  assert.equal(view.nodes.activityStatus.textContent, "Work continuing in the background");
+  assert.equal(view.nodes.activityAge.textContent, "");
+  view.nodes.jobResults.open = true;
+  view.nodes.refresh.onclick(); await flush();
+  await view.reply(view.calls("work_result_state")[0], toolResult({ work_result: {
+    ...baseState, state_version: nextState.state_version, jobs: { ...runningJobs, active: false, items: [
+      { ...runningJobs.items[0], state: "terminal", status: "completed", outcome: "passed" },
+    ] },
+  } }));
+  assert.equal(view.nodes.jobsList.children.length, 0);
+  assert.equal(view.nodes.jobResults.open, true);
+  assert.equal(view.nodes.activityStatus.textContent, "Reviewed changes");
+  assert.notEqual(view.nodes.badge.textContent, "Working");
+});
+
+test("live Window activity stays primary while background work is visible", async () => {
+  const view = app("mcp_work_result_app.html");
+  view.toolInput(input);
+  view.toolResult({ work_result: { ...baseState, jobs: runningJobs, activity: {
+    ...baseState.activity, active: true,
+    current: { label: "Reading files", kind: "read", started_at_ms: 1_999_999_999_000 },
+  } } });
+  await view.initialize();
+  assert.equal(view.nodes.activityStatus.textContent, "Reading files");
+  assert.equal(view.nodes.jobsList.children.length, 1);
+  assert.equal(view.nodes.jobResults.hidden, true);
+});
+
+test("truncated background state does not mistake a terminal visible slice for completion", async () => {
+  const view = app("mcp_work_result_app.html");
+  view.toolInput(input);
+  view.toolResult({ work_result: { ...baseState, jobs: { ...runningJobs, truncated: true, items: [
+    { ...runningJobs.items[0], state: "terminal", status: "failed", outcome: "failed" },
+  ] } } });
+  await view.initialize();
+  assert.equal(view.nodes.activityStatus.textContent, "Work continuing in the background");
+  assert.equal(view.nodes.jobsList.children.length, 0);
+  assert.equal(view.nodes.badge.textContent, "Working");
+  assert.match(view.nodes.jobsMeta.textContent, /more may be active or finished/);
+  assert.match(view.nodes.jobResultsSummary.textContent, /1 failed/);
+});
+
+for (const status of ["queued", "recovering", "stop_requested"]) test(`background ${status} does not claim execution is running`, async () => {
+  const view = app("mcp_work_result_app.html");
+  view.toolInput(input);
+  view.toolResult({ work_result: { ...baseState, jobs: { ...runningJobs, items: [
+    { ...runningJobs.items[0], status },
+  ] } } });
+  await view.initialize();
+  assert.equal(view.nodes.activityAge.textContent, "");
+  assert.notEqual(view.nodes.jobsList.children[0].children[0].children[1].textContent, "Running");
+  assert.equal(view.nodes.jobResults.hidden, true);
+});
+
+test("Window-linked Session does not become Job authority on refresh", async () => {
+  const view = app("mcp_work_result_app.html");
+  view.toolInput({ project });
+  view.toolResult({ work_result: { ...baseState, jobs: { available: false } } });
+  await view.initialize();
+  assert.equal(view.nodes.jobsSection.hidden, true);
+  await view.fireTimers(10000);
+  assert.deepEqual({ ...view.calls("work_result_state")[0].params.arguments }, { project, automatic: true });
+});
+
+test("Job failures and recovery remain bounded labels and conflicting Session fails closed", async () => {
+  const view = app("mcp_work_result_app.html");
+  view.toolInput(input);
+  view.toolResult({ work_result: { ...baseState, jobs: { ...runningJobs, active: false, items: [
+    { ...runningJobs.items[0], state: "terminal", status: "failed", outcome: "failed", recovery_state: "recovered" },
+  ] } } });
+  await view.initialize();
+  assert.equal(view.nodes.jobResultsList.children[0].children[0].children[1].textContent, "Failed · recovered");
+  view.toolInput({ project, session_id: `wc_sess_${"2".repeat(32)}` });
+  assert.equal(view.nodes.badge.textContent, "Unavailable");
+  assert.equal(view.nodes.jobsSection.hidden, true);
+  assert.equal(view.timers.size, 0);
+});
+
+test("active Jobs use the existing timer and preserve hidden and teardown fences", async () => {
+  const view = app("mcp_work_result_app.html");
+  view.toolInput(input);
+  view.toolResult({ work_result: { ...baseState, jobs: runningJobs } });
+  await view.initialize();
+  await view.fireTimers(10000);
+  const call = view.calls("work_result_state")[0];
+  view.notification("ui/resource-teardown", {});
+  await view.reply(call, toolResult({ work_result: nextState }));
+  await flush();
+  assert.equal(view.timers.size, 0);
+  assert.equal(view.nodes.jobsList.children[0].children[0].children[1].textContent, "Running");
+});
+
+test("result-first Job state cannot be rebound by a different explicit Session", async () => {
+  const view = app("mcp_work_result_app.html");
+  view.toolResult({ work_result: { ...baseState, jobs: runningJobs } });
+  view.toolInput({ project, session_id: `wc_sess_${"2".repeat(32)}` });
+  await view.initialize();
+  assert.equal(view.nodes.badge.textContent, "Unavailable");
+  assert.equal(view.calls("work_result_state").length, 0);
+});
+
+for (const jobs of [
+  { ...runningJobs, items: Array.from({ length: 9 }, () => runningJobs.items[0]) },
+  { ...runningJobs, items: [{ ...runningJobs.items[0], state: "guessed" }] },
+]) test("invalid Job state fails closed", async () => {
+  const view = app("mcp_work_result_app.html");
+  view.toolInput(input);
+  view.toolResult({ work_result: { ...baseState, jobs } });
+  await view.initialize();
+  assert.equal(view.nodes.badge.textContent, "Unavailable");
 });

@@ -504,7 +504,11 @@ async fn register_agent_projects_for_auth(
                         structured_cargo_check_packages: true,
                         structured_go_test_json: true,
                         project_validation_v1: false,
+                        project_build_v1: false,
+                        project_dependency_policy_v1: false,
+                        project_go_single_module_v1: false,
                         project_validation_package_scope_v1: false,
+                        project_validation_test_options_v1: false,
                         structured_go_test_tool: true,
                         structured_go_test_packages: true,
                         structured_process_argv: true,
@@ -514,6 +518,7 @@ async fn register_agent_projects_for_auth(
                         structured_script_python: false,
                         internal_posix_script: false,
                         structured_execution_jobs: false,
+                        job_process_input: false,
                         detached_process_jobs: false,
                         lsp_read_only_navigation: false,
                         lsp_call_hierarchy: false,
@@ -526,6 +531,7 @@ async fn register_agent_projects_for_auth(
                         browser_observe: false,
                         browser_control: false,
                         browser_element_action_admission: false,
+                        browser_batch: false,
                         browser_launch: false,
                         computer_observe: false,
                         computer_application_discovery: false,
@@ -587,6 +593,7 @@ async fn coding_agent_start_uses_canonical_runner_capability_gate() {
             "codex".to_string(),
             "c3b-canonical-capability-gate".to_string(),
             "prove capability admission".to_string(),
+            None,
             None,
             None,
             None,
@@ -2469,6 +2476,7 @@ async fn runtime_status_with_no_projects_returns_configured_false() {
     assert_eq!(session_store["cold_sessions"], 0);
     assert_eq!(session_store["historical_session_retention_limit"], 100);
     assert_eq!(session_store["capacity_evictions"], 0);
+    assert_eq!(session_store["retention_tombstones"], 0);
 
     assert_eq!(out["projects"]["mode"], "runner_registered");
     assert_eq!(out["projects"]["count"], 0);

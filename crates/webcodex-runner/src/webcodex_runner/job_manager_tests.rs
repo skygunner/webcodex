@@ -19,6 +19,11 @@ use std::sync::OnceLock;
 use tempfile::TempDir;
 use webcodex_core::runner_protocol::{RunnerEnvelope, VALIDATION_STEP_WAIT_FAILED_CODE};
 
+#[path = "job_manager_tests/project_build.rs"]
+mod project_build;
+#[path = "job_manager_tests/project_validation.rs"]
+mod project_validation;
+
 fn retained_terminal_job(job_id: &str, ended_at: i64) -> RunningJob {
     let mut snapshot = test_job_snapshot(job_id);
     snapshot.status = "completed".to_string();
@@ -29,6 +34,7 @@ fn retained_terminal_job(job_id: &str, ended_at: i64) -> RunningJob {
         client_id: "test-agent".to_string(),
         runner_instance_id: "test-instance".to_string(),
         snapshot,
+        input: None,
         child: None,
         stop_requested: Arc::new(AtomicBool::new(false)),
         slot_reserved: false,
@@ -87,6 +93,7 @@ fn heartbeat_batch_advances_only_runner_owned_active_lifecycles() {
                 client_id: "test-agent".to_string(),
                 runner_instance_id: "test-instance".to_string(),
                 snapshot,
+                input: None,
                 child: None,
                 stop_requested: Arc::new(AtomicBool::new(status == "stop_requested")),
                 slot_reserved: runner_job_is_active(status),
@@ -169,6 +176,7 @@ fn heartbeat_delivery_is_minimal_liveness_only_payload() {
             client_id: "test-agent".to_string(),
             runner_instance_id: "test-instance".to_string(),
             snapshot,
+            input: None,
             child: None,
             stop_requested: Arc::new(AtomicBool::new(false)),
             slot_reserved: true,
@@ -222,6 +230,7 @@ fn heartbeat_delivery_stays_behind_meaningful_updates_and_stops_at_terminal() {
             client_id: "test-agent".to_string(),
             runner_instance_id: "test-instance".to_string(),
             snapshot: test_job_snapshot(job_id),
+            input: None,
             child: None,
             stop_requested: Arc::new(AtomicBool::new(false)),
             slot_reserved: true,
@@ -316,6 +325,7 @@ fn heartbeat_worker_keeps_fixed_cadence_across_signals_and_exits_on_shutdown() {
             client_id: "test-agent".to_string(),
             runner_instance_id: "test-instance".to_string(),
             snapshot: test_job_snapshot(job_id),
+            input: None,
             child: None,
             stop_requested: Arc::new(AtomicBool::new(false)),
             slot_reserved: true,
@@ -332,13 +342,20 @@ fn heartbeat_worker_keeps_fixed_cadence_across_signals_and_exits_on_shutdown() {
         interval,
     );
 
+    assert!(
+        wait_until(Duration::from_secs(1), || lock_unpoison(&jobs)[job_id]
+            .snapshot
+            .update_seq
+            >= 2),
+        "heartbeat worker must establish its first cadence before the signal check"
+    );
     std::thread::sleep(Duration::from_millis(180));
     signal.notify();
     assert!(
         wait_until(Duration::from_millis(220), || lock_unpoison(&jobs)[job_id]
             .snapshot
             .update_seq
-            >= 2),
+            >= 3),
         "ordinary delivery signals must not postpone the fixed heartbeat cadence"
     );
 
@@ -495,6 +512,7 @@ fn delivery_worker_waits_for_sequence_barrier_before_selecting_candidate() {
             client_id: "test-agent".into(),
             runner_instance_id: "test-instance".into(),
             snapshot,
+            input: None,
             child: None,
             stop_requested: Arc::new(AtomicBool::new(false)),
             slot_reserved: true,
@@ -575,6 +593,7 @@ fn job_reconciliation_inventory_prioritizes_active_and_bounds_terminal_history()
             client_id: "test-agent".to_string(),
             runner_instance_id: "test-instance".to_string(),
             snapshot: active,
+            input: None,
             child: None,
             stop_requested: Arc::new(AtomicBool::new(false)),
             slot_reserved: true,
@@ -695,6 +714,7 @@ fn job_reconciliation_inventory_drops_terminal_payload_before_active_jobs() {
             client_id: "test-agent".to_string(),
             runner_instance_id: "test-instance".to_string(),
             snapshot: active,
+            input: None,
             child: None,
             stop_requested: Arc::new(AtomicBool::new(false)),
             slot_reserved: true,
@@ -738,6 +758,7 @@ fn job_reconciliation_local_snapshot_advances_before_best_effort_send() {
             client_id: "test-agent".to_string(),
             runner_instance_id: "test-instance".to_string(),
             snapshot,
+            input: None,
             child: None,
             stop_requested: Arc::new(AtomicBool::new(false)),
             slot_reserved: true,
@@ -1366,6 +1387,7 @@ fn job_manager_stop_terminates_the_process_group() {
             client_id: "test-agent".into(),
             runner_instance_id: "test-instance".into(),
             snapshot: test_job_snapshot("process-group-job"),
+            input: None,
             child: Some(child.clone()),
             stop_requested: stop_requested.clone(),
             slot_reserved: true,
@@ -1413,6 +1435,7 @@ fn job_shutdown_reaps_a_sigterm_responsive_child() {
             client_id: "test-agent".into(),
             runner_instance_id: "test-instance".into(),
             snapshot: test_job_snapshot("term-responsive"),
+            input: None,
             child: Some(Arc::clone(&child)),
             stop_requested: Arc::clone(&stop_requested),
             slot_reserved: true,
@@ -1461,6 +1484,7 @@ fn job_shutdown_escalates_ignored_sigterm_for_parent_and_descendant() {
             client_id: "test-agent".into(),
             runner_instance_id: "test-instance".into(),
             snapshot: test_job_snapshot("term-ignoring"),
+            input: None,
             child: Some(Arc::clone(&child)),
             stop_requested: Arc::clone(&stop_requested),
             slot_reserved: true,
@@ -2348,6 +2372,7 @@ fn phase_e2_prestart_structured_failure_releases_slot_for_queued_job() {
             client_id: "structured-agent".to_string(),
             runner_instance_id: "structured-instance".to_string(),
             snapshot: failed_snapshot,
+            input: None,
             child: None,
             stop_requested: Arc::new(AtomicBool::new(false)),
             slot_reserved: true,
@@ -2702,6 +2727,7 @@ fn output_only_delivery_coalescing_preserves_authoritative_snapshot_invariants()
             client_id: "test-agent".into(),
             runner_instance_id: "test-instance".into(),
             snapshot,
+            input: None,
             child: None,
             stop_requested: Arc::new(AtomicBool::new(false)),
             slot_reserved: true,
@@ -3712,6 +3738,7 @@ fn structured_job_snapshot_preserves_post_spawn_outcome_unknown() {
             client_id: "structured-agent".to_string(),
             runner_instance_id: "structured-instance".to_string(),
             snapshot,
+            input: None,
             child: None,
             stop_requested: Arc::new(AtomicBool::new(false)),
             slot_reserved: true,
@@ -4065,6 +4092,7 @@ fn arbitrary_process_output_cannot_forge_cargo_activity() {
             client_id: "test-agent".into(),
             runner_instance_id: "test-instance".into(),
             snapshot,
+            input: None,
             child: None,
             stop_requested: Arc::new(AtomicBool::new(false)),
             slot_reserved: true,
@@ -4136,6 +4164,7 @@ fn cargo_activity_returns_to_validation_plan_after_fine_phase_ends() {
             client_id: "test-agent".into(),
             runner_instance_id: "test-instance".into(),
             snapshot,
+            input: None,
             child: None,
             stop_requested: Arc::new(AtomicBool::new(false)),
             slot_reserved: true,
@@ -4240,6 +4269,7 @@ fn activity_only_delivery_coalesces_without_consuming_required_semantic_queue() 
             client_id: "test-agent".into(),
             runner_instance_id: "test-instance".into(),
             snapshot,
+            input: None,
             child: None,
             stop_requested: Arc::new(AtomicBool::new(false)),
             slot_reserved: true,
@@ -5041,6 +5071,7 @@ fn insert_running_job(
             client_id: "tree-agent".to_string(),
             runner_instance_id: "tree-instance".to_string(),
             snapshot: test_job_snapshot(job_id),
+            input: None,
             child,
             stop_requested: Arc::clone(&stop_requested),
             slot_reserved: true,
@@ -5235,6 +5266,7 @@ fn runner_real_process_job_stop_all_terminates_all_trees_and_preserves_completed
                 client_id: "tree-agent".to_string(),
                 runner_instance_id: "tree-instance".to_string(),
                 snapshot,
+                input: None,
                 child: None,
                 stop_requested: Arc::clone(&completed_stop),
                 slot_reserved: false,
@@ -5597,6 +5629,19 @@ fn runner_recovery_context_accepts_compact_session_base64url_alphabet() {
 }
 
 #[test]
+fn runner_recovery_context_accepts_bash_login_shell() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut request = shell_job_request(temp.path(), "printf ok");
+    request.login = true;
+    request.shell = Some(webcodex_core::workflow_session_contract::ExecutionShell::Bash);
+    let context = request.job_context.as_mut().unwrap();
+    context.shell = Some("bash_login".to_string());
+    let context = context.clone();
+
+    validate_runner_job_context(&context, &request, "ws-client").unwrap();
+}
+
+#[test]
 fn runner_recovery_context_accepts_javascript_script_job() {
     let temp = crate::tests::executable_tempdir();
     let script = runner_protocol::ShellScriptPayload {
@@ -5791,6 +5836,7 @@ fn job_manager_stop_all_clears_queue_and_requests_running_stop() {
             client_id: "ws-client".to_string(),
             runner_instance_id: "ws-instance".to_string(),
             snapshot: test_job_snapshot("running-job"),
+            input: None,
             child: Some(Arc::clone(&running_child)),
             stop_requested: stop_requested.clone(),
             slot_reserved: true,

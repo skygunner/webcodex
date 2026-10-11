@@ -230,12 +230,12 @@ fn lookup_owner(identity: &str) -> SetupResultValue<UnixOwner> {
     }
     let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
     let mut result = std::ptr::null_mut();
-    let mut buffer = vec![0u8; 16384];
+    let mut buffer = vec![0 as libc::c_char; 16384];
     let status = unsafe {
         libc::getpwuid_r(
             uid,
             &mut pwd,
-            buffer.as_mut_ptr().cast::<libc::c_char>(),
+            buffer.as_mut_ptr(),
             buffer.len(),
             &mut result,
         )

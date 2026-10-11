@@ -1,5 +1,88 @@
 use super::*;
 
+#[tokio::test]
+async fn discovery_materializes_only_the_requested_contract_shape() {
+    use crate::tool_runtime::kernel::ToolProtocolCapabilities;
+    use webcodex_tool_contracts::take_tool_materialization_counts_for_test as take_counts;
+    let runtime = test_runtime();
+    take_counts();
+    let exact = runtime
+        .tool_manifest(
+            Some("run_process".into()),
+            None,
+            None,
+            false,
+            false,
+            ToolProtocolCapabilities::default(),
+        )
+        .await;
+    assert!(exact.success, "{:?}", exact.error);
+    assert_eq!(
+        take_counts(),
+        (1, 0),
+        "exact discovery projects one input and no outputs"
+    );
+    assert_eq!(
+        exact.output["contract"]["input_schema"],
+        webcodex_tool_contracts::input_schema_for_tool("run_process")
+    );
+    let category = runtime
+        .tool_manifest(
+            None,
+            Some("execution".into()),
+            None,
+            false,
+            true,
+            ToolProtocolCapabilities::default(),
+        )
+        .await;
+    assert!(category.success);
+    assert!(category.output["count"].as_u64().unwrap() > 0);
+    assert_eq!(take_counts(), (0, 0));
+    let mut projected = category;
+    crate::tool_runtime::surface::sparsify_tool_manifest_model_result(&mut projected);
+    assert_eq!(
+        take_counts(),
+        (0, 0),
+        "description lookup must not rebuild full specs"
+    );
+    let hidden = runtime
+        .tool_manifest(
+            Some("memory_read".into()),
+            None,
+            None,
+            false,
+            false,
+            ToolProtocolCapabilities::default(),
+        )
+        .await;
+    assert!(
+        !hidden.success,
+        "metadata must not grant extension admission"
+    );
+    assert_eq!(take_counts(), (0, 0));
+    let summary = runtime.list_tools_payload(crate::tool_runtime::tool_inputs::ListToolsOptions {
+        category: None,
+        features: None,
+        limit: Some(1),
+        summary_only: true,
+    });
+    assert_eq!(summary["count"], 1);
+    assert_eq!(take_counts(), (0, 0));
+    let full = runtime.list_tools_payload(crate::tool_runtime::tool_inputs::ListToolsOptions {
+        category: None,
+        features: None,
+        limit: Some(1),
+        summary_only: false,
+    });
+    assert_eq!(full["count"], 1);
+    assert_eq!(
+        take_counts(),
+        (1, 1),
+        "full list must select before materializing"
+    );
+}
+
 #[cfg(feature = "experimental-code-mode")]
 use std::collections::HashMap;
 #[cfg(feature = "experimental-code-mode")]
@@ -818,7 +901,7 @@ fn list_tools_category_filter_matches_tool_definition_categories() {
 #[test]
 fn tool_manifest_recommended_flows_reference_visible_defined_tools() {
     use crate::tool_runtime::tool_definition::{
-        is_model_visible_tool_name, lookup_tool_definition, TOOL_RECOMMENDED_FLOWS,
+        is_model_visible_tool_name, lookup_tool_definition, model_visible_recommended_flows,
     };
 
     let runtime = test_runtime();
@@ -827,9 +910,12 @@ fn tool_manifest_recommended_flows_reference_visible_defined_tools() {
     let flows = manifest["recommended_flows"]
         .as_array()
         .expect("tool_manifest recommended_flows");
-    assert_eq!(flows.len(), TOOL_RECOMMENDED_FLOWS.len());
+    assert_eq!(flows.len(), model_visible_recommended_flows().count());
+    for inactive in ["agent_continuation_setup", "goal_agent_wait_orchestration"] {
+        assert!(!flows.iter().any(|flow| flow["name"] == inactive));
+    }
 
-    for (actual, expected) in flows.iter().zip(TOOL_RECOMMENDED_FLOWS) {
+    for (actual, expected) in flows.iter().zip(model_visible_recommended_flows()) {
         assert_eq!(actual["name"], expected.name);
         assert_eq!(actual["purpose"], expected.manifest_purpose);
         let tools = actual["tools"]
@@ -2459,7 +2545,7 @@ async fn tool_manifest_exact_tool_fails_closed_for_unknown_or_mixed_filters() {
 
 #[tokio::test]
 async fn unfiltered_tool_manifest_keeps_full_recommended_flows() {
-    use crate::tool_runtime::tool_definition::TOOL_RECOMMENDED_FLOWS;
+    use crate::tool_runtime::tool_definition::model_visible_recommended_flows;
 
     let runtime = test_runtime();
     let result = runtime
@@ -2478,8 +2564,8 @@ async fn unfiltered_tool_manifest_keeps_full_recommended_flows() {
         .expect("unfiltered recommended_flows");
     assert_eq!(
         flows.len(),
-        TOOL_RECOMMENDED_FLOWS.len(),
-        "unfiltered recommended_flows must keep full global set"
+        model_visible_recommended_flows().count(),
+        "unfiltered recommended_flows must keep the full currently callable set"
     );
     let serialized = result.output["recommended_flows"]
         .to_string()

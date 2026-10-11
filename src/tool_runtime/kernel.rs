@@ -13,6 +13,8 @@ use crate::auth::scopes::OAuthToolScopePolicy;
 use crate::auth::AuthContext;
 use serde_json::Value;
 
+mod postprocess;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ToolTransport {
     Api,
@@ -119,6 +121,31 @@ pub(crate) struct ToolCallOutcome {
     /// Trusted internal Window/Workflow Session correlation evidence. This is
     /// adapter metadata only and is never part of the public ToolResult.
     pub(crate) correlation: super::window_activity::ToolCallCorrelation,
+}
+
+fn session_selector_failure(error: super::SessionSelectorError) -> ToolCallOutcome {
+    match error {
+        super::SessionSelectorError::UnknownRef(message) => ToolCallOutcome {
+            success: false,
+            result: None,
+            error_status: Some(ToolCallErrorStatus::InvalidArguments { message }),
+            project: None,
+            model_ergonomics: None,
+            canonical_audit_output: None,
+            correlation: Default::default(),
+        },
+        super::SessionSelectorError::RetentionExpired { session_id } => ToolCallOutcome {
+            success: false,
+            result: Some(session_context::session_retention_expired_result(
+                &session_id,
+            )),
+            error_status: None,
+            project: None,
+            model_ergonomics: None,
+            canonical_audit_output: None,
+            correlation: Default::default(),
+        },
+    }
 }
 
 pub(crate) fn check_runtime_tool_scope(
@@ -641,17 +668,7 @@ impl ToolRuntime {
         let canonical_recording_session_id = match context.session_id {
             Some(raw) => match self.canonicalize_explicit_session_selector(raw, context.auth) {
                 Ok(canonical) => Some(canonical),
-                Err(message) => {
-                    return ToolCallOutcome {
-                        success: false,
-                        result: None,
-                        error_status: Some(ToolCallErrorStatus::InvalidArguments { message }),
-                        project: None,
-                        model_ergonomics: None,
-                        canonical_audit_output: None,
-                        correlation: Default::default(),
-                    };
-                }
+                Err(error) => return session_selector_failure(error),
             },
             None => None,
         };
@@ -771,18 +788,10 @@ impl ToolRuntime {
                 correlation: Default::default(),
             };
         }
-        if let Err(message) =
+        if let Err(error) =
             self.canonicalize_session_reference_argument(&mut concrete_arguments, context.auth)
         {
-            return ToolCallOutcome {
-                success: false,
-                result: None,
-                error_status: Some(ToolCallErrorStatus::InvalidArguments { message }),
-                project: None,
-                model_ergonomics: None,
-                canonical_audit_output: None,
-                correlation: Default::default(),
-            };
+            return session_selector_failure(error);
         }
 
         let outer_ack_observation = context.session_id.map(|recorder_session_id| {
@@ -936,6 +945,10 @@ impl ToolRuntime {
         // pre-execution audit projection and later dispatch. Malformed input is
         // recorded with an empty request projection rather than reparsed through
         // a schema-filter fallback.
+        crate::tool_request_trace::capture_effective_arguments(
+            &request.tool_name,
+            &concrete_arguments,
+        );
         let parsed_call =
             ToolCall::from_tool_name_with_normalization(&request.tool_name, concrete_arguments);
         let session_log_arguments = parsed_call
@@ -1013,6 +1026,8 @@ impl ToolRuntime {
                 current_request_acknowledged,
             ) {
                 let mut result = session_context::session_message_error_result(
+                    &self.sessions,
+                    context.auth,
                     session_id,
                     Some(&message_resolution.message_id),
                     error,
@@ -1087,10 +1102,17 @@ impl ToolRuntime {
         // Preserve the concrete business Session for final presentation and
         // bounded ActionAudit evidence. The generic recorder remains independent
         // provenance and Window affinity never becomes execution or Session authority.
-        let business_session_id = call.session_id().map(str::to_string);
+        let business_session_id = match &call {
+            // Presentation has an explicit business selector, but deliberately
+            // has no generic Session recorder/lifecycle target.
+            ToolCall::PresentWorkResult { session_id, .. } => session_id.as_deref(),
+            _ => call.session_id(),
+        }
+        .map(str::to_string);
         // Permission is evaluated once inside dispatch (pre-exec gate). Kernel
         // only reuses the attached decision for the outer recording session —
         // never re-evaluate (no second request id / inconsistent outcome).
+        let execution_started = std::time::Instant::now();
         let (mut result, result_projection, mut correlation) = self
             .dispatch_with_auth_transport_options_and_metadata_with_recording_mode_and_context_with_result_projection(
                 call,
@@ -1108,14 +1130,19 @@ impl ToolRuntime {
                 return_timing,
             )
             .await;
+        crate::tool_request_trace::record_phase_latency(
+            "canonical_execution",
+            execution_started,
+            if result.success {
+                "completed"
+            } else {
+                "failed"
+            },
+        );
         if result.success {
             if let Some(code) = input_normalization {
-                let hint = match code {
-                    "argv_to_args" => "normalized argv→args",
-                    _ => unreachable!("parser returns only stable known normalization codes"),
-                };
                 result.output["input_normalization"] =
-                    serde_json::json!({"code": code, "hint": hint});
+                    serde_json::json!({"code": code, "hint": code.model_hint()});
             }
         }
         if let Some(control) = control.as_mut() {
@@ -1208,114 +1235,21 @@ impl ToolRuntime {
                 recorder_ack_requested,
             );
         }
-        // Canonical execution evidence and every Session/context overlay are now
-        // complete. Consume the request-scoped plan exactly once to produce the
-        // final model-facing read/search result.
-        if let Some(telemetry) = telemetry.as_mut() {
-            telemetry.capture_canonical_result(&result);
+        // Session/permission evidence is sealed above. The response stage owns
+        // canonical audit capture, one-shot model projection, and late sidecars.
+        let postprocess::PostRecordResult {
+            result,
+            canonical_audit_output,
+        } = postprocess::PostRecordResponse {
+            tool_name: &request.tool_name,
+            context,
+            capabilities,
+            recorder: &recorder_metadata,
+            correlation: &correlation,
+            business_session_id: business_session_id.as_deref(),
+            window_reply: window_reply.as_ref(),
         }
-        let canonical_audit_output = matches!(
-            request.tool_name.as_str(),
-            "edit_project_files" | "read_files" | "search_project_texts" | "wait_for_job_readiness"
-        )
-        .then(|| session_log_result_for_tool(&request.tool_name, &result.output));
-        result_projection.project(&mut result);
-        if let (Some(session_id), Some(project)) = (
-            correlation.recorder_gap_session_id.as_deref(),
-            correlation.resolved_project.as_deref(),
-        ) {
-            // The gap remains correlation/audit truth. It is not actionable model
-            // guidance when this exact call already supplied the same authorized
-            // business Session for the same resolved Project.
-            if business_session_id.as_deref() != Some(session_id) {
-                if let Some(output) = result.output.as_object_mut() {
-                    output.insert(
-                        "workflow_recording_attention".to_string(),
-                        serde_json::json!({
-                            "status": "recording_session_missing",
-                            "candidate_session_id": session_id,
-                            "project": project,
-                            "reason": "same_window_recent_explicit_association"
-                        }),
-                    );
-                }
-            }
-        }
-        if request.tool_name == "tool_manifest" {
-            super::surface::sparsify_tool_manifest_model_result(&mut result);
-        }
-        // Final model-facing projection: authoritative permission decisions and
-        // recorder events have already been consumed by the Session ledger.
-        super::dispatch::sparsify_failure_model_result_metadata(&request.tool_name, &mut result);
-        if !result.success
-            && request.tool_name != "read_tool_trace"
-            && capabilities.trace_diagnostics
-            && context
-                .auth
-                .is_some_and(|auth| auth.has_scope(crate::auth::SCOPE_ADMIN))
-        {
-            if let (Some(trace_ref), Some(output)) = (
-                crate::tool_request_trace::current_full_trace_ref(),
-                result.output.as_object_mut(),
-            ) {
-                output.insert("trace_ref".to_string(), Value::String(trace_ref));
-            }
-        }
-        super::dispatch::sparsify_success_model_result_metadata(&request.tool_name, &mut result);
-        // The continuity hint is diagnostic only. Keep it inside the shared
-        // model-result hard ceiling; if an unrelated producer already consumed
-        // the full envelope, omit this non-authoritative overlay rather than
-        // changing the business result.
-        if result
-            .output
-            .as_object()
-            .is_some_and(|output| output.contains_key("workflow_recording_attention"))
-            && crate::json_measurement::serialized_json_len(&result).is_ok_and(|bytes| {
-                bytes > webcodex_workspace::file_read_range::MAX_SERIALIZED_OUTPUT_BYTES
-            })
-        {
-            if let Some(output) = result.output.as_object_mut() {
-                output.remove("workflow_recording_attention");
-            }
-        }
-        if super::tool_definition::is_model_visible_tool_name(&request.tool_name) {
-            self.add_window_model_reply_sidecar(
-                &mut result,
-                context.auth,
-                context.window,
-                window_reply.as_ref(),
-            );
-            let peer_project = correlation
-                .resolved_project
-                .as_deref()
-                .or(recorder_metadata.recording_session_project.as_deref());
-            if request.tool_name != "present_work_result" {
-                self.add_window_operator_projection(
-                    &mut result,
-                    context.auth,
-                    context.window,
-                    &recorder_metadata.ack_session_message_ids,
-                );
-            }
-            self.add_peer_collaboration_projection(
-                &mut result,
-                context.auth,
-                context.window,
-                peer_project,
-                &recorder_metadata.ack_session_message_ids,
-            );
-        }
-        if request.tool_name == "observe_jobs" {
-            super::observe_jobs::sparsify_observe_jobs_model_result(&mut result);
-        }
-        self.add_passive_job_attention(
-            &mut result,
-            &request.tool_name,
-            correlation.resolved_project.as_deref(),
-            correlation.business_session_id.as_deref(),
-            context.window,
-            context.auth,
-        )
+        .finish(self, result, result_projection, telemetry.as_mut())
         .await;
         ToolCallOutcome {
             success: result.success,

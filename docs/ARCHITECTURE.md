@@ -199,6 +199,65 @@ Session provenance is supported, while generic invocation continuity metadata
 receives no specialized semantics. Adding another heterogeneous gateway extends
 this closed dispatch boundary without adding a concrete Kernel policy branch.
 
+### Typed queries and post-record responses
+
+`tool_runtime::job_query` owns the shared authorized Job inventory selection:
+normalize filters, ask the Registry for visible matching records, then apply
+status/order/limit before any model or Console projection. `JobInventoryPage`
+is internal and deliberately not serializable. `list_jobs` applies the model
+allowlist only to returned records; `runtime_console_http::job_projection`
+projects typed fields directly instead of parsing model-facing JSON. Registry
+lifecycle refresh, endpoint scopes and visibility remain unchanged. Passive
+Work Result/attention snapshots keep their separate non-refreshing reader.
+
+The ordinary Kernel path finishes authorization, dispatch, control sidecars and
+Session/permission recording before entering `kernel::postprocess`. That stage
+captures canonical audit/telemetry evidence, consumes the existing one-shot
+model projection plan, and finally adds bounded response-only collaboration and
+Job attention. Its internal result keeps canonical audit output separate from
+model output. It cannot redispatch the original operation or reinterpret raw
+business arguments. Specialized gateways and early denials retain their existing
+entry/exit paths. No tool schema, direct admission or UI resource changes follow
+from this internal separation.
+
+Window-specific Console query assembly lives in
+`runtime_console_http::window_queries`, behind the same common authorization
+and error helpers; routes and DTOs stay at the adapter boundary. Audit admission
+and exhaustive ToolCall routing remain in `tool_audit`, while private `request`,
+`result` and `execution_identity` modules own their existing projections. Public
+audit import paths remain stable. Related tests are grouped by responsibility,
+not duplicated per adapter; see [module boundaries](implementation/console-audit-module-boundaries.md).
+
+### Runtime ownership and presentation boundaries
+
+`tool_runtime::result_projection` owns request-scoped model result projection;
+`dispatch` retains execution targeting, permission/Session orchestration, and
+pre-record expectation facts. The existing one-shot projection plan is consumed
+after canonical evidence capture. Moving a presentation field must not introduce
+execution or authorization into the projection module.
+
+Git review and Changes snapshot registries are owned by one `ToolRuntime` through
+shared `Arc`s. Runtime clones share snapshots; independent runtimes cannot read,
+refresh, or evict each other's entries. Their existing authority fences, source
+identities and distinct review/live/sealed retention rules remain separate.
+There is no process-global presentation registry or universal cache policy.
+
+Validation's current-evidence computation consumes its own typed
+`ValidationSummary` directly and serializes at the projection boundary. It never
+reads counts back from its serialized representation. Current-source status is
+separate from historical validator success; its closed status type deliberately
+cannot assert `passed` while external source stability remains unproven. Existing
+JSON projection ports to handoff/continuation remain explicit wire/presentation
+boundaries, not a second source of validation truth.
+
+The Frontend shares visible observation scheduling and narrow read-request
+slots. Goal/Session selection cancels only obsolete reads; periodic refresh skips
+occupied slots, while explicit refreshes coalesce behind them. Mutation delivery
+keys, pending sends and Agent Endpoint renewal are independent lifecycles.
+
+Scale/recovery methodology and maintenance rules are recorded in
+[`implementation/runtime-maintenance-boundaries.md`](implementation/runtime-maintenance-boundaries.md).
+
 ### Model-facing tool contract ergonomics
 
 Model-facing tools follow one shared design rule: be strict where meaning,
@@ -292,11 +351,13 @@ are separately pinned to declared development dependencies.
 
 The current layers are:
 
-- **leaf** — `webcodex-core`, `webcodex-process`, `webcodex-computer`, and
-  `webcodex-admin`; these do not depend on another workspace package.
+- **leaf** — low-level contracts/primitives in `webcodex-core`,
+  `webcodex-process`, `webcodex-computer`, and `webcodex-admin`; computer primitives
+  consume core contracts, while core/process/admin have no workspace dependencies.
 - **domain** — Runner config/registry, Store, Workspace, Workflow Session,
   Tool contracts, Validation, Persistent Shell, and native LSP ownership.
-- **runtime** — `webcodex-runner` and `webcodex-tool-runtime-contracts`.
+- **runtime** — `webcodex-runner`, `webcodex-tool-runtime-contracts`, environment
+  lifecycle, and the composition-only `webcodex-build-info` provider.
 - **composition** — the root `webcodex` package, which owns Server composition
   and protocol adapters rather than forcing those concerns into lower crates.
 - **entrypoint** — `webcodex-cli`, the user-facing executable over the lower
@@ -305,6 +366,17 @@ The current layers are:
 CI validates this policy from `cargo metadata`; adding a workspace crate or a
 new direct workspace dependency therefore requires an intentional policy
 update rather than silently changing the architecture.
+
+### Build identity does not own core invalidation
+
+`webcodex-core::build_info` contains only stable metadata types and formatting.
+The small `webcodex-build-info` package owns the Git/dirty build script and its
+compile-time capture. Server, Runner, CLI and the separate Desktop workspace use
+that provider directly; domain crates never depend on it. There is no runtime
+Git lookup, mutable global identity, copied collector, or new external dependency.
+Identity-only changes therefore invalidate composition rather than core's domain
+consumers. Release overrides, linked-worktree handling and dirty-state truth stay
+in the existing collector. See [the experiment and regression contract](implementation/build-identity-isolation.md).
 
 ## Further reading
 

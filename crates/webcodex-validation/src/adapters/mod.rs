@@ -3,6 +3,7 @@
 mod go;
 mod rust;
 
+use webcodex_core::project_validation::{ProjectDependencyMode, ProjectDependencyPolicy};
 use webcodex_core::runner_protocol::ShellJobValidationStep;
 use webcodex_core::shell_quote::shell_escape_simple;
 use webcodex_core::validation_evidence::ValidationDiagnostics;
@@ -25,6 +26,7 @@ pub struct ValidationCommandOptions {
     /// First-class `go_test` package scope. Other validation adapters must
     /// reject this Go-specific option rather than silently ignoring it.
     pub go_packages: Option<Vec<String>>,
+    pub dependency_mode: Option<ProjectDependencyMode>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -35,6 +37,7 @@ pub struct CargoCheckOptions {
     pub features: Option<String>,
     pub package: Option<String>,
     pub packages: Option<Vec<String>>,
+    pub dependency_mode: Option<ProjectDependencyMode>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -48,16 +51,20 @@ pub struct CargoTestOptions {
     pub package: Option<String>,
     pub packages: Option<Vec<String>>,
     pub no_run: Option<bool>,
+    pub dependency_mode: Option<ProjectDependencyMode>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GoCheckOptions {
     pub packages: Option<Vec<String>>,
+    pub dependency_mode: Option<ProjectDependencyMode>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GoTestOptions {
+    pub filter: Option<String>,
     pub packages: Option<Vec<String>>,
+    pub dependency_mode: Option<ProjectDependencyMode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,6 +93,65 @@ pub struct ValidationCompatibilityProfile {
 }
 
 impl ReadOnlyValidationOperation {
+    /// Apply a native test selector through the same operation that owns argv
+    /// and target identity. Non-test operations must never silently ignore it.
+    pub fn with_test_filter(mut self, filter: Option<&str>) -> Result<Self, &'static str> {
+        let Some(filter) = filter else {
+            return Ok(self);
+        };
+        match &mut self {
+            Self::Cargo(CargoReadOnlyValidationOperation::Test(options)) => {
+                options.filter = webcodex_core::runner_protocol::normalize_rust_test_filter(filter)
+                    .map_err(|_| "test_filter_unsupported")?;
+            }
+            Self::Go(GoReadOnlyValidationOperation::Test(options)) => {
+                options.filter = webcodex_core::runner_protocol::normalize_go_test_filter(filter)
+                    .map_err(|_| "test_filter_unsupported")?;
+            }
+            _ => return Err("test_filter_unsupported"),
+        }
+        Ok(self)
+    }
+
+    pub fn with_dependency_policy(
+        mut self,
+        policy: Option<ProjectDependencyPolicy>,
+    ) -> Result<Self, &'static str> {
+        let Some(policy) = policy else {
+            return Ok(self);
+        };
+        match &mut self {
+            Self::Cargo(CargoReadOnlyValidationOperation::FormatCheck) => {
+                return Err("dependency_policy_unsupported")
+            }
+            Self::Cargo(CargoReadOnlyValidationOperation::Check(options)) => {
+                options.dependency_mode = Some(policy.mode);
+            }
+            Self::Cargo(CargoReadOnlyValidationOperation::Test(options)) => {
+                options.dependency_mode = Some(policy.mode);
+            }
+            Self::Go(GoReadOnlyValidationOperation::Check(options)) => {
+                options.dependency_mode = Some(policy.mode);
+            }
+            Self::Go(GoReadOnlyValidationOperation::Test(options)) => {
+                options.dependency_mode = Some(policy.mode);
+            }
+        }
+        Ok(self)
+    }
+
+    fn dependency_mode(&self) -> Option<ProjectDependencyMode> {
+        match self {
+            Self::Cargo(CargoReadOnlyValidationOperation::FormatCheck) => None,
+            Self::Cargo(CargoReadOnlyValidationOperation::Check(options)) => {
+                options.dependency_mode
+            }
+            Self::Cargo(CargoReadOnlyValidationOperation::Test(options)) => options.dependency_mode,
+            Self::Go(GoReadOnlyValidationOperation::Check(options)) => options.dependency_mode,
+            Self::Go(GoReadOnlyValidationOperation::Test(options)) => options.dependency_mode,
+        }
+    }
+
     pub fn compatibility_profile(&self) -> ValidationCompatibilityProfile {
         match self {
             Self::Cargo(CargoReadOnlyValidationOperation::FormatCheck) => {
@@ -187,12 +253,21 @@ impl ReadOnlyValidationOperation {
             Self::Go(GoReadOnlyValidationOperation::Test(options)) => serde_json::json!({
                 "cwd": cwd,
                 "packages": options.packages.as_ref(),
+                "filter": options.filter.as_deref(),
             }),
         };
-        webcodex_core::validation_identity::structured_validation_target_identity(
+        let identity = webcodex_core::validation_identity::structured_validation_target_identity(
             profile.validation_identity,
             &arguments,
-        )
+        )?;
+        if self.dependency_mode() == Some(ProjectDependencyMode::Locked) {
+            webcodex_core::validation_identity::contextualize_structured_validation_target_identity(
+                &identity,
+                webcodex_core::validation_identity::StructuredValidationExecutionContext::ProjectDependencyLockedV1,
+            )
+        } else {
+            Some(identity)
+        }
     }
 }
 
@@ -224,10 +299,16 @@ pub fn project_validation_operation(
         )),
         ("go", Format) => Err("validation_action_unsupported"),
         ("go", Check) => Ok(ReadOnlyValidationOperation::Go(
-            GoReadOnlyValidationOperation::Check(GoCheckOptions { packages }),
+            GoReadOnlyValidationOperation::Check(GoCheckOptions {
+                packages,
+                ..Default::default()
+            }),
         )),
         ("go", Test) => Ok(ReadOnlyValidationOperation::Go(
-            GoReadOnlyValidationOperation::Test(GoTestOptions { packages }),
+            GoReadOnlyValidationOperation::Test(GoTestOptions {
+                packages,
+                ..Default::default()
+            }),
         )),
         _ => Err("validation_adapter_unavailable"),
     }
@@ -242,6 +323,7 @@ impl From<CargoCheckOptions> for ValidationCommandOptions {
             features: options.features,
             package: options.package,
             cargo_packages: options.packages,
+            dependency_mode: options.dependency_mode,
             ..Self::default()
         }
     }
@@ -259,6 +341,7 @@ impl From<CargoTestOptions> for ValidationCommandOptions {
             package: options.package,
             cargo_packages: options.packages,
             no_run: options.no_run,
+            dependency_mode: options.dependency_mode,
             ..Self::default()
         }
     }
@@ -268,6 +351,7 @@ impl From<GoCheckOptions> for ValidationCommandOptions {
     fn from(options: GoCheckOptions) -> Self {
         Self {
             go_packages: options.packages,
+            dependency_mode: options.dependency_mode,
             ..Self::default()
         }
     }
@@ -276,7 +360,9 @@ impl From<GoCheckOptions> for ValidationCommandOptions {
 impl From<GoTestOptions> for ValidationCommandOptions {
     fn from(options: GoTestOptions) -> Self {
         Self {
+            filter: options.filter,
             go_packages: options.packages,
+            dependency_mode: options.dependency_mode,
             ..Self::default()
         }
     }

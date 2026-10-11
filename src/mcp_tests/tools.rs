@@ -432,7 +432,11 @@ fn trace_reader_is_stateless_protocol_extension_admin_scoped_and_schema_static()
         .iter()
         .find(|tool| tool["name"] == "read_tool_trace")
         .expect("admin Stateless MCP 2026 trace reader");
-    assert_eq!(tool["inputSchema"]["required"], json!(["trace_ref"]));
+    // An omitted trace selects the bounded ActionAudit query; exact trace and
+    // query remain mutually exclusive at the shared reader boundary.
+    assert_eq!(tool["inputSchema"]["required"], json!([]));
+    assert!(tool["inputSchema"]["properties"]["query"].is_object());
+    assert!(tool["inputSchema"]["properties"]["trace_ref"].is_object());
     assert_eq!(tool["inputSchema"]["additionalProperties"], false);
     assert!(tool["inputSchema"]["properties"]["payload_index"].is_object());
     assert!(tool["outputSchema"]["properties"]["output"]["properties"]["payload"].is_object());
@@ -1592,7 +1596,7 @@ fn mcp_tools_list_inputs_equal_canonical_except_descriptions_and_host_file_overl
             let name = tool["name"].as_str().unwrap();
             let canonical = &specs[name];
             let mut expected = canonical.input_schema.clone();
-            // MCP owns Host-file requiredness and runtime_status omission defaults;
+            // MCP owns Host-file requiredness and model-specific omission defaults;
             // neither overlay mutates the canonical schema.
             if name == "import_conversation_files_to_project" {
                 expected["properties"]["openaiFileIdRefs"]["items"]["required"] =
@@ -1606,6 +1610,13 @@ fn mcp_tools_list_inputs_equal_canonical_except_descriptions_and_host_file_overl
                 expected_description.push_str(
                     " MCP defaults to sparse status; compact=false opts into full diagnostics.",
                 );
+            }
+            if name == "observe_jobs" {
+                assert_eq!(expected["properties"]["summary_only"]["default"], false);
+                expected["properties"]["summary_only"]["default"] = json!(true);
+                expected["properties"]["summary_only"]["description"] = json!("MCP defaults to compact proven-success validation logs. Set false to expand retained logs from the original cursor. Failures, unknown results and ordinary commands keep full evidence.");
+                expected_description
+                    .push_str(" MCP defaults summary_only=true; set false for full retained logs.");
             }
             let mut actual = tool["inputSchema"].clone();
             if compact {
@@ -1876,10 +1887,10 @@ async fn mcp_compact_preserves_safety_patterns_and_wrapper_bounds() {
         schema("run_skill_resource")["properties"]["expected_definition_revision"]["pattern"],
         "^[0-9a-f]{64}$"
     );
-    // The identical opaque Session pattern remains on business Session inputs.
+    // Business Session selectors retain the canonical-or-ref pattern in compact schemas.
     assert_eq!(
         schema("work_on_project")["properties"]["session_id"]["pattern"],
-        "^wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})$"
+        "^(wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})|~s[1-9][0-9]{0,18})$"
     );
     let properties = &schema("run_process")["properties"];
     let envelope = &properties["_wc"];
@@ -2201,15 +2212,15 @@ fn mcp_compact_descriptions_preserve_selection_and_schema_literals() {
             vec![
                 "observation_token",
                 "after_observation_token",
-                "never redispatches",
+                "Never redispatch",
             ],
         ),
         (
             "wait_for_job_terminal",
             vec![
-                "exact existing Job",
-                "returned continuation",
-                "Host continuation",
+                "Optional durable terminal attention",
+                "Not a blocking wait",
+                "current turn",
             ],
         ),
         (
@@ -2222,9 +2233,26 @@ fn mcp_compact_descriptions_preserve_selection_and_schema_literals() {
             ],
         ),
     ] {
-        let description = tools.iter().find(|tool| tool["name"] == name).unwrap()["description"]
-            .as_str()
-            .unwrap();
+        let descriptor = if matches!(name, "wait_for_job_terminal" | "present_agent_continuation") {
+            assert!(!tools.iter().any(|tool| tool["name"] == name));
+            // Keep testing dormant/gateway compact copy without asserting that
+            // these tools still occupy the ordinary direct inventory.
+            let definition = webcodex_tool_contracts::lookup_tool_definition(name).unwrap();
+            let mut descriptor = json!({
+                "name": name,
+                "description": definition.model_spec.unwrap().description,
+                "inputSchema": webcodex_tool_contracts::input_schema_for_tool(name),
+            });
+            compact_tool(&mut descriptor);
+            descriptor
+        } else {
+            tools
+                .iter()
+                .find(|tool| tool["name"] == name)
+                .unwrap()
+                .clone()
+        };
+        let description = descriptor["description"].as_str().unwrap();
         for phrase in phrases {
             assert!(description.contains(phrase), "{name}: {description}");
         }
@@ -2381,13 +2409,15 @@ async fn mcp_tools_list_stateless_serialized_size_budget() {
     let mut admin = scoped.clone();
     admin.scopes.push(crate::auth::SCOPE_ADMIN.to_string());
     // Final Stateless bytes include the optional _wc envelope and gateways,
-    // not the RPC envelope. Four ordinary specialists moved behind exact/category
-    // discovery; App presentation tools and independently admitted extensions
-    // remain separate. Count changes require explicit inventory review.
+    // not the RPC envelope. Two durable waits use Gateway and two inactive
+    // continuation presentations are hidden. Apps add 18 App-only protocol tools
+    // plus the public Work Result thread entrypoint; they are not ordinary model-tool savings.
     for (label, auth, max_tools, max_bytes) in [
-        ("anonymous", None, 26, 68_000),
-        ("scoped", Some(&scoped), 27, 70_000),
-        ("admin", Some(&admin), 33, 79_000),
+        ("anonymous", None, 26, 65_000),
+        ("scoped", Some(&scoped), 27, 67_000),
+        // Interactive pipe input is a CoreWorkflow Direct tool paired with
+        // run_process, so each ordinary Adaptive inventory gains one descriptor.
+        ("admin", Some(&admin), 33, 77_000),
     ] {
         for app_enabled in [false, true] {
             let mut sizes = Vec::new();
@@ -2431,9 +2461,12 @@ async fn mcp_tools_list_stateless_serialized_size_budget() {
                 // Work Result v3 adds bounded App-only collaboration and lazy
                 // Window activity-detail adapters alongside the existing Goal
                 // Plan/continuation/read helpers.
-                let count_budget = max_tools + if app_enabled { 18 } else { 0 } + feature_tools;
+                // Three readonly resource/launcher descriptors add at most 3 KiB.
+                // Apps include 18 bridge helpers, the public Work Result thread entrypoint,
+                // and Workbench Session discovery/native mentions.
+                let count_budget = max_tools + if app_enabled { 21 } else { 0 } + feature_tools;
                 let byte_budget =
-                    max_bytes + if app_enabled { 20_000 } else { 0 } + feature_tools * 4096;
+                    max_bytes + if app_enabled { 22_000 } else { 0 } + feature_tools * 4096;
                 if feature_tools == 0 {
                     assert_eq!(
                         count, count_budget,
@@ -3828,8 +3861,7 @@ async fn mcp_2026_control_sidecars_gateway_strip_and_closed_schema() {
 #[test]
 fn compact_bootstrap_description_teaches_explicit_context_and_reuse() {
     use crate::mcp::discovery::compact_tool;
-    let mut tool =
-        json!({"name": "work_on_project", "description": "placeholder", "inputSchema": {}});
+    let mut tool = json!({"name": "work_on_project", "description": "placeholder", "inputSchema": {"properties":{"_wc":{}}}});
     compact_tool(&mut tool);
     let description = tool["description"].as_str().unwrap();
     for phrase in [
@@ -3850,4 +3882,167 @@ fn compact_bootstrap_description_teaches_explicit_context_and_reuse() {
     }
     assert!(!description.contains("Defaults return"));
     assert!(!description.contains("context_request"));
+}
+
+#[tokio::test]
+async fn compact_bootstrap_guidance_matches_advertised_context_capability() {
+    let runtime = test_runtime_with_mcp_settings(true, false);
+    for modern in [false, true] {
+        let params = if modern {
+            mcp_2026_params(json!({}))
+        } else {
+            json!({})
+        };
+        let McpOutcome::Ok(body) =
+            handle_mcp_request(&runtime, rpc("tools/list", Some(json!(8000)), params), None).await
+        else {
+            panic!("tools/list");
+        };
+        let tool = body["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "work_on_project")
+            .unwrap();
+        assert_eq!(
+            tool.pointer("/inputSchema/properties/_wc").is_some(),
+            modern
+        );
+        let description = tool["description"].as_str().unwrap();
+        assert!(description.contains("file, data, diagnostic or coding work"));
+        assert!(description.contains("Git optional"));
+        assert!(description.contains("session_id"));
+        assert!(description.contains("stale/incomplete"));
+        assert_eq!(description.contains("_wc.context"), modern);
+        if !modern {
+            assert!(description.contains("read_files"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn mcp_compact_general_workflow_preserves_recovery_and_business_schemas() {
+    use crate::mcp::discovery::TOOL_DESCRIPTION_MAX_CHARS;
+    let full_runtime = test_runtime_with_mcp_settings(false, false);
+    let compact_runtime = test_runtime_with_mcp_settings(true, false);
+    for modern in [false, true] {
+        let params = if modern {
+            mcp_2026_params(json!({}))
+        } else {
+            json!({})
+        };
+        let mut lists = Vec::new();
+        for runtime in [&full_runtime, &compact_runtime] {
+            let McpOutcome::Ok(body) = handle_mcp_request(
+                runtime,
+                rpc("tools/list", Some(json!(8002)), params.clone()),
+                None,
+            )
+            .await
+            else {
+                panic!("tools/list modern={modern}");
+            };
+            lists.push(body["result"]["tools"].as_array().unwrap().clone());
+        }
+        for name in [
+            "work_on_project",
+            "edit_project_files",
+            "run_process",
+            "run_shell",
+            "run_script",
+        ] {
+            let full = lists[0].iter().find(|tool| tool["name"] == name).unwrap();
+            let compact = lists[1].iter().find(|tool| tool["name"] == name).unwrap();
+            let description = compact["description"].as_str().unwrap();
+            assert!(description.chars().count() <= TOOL_DESCRIPTION_MAX_CHARS);
+            assert_eq!(compact["annotations"], full["annotations"], "{name}");
+            let mut schemas = [full["inputSchema"].clone(), compact["inputSchema"].clone()];
+            for schema in &mut schemas {
+                // Existing protocol-wrapper compaction is independent of business
+                // fields, revision fences, language choices and resource limits.
+                schema["properties"].as_object_mut().unwrap().remove("_wc");
+                strip_description_text(schema);
+            }
+            assert_eq!(schemas[0], schemas[1], "{name} modern={modern}");
+            if name.starts_with("run_") {
+                for phrase in [
+                    "literal argv",
+                    "shell grammar",
+                    "same Job",
+                    "continuation",
+                    "never redispatch",
+                    "independent work",
+                    "when blocked",
+                    "wait_for_job_readiness",
+                    "observe_jobs",
+                    "failures",
+                    "outcome_unknown requires observation.",
+                ] {
+                    assert!(description.contains(phrase), "{name}: missing {phrase}");
+                }
+                assert!(description.ends_with("outcome_unknown requires observation."));
+            }
+            if name == "edit_project_files" {
+                for phrase in [
+                    "one change per file",
+                    "expected_read_revision",
+                    "fail closed on ambiguity",
+                    "1-based inclusive",
+                    "from that snapshot",
+                    "preflight transactionally",
+                    "Runner rechecks source",
+                    "read_files recovery",
+                    "outcome_unknown: observe before another write",
+                    "task-appropriate validation.",
+                ] {
+                    assert!(
+                        description.contains(phrase),
+                        "missing {phrase}: {description}"
+                    );
+                }
+                assert!(description.ends_with("task-appropriate validation."));
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn mcp_published_validation_success_sparse_schema_contract() {
+    let runtime = test_runtime_with_mcp_settings(false, true);
+    let McpOutcome::Ok(value) = handle_mcp_request(
+        &runtime,
+        rpc("tools/list", Some(json!(8001)), mcp_2026_params(json!({}))),
+        None,
+    )
+    .await
+    else {
+        panic!("tools/list failed");
+    };
+    let tools = value["result"]["tools"].as_array().unwrap();
+    for (name, output) in [
+        ("cargo_check", json!({})),
+        ("cargo_test", json!({"tests_run_count":28})),
+        (
+            "cargo_test",
+            json!({"tests_run_count":28,"test_count_assertion":{"minimum_tests":20}}),
+        ),
+        (
+            "cargo_test",
+            json!({"tests_run_count":0,"require_tests":false}),
+        ),
+        ("cargo_test", json!({"no_run":true})),
+    ] {
+        let published = &tools.iter().find(|tool| tool["name"] == name).unwrap()["outputSchema"];
+        let mut wire = json!({"success":true,"error":null,"output":output});
+        wire["output"]["source_state"] =
+            json!({"freshness":"unproven","observed_mutation_fence":"uncrossed"});
+        crate::tool_runtime::startup_brief::validate_schema_instance_for_test(&wire, published)
+            .unwrap();
+        wire["output"]["tests_failed"] = json!(0);
+        assert!(
+            crate::tool_runtime::startup_brief::validate_schema_instance_for_test(&wire, published)
+                .is_err(),
+            "{name}"
+        );
+    }
 }

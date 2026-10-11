@@ -125,14 +125,23 @@ fn result_tool_app_metadata_is_capability_scoped_compact_safe_and_merge_safe() {
             tool(&enabled, "present_goal_plan")["_meta"]["ui"]["resourceUri"],
             MCP_GOAL_PLAN_UI_RESOURCE_URI
         );
-        assert_eq!(
-            tool(&enabled, "present_agent_continuation")["_meta"]["ui"]["resourceUri"],
-            MCP_AGENT_CONTINUATION_UI_RESOURCE_URI
-        );
+        assert!(!enabled["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "present_agent_continuation"));
         assert_eq!(
             tool(&enabled, "present_work_result")["_meta"]["ui"]["resourceUri"],
             MCP_WORK_RESULT_UI_RESOURCE_URI
         );
+        assert!(tool(&enabled, "present_work_result")["_meta"]
+            .get("openai/ui")
+            .is_none());
+        assert!(!enabled["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "work_result_thread_panel"));
 
         let disabled = mcp_tools_list_payload_with_compact_and_app(compact, false);
         for name in RESULT_APP_TOOLS {
@@ -163,7 +172,7 @@ async fn result_app_descriptor_and_resource_exposure_require_ui_operator_capabil
     assert_eq!(MCP_RESULT_UI_RESOURCE_URI, "ui://webcodex/changes/v2");
     assert_eq!(
         MCP_WORK_RESULT_UI_RESOURCE_URI,
-        "ui://webcodex/work-result/v12"
+        "ui://webcodex/work-result/v15"
     );
     assert!(MCP_WORK_RESULT_UI_RESOURCE_LEGACY_URIS.contains(&"ui://webcodex/work-result/v9"));
     assert!(MCP_WORK_RESULT_UI_RESOURCE_LEGACY_URIS.contains(&"ui://webcodex/work-result/v10"));
@@ -198,8 +207,23 @@ async fn result_app_descriptor_and_resource_exposure_require_ui_operator_capabil
         MCP_WORK_RESULT_UI_RESOURCE_URI
     );
     assert!(tool(&ui_tools["result"], "present_work_result")["_meta"]
+        .get("openai/ui")
+        .is_none());
+    assert!(tool(&ui_tools["result"], "present_work_result")["_meta"]
         .get("ui/resourceUri")
         .is_none());
+    let thread_panel = tool(&ui_tools["result"], "work_result_thread_panel");
+    assert_eq!(thread_panel["title"], "WebCodex review");
+    assert_eq!(
+        thread_panel["_meta"]["ui"]["resourceUri"],
+        MCP_WORK_RESULT_UI_RESOURCE_URI
+    );
+    assert!(thread_panel["_meta"]["ui"].get("visibility").is_none());
+    assert_eq!(
+        thread_panel["_meta"]["openai/ui"]["entrypoints"],
+        json!([{"type": "thread"}])
+    );
+    assert_eq!(thread_panel["inputSchema"]["properties"], json!({}));
     for descriptor in ui_tools["result"]["tools"].as_array().unwrap() {
         assert_ne!(
             descriptor
@@ -2182,18 +2206,24 @@ async fn mcp_validation_run_and_summary_use_real_canonical_contracts() {
         "purpose",
         "executor",
         "shell",
+        "warnings_count",
+        "errors_count",
+        "diagnostics",
     ] {
         assert!(
             model_output.get(redundant).is_none(),
             "model result leaked {redundant}: {model_output}"
         );
     }
-    assert_eq!(model_output["warnings_count"], 0);
-    assert_eq!(model_output["errors_count"], 0);
+    assert_eq!(cargo_result["structuredContent"]["success"], true);
     assert_eq!(presentation(cargo_result)["kind"], "validation_run");
     assert_eq!(presentation(cargo_result)["tool"], "cargo_check");
-    assert_eq!(presentation(cargo_result)["warnings_count"], 0);
-    assert_eq!(presentation(cargo_result)["errors_count"], 0);
+    for omitted in ["warnings_count", "errors_count", "diagnostics"] {
+        assert!(
+            presentation(cargo_result).get(omitted).is_none(),
+            "presentation reintroduced {omitted}"
+        );
+    }
     assert!(presentation(cargo_result).get("execution_state").is_none());
     assert!(presentation(cargo_result).get("passed").is_none());
     assert!(!serde_json::to_string(presentation(cargo_result))

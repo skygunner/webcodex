@@ -39,7 +39,6 @@ impl ValidationAdapter for GoTestValidationAdapter {
         options: ValidationCommandOptions,
     ) -> Result<ReadOnlyValidationPlan, String> {
         if options.check
-            || options.filter.is_some()
             || options.lib.is_some()
             || options.all_targets.is_some()
             || options.all_features.is_some()
@@ -58,6 +57,21 @@ impl ValidationAdapter for GoTestValidationAdapter {
             ValidationPlanArg::Literal("test"),
             ValidationPlanArg::Literal("-json"),
         ];
+        if options.dependency_mode
+            == Some(webcodex_core::project_validation::ProjectDependencyMode::Locked)
+        {
+            args.push(ValidationPlanArg::Literal("-mod=readonly"));
+        }
+        if let Some(filter) = options
+            .filter
+            .as_deref()
+            .map(webcodex_core::runner_protocol::normalize_go_test_filter)
+            .transpose()?
+            .flatten()
+        {
+            args.push(ValidationPlanArg::Literal("-run"));
+            args.push(ValidationPlanArg::Value(filter));
+        }
         if explicit_packages {
             args.extend(packages.into_iter().map(ValidationPlanArg::Value));
         } else {
@@ -147,6 +161,11 @@ impl ValidationAdapter for GoVetValidationAdapter {
         let packages = normalize_go_test_packages(options.go_packages.as_deref())
             .map_err(|reason| format!("packages {reason}"))?;
         let mut args = vec![ValidationPlanArg::Literal("vet")];
+        if options.dependency_mode
+            == Some(webcodex_core::project_validation::ProjectDependencyMode::Locked)
+        {
+            args.push(ValidationPlanArg::Literal("-mod=readonly"));
+        }
         if explicit_packages {
             args.extend(packages.into_iter().map(ValidationPlanArg::Value));
         } else {

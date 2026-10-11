@@ -207,6 +207,8 @@ jobs:
         run: |
           bash scripts/workspace_boundary_check.sh --self-test
           bash scripts/workspace_boundary_check.sh
+      - name: Check build identity and incremental boundary
+        run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts.tests.test_build_identity
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Ensure test inventory dependency
@@ -218,7 +220,11 @@ jobs:
       - name: Check test inventory contract
         run: |
           bash scripts/test_inventory.sh --self-test
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts.tests.test_ci_rust_test
           bash scripts/test_inventory.sh
+      - name: Check macOS signing setup and release evidence contracts
+        # Fake signing commands and synthetic artifacts only; no Apple credentials.
+        run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts.tests.test_macos_signing_setup scripts.tests.test_macos_self_signed scripts.tests.test_macos_release_evidence
       - name: Check schema and metadata contracts
         run: |
           python3 scripts/tests/test_runner_observability_contract.py
@@ -284,7 +290,17 @@ jobs:
         with:
           shared-key: linux-ci
       - name: Run ${{ matrix.shard }} Rust tests
-        run: cargo test --locked ${{ matrix.packages }}
+        env:
+          CI_RUST_SHARD: ${{ matrix.shard }}
+        run: python3 scripts/ci_rust_test.py --report target/ci-test-reports/${{ matrix.shard }}.json -- cargo test --locked ${{ matrix.packages }}
+      - name: Upload bounded Rust test evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: rust-tests-${{ matrix.shard }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: target/ci-test-reports/*.json
+          if-no-files-found: warn
+          retention-days: 7
 
   test-linux-tooling:
     # Release/tooling checks are mandatory on every PR, but do not need contract
@@ -313,6 +329,8 @@ jobs:
           fi
       - name: Test optional Codex observation adapter
         run: python3 -m unittest discover -s integrations/codex -p 'test_*.py' -v
+      - name: Test configured model API ACP adapter
+        run: python3 -m unittest discover -s integrations/model_gateway/tests -p 'test_*.py' -v
       - name: Check complete workspace production/test targets
         if: github.event_name == 'pull_request' && (github.event.pull_request.user.login != github.repository_owner || contains(github.event.pull_request.labels.*.name, 'run-ci'))
         run: cargo check --locked --workspace --all-targets
@@ -516,14 +534,17 @@ jobs:
           version="$(node -p "require('./npm/webcodex/package.json').version")"
           built_at="$(git show -s --format=%ct HEAD)"
           export WEBCODEX_BUILT_AT="$built_at"
+          export WEBCODEX_GIT_COMMIT="$source_sha"
+          export WEBCODEX_GIT_DIRTY=false
           cargo build --locked --profile dogfood -p webcodex -p webcodex-cli -p webcodex-runner
           for name in webcodex webcodex-server webcodex-runner; do
             binary="target/dogfood/$name"
             actual="$($binary --version)"
-            expected="$name $version (commit $short_source, dirty=false, built_at=$built_at)"
+            expected="$name $version (commit $source_sha, dirty=false, built_at=$built_at)"
             test "$actual" = "$expected"
             test "$(/usr/bin/lipo -archs "$binary")" = "$EXPECTED_FILE_ARCH"
           done
+          bash scripts/macos_sign_runner.sh target/dogfood/webcodex-runner -
           {
             echo "source=$source_sha"
             echo "short=$short_source"
@@ -644,6 +665,16 @@ jobs:
         run: cargo check --locked --workspace
       - name: Run Windows library and CLI tests
         run: cargo test --locked -p webcodex-runner-config -p webcodex-process -p webcodex-cli
+      - name: Test user-session task ownership after Windows account normalization
+        run: |
+          & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -File scripts/tests/test_windows_user_service_identity.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Windows user-session task ownership regression failed" }
+      - name: Run Windows unified upgrade transactions including native v0.4.3 fixture
+        run: |
+          cargo test --locked -p webcodex-environment --lib upgrade::
+          cargo test --locked -p webcodex-environment --lib service::windows::
+      - name: Test Windows unified installer routing and Desktop build freshness
+        run: python -m unittest scripts.tests.test_prepare_windows_unified_installer scripts.tests.test_desktop_runtime_manifest scripts.tests.test_desktop_frontend_build
       - name: Test optional Codex observation adapter on Windows
         run: python -m unittest discover -s integrations/codex -p 'test_*.py' -v
       - name: Run Windows search fallback tests
@@ -743,6 +774,8 @@ jobs:
           $version = (node -e "console.log(require('./npm/webcodex/package.json').version)").Trim()
           $builtAt = [Int64]((git show -s --format=%ct HEAD).Trim())
           $env:WEBCODEX_BUILT_AT = "$builtAt"
+          $env:WEBCODEX_GIT_COMMIT = $source
+          $env:WEBCODEX_GIT_DIRTY = "false"
           cargo build --locked --profile dogfood -p webcodex -p webcodex-cli -p webcodex-runner
           if ($LASTEXITCODE -ne 0) { throw "WebCodex runtime build failed" }
           foreach ($name in @("webcodex", "webcodex-server", "webcodex-runner")) {
@@ -753,7 +786,7 @@ jobs:
               throw "$name --version failed with exit code $exitCode"
             }
             $actual = $output[0].TrimEnd()
-            $expected = "$name $version (commit $short, dirty=false, built_at=$builtAt)"
+            $expected = "$name $version (commit $source, dirty=false, built_at=$builtAt)"
             if ($actual -ne $expected) { throw "Unexpected $name identity: $actual" }
           }
           "source=$source" >> $env:GITHUB_OUTPUT

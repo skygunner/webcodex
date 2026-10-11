@@ -136,7 +136,8 @@ fn coding_task_tools_are_registered_in_metadata() {
     for phrase in [
         "mode=worktree",
         "exact Git base",
-        "isolated worktree",
+        "managed Project/ref",
+        "fresh Session",
         "Project authority",
     ] {
         assert!(
@@ -1345,6 +1346,7 @@ async fn finish_coding_task_requires_explicit_session_and_returns_structured_fie
             runtime
                 .dispatch_with_auth(
                     ToolCall::FinishCodingTask {
+                        outputs: Vec::new(),
                         project,
                         session_id,
                         summary_only: false,
@@ -1651,6 +1653,7 @@ async fn finish_coding_task_summary_only_is_compact_for_clean_project() {
             runtime
                 .dispatch_with_auth(
                     ToolCall::FinishCodingTask {
+                        outputs: Vec::new(),
                         project,
                         session_id,
                         summary_only: true,
@@ -1789,6 +1792,7 @@ async fn finish_coding_task_summary_only_omits_diff_generation_even_when_request
             runtime
                 .dispatch_with_auth(
                     ToolCall::FinishCodingTask {
+                        outputs: Vec::new(),
                         project,
                         session_id,
                         summary_only: true,
@@ -1883,6 +1887,7 @@ async fn finish_coding_task_summary_only_uses_review_evidence_without_projecting
             runtime
                 .dispatch_with_auth(
                     ToolCall::FinishCodingTask {
+                        outputs: Vec::new(),
                         project,
                         session_id,
                         summary_only: true,
@@ -1950,6 +1955,7 @@ async fn finish_coding_task_summary_only_treats_dirty_workspace_as_advisory() {
             runtime
                 .dispatch_with_auth(
                     ToolCall::FinishCodingTask {
+                        outputs: Vec::new(),
                         project,
                         session_id,
                         summary_only: true,
@@ -2031,6 +2037,7 @@ async fn finish_coding_task_does_not_resolve_a_different_validation_identity() {
             runtime
                 .dispatch_with_auth(
                     ToolCall::FinishCodingTask {
+                        outputs: Vec::new(),
                         project,
                         session_id,
                         summary_only: true,
@@ -3935,6 +3942,7 @@ async fn finish_coding_task_jobs_projection(fixture: &FinishSummaryFixture) -> T
             runtime
                 .dispatch_with_auth(
                     ToolCall::FinishCodingTask {
+                        outputs: Vec::new(),
                         project,
                         session_id,
                         summary_only: false,
@@ -3991,6 +3999,7 @@ async fn finish_coding_task_with_agent(
             runtime
                 .dispatch_with_auth(
                     ToolCall::FinishCodingTask {
+                        outputs: Vec::new(),
                         project,
                         session_id,
                         summary_only,

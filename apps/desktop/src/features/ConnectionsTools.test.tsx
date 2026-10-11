@@ -14,6 +14,7 @@ import { McpProvidersPanel } from "./extensions/McpProvidersPanel";
 const api = vi.hoisted(() => ({ saveTunnelProfile: vi.fn(), tunnelProfileAction: vi.fn(), saveMcpProvider: vi.fn(), removeMcpProvider: vi.fn(), runnerSettings: vi.fn(), restartOwnedRunner: vi.fn(), stopQuickShare: vi.fn() }));
 vi.mock("../lib/desktop-api", () => ({ desktopApi: api }));
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({ writeText: vi.fn() }));
+const onSettings = vi.fn();
 const target = { config_path: "/fixture/runner.toml", client_id: "fixture", server_url: "http://127.0.0.1:62645" };
 const settings: RunnerSettings = { target, paths: { instruction_files: [], skill_roots: [] }, file_access: { configured_roots: [], effective_roots: ["/fixture"], using_default_roots: true, allow_cwd_anywhere: false }, plugin_ids: [], can_restart: true };
 function state(): DesktopState {
@@ -30,7 +31,7 @@ function state(): DesktopState {
 }
 function Harness({ mode, initial = state() }: { mode: "connections" | "mcp"; initial?: DesktopState }) {
   const [snapshot, setSnapshot] = useState(initial);
-  return <MantineProvider><LocaleProvider>{mode === "connections" ? <ConnectionPanel state={snapshot} onState={setSnapshot} /> : <McpProvidersPanel state={snapshot} onState={setSnapshot} settings={settings} onRestarted={() => undefined} />}</LocaleProvider></MantineProvider>;
+  return <MantineProvider><LocaleProvider>{mode === "connections" ? <ConnectionPanel state={snapshot} onState={setSnapshot} onSettings={onSettings} /> : <McpProvidersPanel state={snapshot} onState={setSnapshot} settings={settings} onRestarted={() => undefined} />}</LocaleProvider></MantineProvider>;
 }
 beforeEach(() => {
   vi.resetAllMocks(); localStorage.setItem("webcodex.desktop.locale", "en-US");
@@ -42,8 +43,8 @@ beforeEach(() => {
 describe("Connections + Tools control surfaces", () => {
   it("shows 2/3 connections without degrading runtime and routes each action by identity", async () => {
     render(<Harness mode="connections" />);
-    expect(screen.getByRole("status", { name: "Workspace" })).toHaveTextContent("ServerRunningRunnerRunningConnections2 / 3 Running");
-    expect(within(screen.getByRole("article", { name: "ChatGPT Work" })).getByText("Needs attention")).toBeInTheDocument();
+    expect(screen.getByText("2 of 3 tunnels locally ready")).toBeInTheDocument();
+    expect(within(screen.getByRole("article", { name: "ChatGPT Work" })).getByText("Connection unavailable")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Restart ChatGPT Personal" }));
     await waitFor(() => expect(api.tunnelProfileAction).toHaveBeenLastCalledWith("personal", "restart"));
     await waitFor(() => expect(screen.getByRole("button", { name: "Stop Account 3" })).toBeEnabled());
@@ -70,7 +71,7 @@ describe("Connections + Tools control surfaces", () => {
     await waitFor(() => expect(within(work).getByRole("button", { name: "Start ChatGPT Work" })).toBeEnabled());
     expect(within(work).queryByRole("button", { name: "Stop ChatGPT Work" })).not.toBeInTheDocument();
     expect(within(screen.getByRole("article", { name: "ChatGPT Personal" })).getByText("Running")).toBeInTheDocument();
-    expect(screen.getByRole("status", { name: "Workspace" })).toHaveTextContent("ServerRunningRunnerRunningConnections2 / 3 Running");
+    expect(screen.getByText("2 of 3 tunnels locally ready")).toBeInTheDocument();
     fireEvent.click(within(work).getByRole("button", { name: "Start ChatGPT Work" }));
     await waitFor(() => expect(api.tunnelProfileAction).toHaveBeenLastCalledWith("work", "start"));
     expect(api.tunnelProfileAction.mock.calls.every(([id]) => id === "work")).toBe(true);
@@ -84,9 +85,51 @@ describe("Connections + Tools control surfaces", () => {
     render(<Harness mode="connections" initial={initial} />);
     fireEvent.click(screen.getByRole("button", { name: "Restart ChatGPT Personal" }));
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("Auto is using a detected proxy");
-    expect(alert).toHaveTextContent("If Clash TUN or another local/system proxy is active, try Direct mode");
-    expect(alert).toHaveTextContent("does not identify the root cause");
+    expect(alert).toHaveTextContent("Auto currently uses a detected proxy");
+    expect(alert).toHaveTextContent("try Direct if a VPN or TUN already routes your traffic");
+  });
+
+  it("shows proxy recovery for asynchronous readiness failure without a rejected start call", () => {
+    const initial = state();
+    initial.tunnel_proxy = { mode: "auto", custom_url: null, effective_source: "system", effective_proxy_present: true, system_proxy_detected: true };
+    initial.connections = connectionSnapshot(connectionFixture({ id: "work", name: "ChatGPT Work", lifecycle: "error", pid: null, ready: false, last_error: "tunnel_unavailable", failure_stage: "tunnel_daemon_readiness", reason_code: "tunnel_daemon_not_ready", auto_proxy_used: true }));
+    render(<Harness mode="connections" initial={initial} />);
+    const card = screen.getByRole("article", { name: "ChatGPT Work" });
+    expect(within(card).getByText(/The failed attempt used an automatically detected proxy/)).toHaveTextContent("try Direct");
+    expect(api.tunnelProfileAction).not.toHaveBeenCalled();
+    expect(api.restartOwnedRunner).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["tunnel_client_download_failed", "tunnel_client_download", "could not be downloaded", true],
+    ["tunnel_client_install_failed", "tunnel_client_install", "could not be installed", false],
+    ["tunnel_client_verification_failed", "tunnel_client_verification", "failed integrity verification", false],
+  ] as const)("shows specific recovery for %s instead of blaming credentials", (reason_code, failure_stage, message, proxyHint) => {
+    const initial = state();
+    initial.tunnel_proxy = { mode: "auto", custom_url: null, effective_source: "system", effective_proxy_present: true, system_proxy_detected: true };
+    initial.connections = connectionSnapshot(connectionFixture({ id: "work", name: "ChatGPT Work", lifecycle: "error", ready: false, last_error: "tunnel_unavailable", reason_code, failure_stage, auto_proxy_used: true }));
+    render(<Harness mode="connections" initial={initial} />);
+    const card = screen.getByRole("article", { name: "ChatGPT Work" });
+    expect(card).toHaveTextContent(message);
+    expect(card).not.toHaveTextContent("Check this connection’s credentials");
+    expect(within(card).queryByText(/The failed attempt used an automatically detected proxy/) !== null).toBe(proxyHint);
+    expect(api.tunnelProfileAction).not.toHaveBeenCalled();
+  });
+
+  it("uses the failed attempt's proxy evidence rather than the current global setting", () => {
+    const afterAutoFailure = state();
+    afterAutoFailure.tunnel_proxy = { mode: "direct", custom_url: null, effective_source: "direct", effective_proxy_present: false, system_proxy_detected: true };
+    afterAutoFailure.connections = connectionSnapshot(connectionFixture({ lifecycle: "error", ready: false, last_error: "tunnel_unavailable", failure_stage: "tunnel_daemon_readiness", reason_code: "tunnel_daemon_not_ready", auto_proxy_used: true }));
+    const { unmount } = render(<Harness mode="connections" initial={afterAutoFailure} />);
+    expect(screen.getByText(/The failed attempt used an automatically detected proxy/)).toHaveTextContent("try Direct");
+    unmount();
+
+    const afterDirectFailure = state();
+    afterDirectFailure.tunnel_proxy = { mode: "auto", custom_url: null, effective_source: "system", effective_proxy_present: true, system_proxy_detected: true };
+    afterDirectFailure.connections = connectionSnapshot(connectionFixture({ lifecycle: "error", ready: false, last_error: "tunnel_unavailable", failure_stage: "tunnel_daemon_readiness", reason_code: "tunnel_daemon_not_ready", auto_proxy_used: false }));
+    render(<Harness mode="connections" initial={afterDirectFailure} />);
+    expect(screen.queryByText(/The failed attempt used an automatically detected proxy/)).not.toBeInTheDocument();
+    expect(api.tunnelProfileAction).not.toHaveBeenCalled();
   });
 
   it("does not attribute unrelated Tunnel failures to Clash or proxy detection", async () => {
@@ -98,6 +141,52 @@ describe("Connections + Tools control surfaces", () => {
     const alert = await screen.findByRole("alert");
     expect(alert).not.toHaveTextContent("Clash");
     expect(alert).not.toHaveTextContent("Direct mode");
+  });
+
+  it.each([
+    ["tunnel_control_plane_unreachable", "tunnel_unavailable", "Cannot reach the OpenAI tunnel service", "network", "Proxy settings"],
+    ["tunnel_control_plane_probe_failed", "tunnel_unavailable", "Cannot reach the OpenAI tunnel service", "network", "Proxy settings"],
+    [null, "local_mcp_unavailable", "Local MCP service is unreachable", "runtime", "Runtime"],
+    [null, "health_stale", "Tunnel health reports stopped arriving", "diagnostics", "Troubleshooting"],
+    [null, "protocol_invalid", "Tunnel client returned an invalid status", "diagnostics", "Troubleshooting"],
+    [null, "startup_timeout", "Tunnel did not become ready", "network", "Proxy settings"],
+    [null, "stop_failed", "Tunnel could not be stopped", "diagnostics", "Troubleshooting"],
+    [null, null, "Connection unavailable", "diagnostics", "Troubleshooting"],
+  ] as const)("explains %s / %s and opens recovery without a process effect", (reason_code, last_error, title, section, button) => {
+    const initial = state();
+    initial.connections = connectionSnapshot(connectionFixture({ lifecycle: "error", ready: false, pid: null, tunnel_ready: false, local_mcp_ready: true, reason_code, last_error }));
+    render(<Harness mode="connections" initial={initial} />);
+    const card = screen.getByRole("article", { name: "ChatGPT" });
+    expect(card).toHaveTextContent(title);
+    expect(card).toHaveTextContent("App creation or tool refresh in ChatGPT may fail");
+    expect(card).toHaveTextContent(last_error === "health_stale" ? "Awaiting current status" : "Unreachable");
+    fireEvent.click(within(card).getByRole("button", { name: button }));
+    expect(onSettings).toHaveBeenCalledExactlyOnceWith(section);
+    expect(api.tunnelProfileAction).not.toHaveBeenCalled();
+    expect(api.restartOwnedRunner).not.toHaveBeenCalled();
+  });
+
+  it("shows a failed Stop before the previous network failure and avoids stale healthy checks", () => {
+    const initial = state();
+    initial.connections = connectionSnapshot(connectionFixture({ lifecycle: "error", ready: false, last_error: "stop_failed", reason_code: "tunnel_control_plane_unreachable" }));
+    const rendered = render(<Harness mode="connections" initial={initial} />);
+    expect(screen.getByText("Tunnel could not be stopped")).toBeInTheDocument();
+    expect(screen.queryByText("Cannot reach the OpenAI tunnel service")).not.toBeInTheDocument();
+    rendered.unmount();
+    initial.connections = connectionSnapshot(connectionFixture({ lifecycle: "running", ready: false, last_error: "health_stale", tunnel_ready: true, local_mcp_ready: true }));
+    render(<Harness mode="connections" initial={initial} />);
+    const card = screen.getByRole("article", { name: "ChatGPT" });
+    expect(within(card).getAllByText("Awaiting current status")).toHaveLength(2);
+    expect(within(card).queryByText("Reachable")).not.toBeInTheDocument();
+  });
+
+  it("explains missing credentials instead of leaving a disabled Start unexplained", () => {
+    const initial = state();
+    initial.connections = connectionSnapshot(connectionFixture({ lifecycle: "stopped", ready: false, pid: null, credential_present: false }));
+    render(<Harness mode="connections" initial={initial} />);
+    expect(screen.getByText("Add a Tunnel ID and API Key to start this connection.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start ChatGPT" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Edit ChatGPT" })).toBeEnabled();
   });
 
   it("requires confirmation to delete exactly one profile and leaves other cards", async () => {
@@ -135,8 +224,8 @@ describe("Connections + Tools control surfaces", () => {
     api.saveMcpProvider.mockImplementation(async request => { captured.push(structuredClone(request)); return saved; });
     api.restartOwnedRunner.mockResolvedValue({ ...saved, mcp_providers: { ...saved.mcp_providers, restart_required: false } });
     render(<Harness mode="mcp" />);
-    fireEvent.click(screen.getByRole("button", { name: "Add MCP Provider" }));
-    fireEvent.change(screen.getByLabelText("Provider Name"), { target: { value: "Playwright" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add MCP server" }));
+    fireEvent.change(screen.getByLabelText("Service name"), { target: { value: "Playwright" } });
     fireEvent.change(screen.getByLabelText("Command"), { target: { value: "npx" } });
     fireEvent.change(screen.getByLabelText("Arguments"), { target: { value: '["-y","@playwright/mcp"]' } });
     fireEvent.click(screen.getByRole("button", { name: "Add Environment Variable" }));
@@ -158,8 +247,8 @@ describe("Connections + Tools control surfaces", () => {
 
   it("rejects invalid provider arguments without invoking or exposing backend errors", async () => {
     render(<Harness mode="mcp" />);
-    fireEvent.click(screen.getByRole("button", { name: "Add MCP Provider" }));
-    fireEvent.change(screen.getByLabelText("Provider Name"), { target: { value: "Database" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add MCP server" }));
+    fireEvent.change(screen.getByLabelText("Service name"), { target: { value: "Database" } });
     fireEvent.change(screen.getByLabelText("Command"), { target: { value: "node" } });
     fireEvent.change(screen.getByLabelText("Arguments"), { target: { value: '{"invalid":true}' } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));

@@ -14,6 +14,7 @@ export function useDesktopWorkspace() {
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
   const [navigation, setNavigation] = useState<Navigation>("home");
   const [refreshing, setRefreshing] = useState(false);
+  const [runtimeObservations, setRuntimeObservations] = useState(0);
   const [error, setError] = useState<DesktopError | null>(null);
   const [cancelSubmittingId, setCancelSubmittingId] = useState<string | null>(null);
   const [showSetup, setShowSetup] = useState(false);
@@ -91,6 +92,18 @@ export function useDesktopWorkspace() {
     setState(next);
   }, []);
 
+  const observeFailedOperation = useCallback(async (value: unknown, current: () => boolean = () => true) => {
+    if (!current()) return;
+    setError(normalizeDesktopError(value));
+    const observedVersion = stateVersionRef.current;
+    try {
+      const terminal = await desktopApi.getState();
+      if (current() && stateVersionRef.current === observedVersion) commitState(terminal);
+    } catch {
+      // Preserve the original failure if this best-effort observation fails.
+    }
+  }, [commitState]);
+
   const commitChatgptActivity = useCallback((next: DesktopState) => {
     stateVersionRef.current += 1;
     setState((current) => {
@@ -111,11 +124,26 @@ export function useDesktopWorkspace() {
           return;
         }
 
-        // Installing persistent services is an explicit first-run choice. Do not
-        // bind a fresh machine to a local Server before it can choose Join, or
-        // trigger administrator/service-password prompts from a status read.
+        // Fresh local Desktop is a zero-configuration runtime bootstrap, not a
+        // persistent-service setup flow. Start the Desktop-owned Server/Runner
+        // immediately; persistent user/system services remain an explicit
+        // advanced choice in Runtime settings.
         if (!initial.topology) {
-          commitState(initial);
+          setRefreshing(true);
+          try {
+            const next = await desktopApi.configureLocal();
+            if (!cancelled) {
+              commitState(next);
+              setShowSetup(false);
+            }
+          } catch (value) {
+            if (!cancelled) {
+              commitState(initial);
+              setError(normalizeDesktopError(value));
+            }
+          } finally {
+            if (!cancelled) setRefreshing(false);
+          }
           return;
         }
 
@@ -138,16 +166,24 @@ export function useDesktopWorkspace() {
           initial.runtime_autostart
           && initial.topology.experience === "full",
         );
-        if (!resumeExisting) return;
+        const resumeConnections = !resumeExisting
+          && initial.topology.experience === "full"
+          && initial.topology.server.kind === "local"
+          && initial.readiness.runtime_ready
+          && !initial.quick_share
+          && initial.connections?.profiles.some(profile => profile.enabled && profile.autostart && !profile.process_started);
+        if (!resumeExisting && !resumeConnections) return;
 
         setRefreshing(true);
         try {
-          const next = await desktopApi.resumeSavedRuntime();
+          const next = resumeExisting
+            ? await desktopApi.resumeSavedRuntime()
+            : await desktopApi.resumeSavedConnections();
           if (cancelled) return;
           // Backend reconciliation owns every profile's autostart policy.
           commitState(next);
         } catch (value) {
-          if (!cancelled) setError(normalizeDesktopError(value));
+          await observeFailedOperation(value, () => !cancelled);
         } finally {
           if (!cancelled) setRefreshing(false);
         }
@@ -158,7 +194,7 @@ export function useDesktopWorkspace() {
     return () => {
       cancelled = true;
     };
-  }, [commitState, startupAttempt]);
+  }, [commitState, observeFailedOperation, startupAttempt]);
 
   useEffect(() => {
     if (!hasLoadedState) return;
@@ -173,8 +209,12 @@ export function useDesktopWorkspace() {
       timeoutId = window.setTimeout(() => {
         void (async () => {
           const observedVersion = stateVersionRef.current;
+          const refreshRuntime = Boolean(state?.persistent_environment && !hasCurrentOperation && !refreshing);
+          // Keep this separate from refreshing: changing that effect dependency
+          // would cancel this observation before it can commit its result.
+          if (refreshRuntime) setRuntimeObservations(count => count + 1);
           try {
-            const next = state?.persistent_environment && !hasCurrentOperation && !refreshing
+            const next = refreshRuntime
               ? await desktopApi.refresh()
               : await desktopApi.getState();
             if (!cancelled && stateVersionRef.current === observedVersion) {
@@ -184,6 +224,7 @@ export function useDesktopWorkspace() {
             // Observation is best-effort. A transient invoke failure must not
             // create an error storm or a second concurrent observer.
           } finally {
+            if (refreshRuntime) setRuntimeObservations(count => count - 1);
             if (!cancelled) scheduleObservation();
           }
         })();
@@ -237,14 +278,27 @@ export function useDesktopWorkspace() {
     try {
       commitState(await operation());
     } catch (value) {
-      setError(normalizeDesktopError(value));
+      await observeFailedOperation(value);
     }
   };
 
   const refresh = async () => {
     setRefreshing(true);
+    setError(null);
     try {
-      await runStateOperation(desktopApi.refresh);
+      commitState(await desktopApi.refresh());
+    } catch (value) {
+      const failure = normalizeDesktopError(value);
+      if (failure.code === "desktop_operation_busy") {
+        try {
+          commitState(await desktopApi.getState());
+        } catch {
+          // The competing operation remains authoritative; a failed observation
+          // must not turn an ordinary Refresh race into a second error.
+        }
+      } else {
+        await observeFailedOperation(value);
+      }
     } finally {
       setRefreshing(false);
     }
@@ -256,7 +310,7 @@ export function useDesktopWorkspace() {
     try {
       commitState(await desktopApi.resumeSavedRuntime());
     } catch (value) {
-      setError(normalizeDesktopError(value));
+      await observeFailedOperation(value);
     } finally {
       setRefreshing(false);
     }
@@ -276,5 +330,5 @@ export function useDesktopWorkspace() {
     }
   };
 
-  return { state, activity, navigation, setNavigation, refreshing, error, setError, cancelSubmittingId, showSetup, setShowSetup, setStartupAttempt, mainRef, commitState, openSetup, refresh, resumeRuntime, cancelCurrentOperation, runStateOperation };
+  return { state, activity, navigation, setNavigation, refreshing: refreshing || runtimeObservations > 0, preserveWorkspacePollDeadline: runtimeObservations > 0 && !refreshing, error, setError, cancelSubmittingId, showSetup, setShowSetup, setStartupAttempt, mainRef, commitState, openSetup, refresh, resumeRuntime, cancelCurrentOperation, runStateOperation };
 }

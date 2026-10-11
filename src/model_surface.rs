@@ -381,7 +381,38 @@ where
 
     for keyword in ["anyOf", "oneOf", "allOf"] {
         if let Some(branches) = schema.get(keyword).and_then(Value::as_array) {
+            let has_matching_required_shape = keyword != "allOf"
+                && branches.iter().any(|branch| {
+                    branch
+                        .get("required")
+                        .and_then(Value::as_array)
+                        .is_some_and(|required| {
+                            !required.is_empty()
+                                && required
+                                    .iter()
+                                    .filter_map(Value::as_str)
+                                    .all(|key| value.get(key).is_some())
+                        })
+                });
             for branch in branches {
+                // Alternative object representations may declare different calls at
+                // the same path. Do not let an inapplicable representation erase an
+                // edge before its matching representation can project it. This is
+                // structural selection only; target/posture checks below remain
+                // fail closed, and conjunctive schemas still all apply.
+                if has_matching_required_shape
+                    && branch
+                        .get("required")
+                        .and_then(Value::as_array)
+                        .is_some_and(|required| {
+                            required
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .any(|key| value.get(key).is_none())
+                        })
+                {
+                    continue;
+                }
                 if project_suggested_tool_calls_in_value_node(
                     value, branch, route_for, path, visited,
                 ) {
@@ -804,6 +835,69 @@ mod tests {
         assert!(value.get("next").is_none());
         crate::tool_runtime::startup_brief::validate_schema_instance_for_test(&value, &schema)
             .expect("removing a mismatched optional generated edge must stay schema-valid");
+    }
+
+    #[test]
+    fn continuation_follow_ups_use_current_routes_in_both_schema_and_value() {
+        use webcodex_core::runtime_contract::GeneratedFollowUpKind::FallbackRecovery;
+        for (target, arguments, available) in [
+            (
+                "wait_for_job_terminal",
+                json!({"job_id":"wc_job_exact", "idempotency_key":"wait-once"}),
+                true,
+            ),
+            (
+                "wait_for_agent_events",
+                json!({
+                    "agent_id":"wc_dagent_qqqqqqqqqqqqqqqq", "endpoint_id":"wc_endpoint_qqqqqqqqqqqqqqqq",
+                    "expected_controller_generation":1, "events":[{"kind":"agent_task_terminal", "task_id":"wc_agent_task_qqqqqqqqqqqqqqqq"}],
+                    "idempotency_key":"wait-once"
+                }),
+                true,
+            ),
+            (
+                "present_job_terminal_continuation",
+                json!({"wait_id":"wc_job_wait_qqqqqqqqqqqqqqqq"}),
+                false,
+            ),
+            (
+                "present_agent_continuation",
+                json!({
+                    "agent_id":"wc_dagent_qqqqqqqqqqqqqqqq", "endpoint_id":"wc_endpoint_qqqqqqqqqqqqqqqq", "expected_controller_generation":1
+                }),
+                false,
+            ),
+        ] {
+            let input = webcodex_tool_contracts::input_schema_for_tool(target);
+            crate::tool_runtime::ToolCall::from_tool_name(target, arguments.clone()).unwrap();
+            let mut schema = json!({
+                "type":"object", "additionalProperties":false,
+                "properties":{"next":webcodex_tool_contracts::suggested_tool_call_schema(FallbackRecovery, target, input, "continuation edge")},
+                "required":["next"]
+            });
+            let mut value = json!({"next":{"follow_up_kind":"fallback_recovery", "tool":target, "arguments":arguments}});
+            project_suggested_tool_calls_in_value(&mut value, &schema, &|name| {
+                suggested_tool_call_route(name, false)
+            });
+            project_suggested_tool_call_schema(&mut schema, &|name| {
+                suggested_tool_call_route(name, false)
+            });
+            if available {
+                assert_eq!(value["next"]["tool"], ADAPTIVE_RUNTIME_GATEWAY_TOOL_NAME);
+                assert_eq!(value["next"]["arguments"]["tool"], target);
+                assert_eq!(value["next"]["arguments"]["arguments"], arguments);
+                assert_eq!(
+                    schema["properties"]["next"]["properties"]["tool"]["const"],
+                    ADAPTIVE_RUNTIME_GATEWAY_TOOL_NAME
+                );
+            } else {
+                assert!(value.get("next").is_none(), "{target}");
+                assert!(schema["properties"].get("next").is_none(), "{target}");
+                assert_eq!(schema["required"], json!([]));
+            }
+            crate::tool_runtime::startup_brief::validate_schema_instance_for_test(&value, &schema)
+                .unwrap();
+        }
     }
 
     #[test]

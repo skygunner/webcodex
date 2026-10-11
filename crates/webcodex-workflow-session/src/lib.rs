@@ -11,6 +11,7 @@ mod events;
 mod handoff_brief;
 #[cfg(test)]
 mod handoff_brief_tests;
+mod incarnation;
 mod messages;
 mod model;
 mod persistence;
@@ -30,6 +31,8 @@ mod session_context_tests;
 mod session_lifecycle_tests;
 #[cfg(test)]
 mod session_store_tests;
+#[cfg(test)]
+mod session_tombstone_tests;
 
 pub use closeout::closeout_work_projection;
 pub use console::{
@@ -57,26 +60,28 @@ pub use handoff_brief::{
     HANDOFF_CHANGED_PATHS_MAX_ITEMS, HANDOFF_INSTRUCTION_MAX_CHARS, HANDOFF_NEXT_ACTIONS_MAX_ITEMS,
     HANDOFF_OPEN_FAILURES_MAX_ITEMS, HANDOFF_RECENT_FILES_MAX_ITEMS,
 };
+pub use incarnation::workflow_session_incarnation_fingerprint;
 pub use model::{
     CodingSessionError, CodingSessionRequest, CompleteSessionMessageInput,
     ListSessionMessagesFilter, PostSessionMessageInput, ReplaceSessionMessageInput,
-    SessionAckObservation, SessionCloseError, SessionCreateOptions, SessionDiscussionCounts,
-    SessionDiscussionSummary, SessionEvent, SessionExecutionContext,
-    SessionExecutionContextUpdateError, SessionGuardDenial, SessionGuards, SessionLifecycle,
-    SessionLifecycleDenial, SessionMessage, SessionMessageDelivery, SessionMessageDeliveryOutcome,
-    SessionMessageDeliveryReplay, SessionMessageError, SessionMessageKind,
-    SessionMessageObservationError, SessionMessagePriority, SessionMessageStatus, SessionSummary,
-    SessionTransport, ToolCallExpectation, ToolCallRecorderMetadata,
-    ToolCallSessionMessageResolution, ToolCallStart, DEFAULT_MAX_EVENTS_PER_SESSION,
-    DEFAULT_MAX_RETAINED_CLOSED_SESSIONS, DEFAULT_MAX_SESSIONS, MAX_CODING_INSTRUCTION_CHARS,
-    MAX_MESSAGE_CHARS, MAX_MESSAGE_COMPLETION_KEY_CHARS, MAX_MESSAGE_DELIVERY_KEY_CHARS,
-    MAX_MESSAGE_LIST_LIMIT, MAX_MESSAGE_RESOLUTION_CHARS, MAX_MESSAGE_TAGS, MAX_MESSAGE_TAG_CHARS,
-    MAX_MODEL_VALIDATION_ASSERTION_NAME_CHARS, MAX_TOOL_CALL_ACK_MESSAGE_IDS,
-    MAX_TOOL_CALL_ACK_REF_CHARS, SESSION_INBOX_ACK_REQUIRED_ATTENTION_INSTRUCTION,
-    SESSION_INBOX_ACK_REQUIRED_ATTENTION_REASON, TOOL_ACCEPTED_EXIT_CODES_FIELD,
-    TOOL_ASSERTION_NAME_FIELD, TOOL_CALL_ACK_REF_FIELD, TOOL_CALL_ACK_SESSION_MESSAGE_IDS_FIELD,
-    TOOL_CALL_RECORDING_SESSION_ID_FIELD, TOOL_CALL_SESSION_MESSAGE_RESOLUTION_FIELD,
-    TOOL_EXPECTATION_RESULT_UNEXPECTED_FAILURE, TOOL_RESULT_EXPECTATION_FIELD,
+    SessionAckObservation, SessionCloseError, SessionCreateOptions, SessionDiscoveryItem,
+    SessionDiscoveryPage, SessionDiscussionCounts, SessionDiscussionSummary, SessionEvent,
+    SessionExecutionContext, SessionExecutionContextUpdateError, SessionGuardDenial, SessionGuards,
+    SessionLifecycle, SessionLifecycleDenial, SessionMessage, SessionMessageDelivery,
+    SessionMessageDeliveryOutcome, SessionMessageDeliveryReplay, SessionMessageError,
+    SessionMessageKind, SessionMessageObservationError, SessionMessagePriority,
+    SessionMessageStatus, SessionRetentionTombstone, SessionSummary, SessionTransport,
+    ToolCallExpectation, ToolCallRecorderMetadata, ToolCallSessionMessageResolution, ToolCallStart,
+    DEFAULT_MAX_EVENTS_PER_SESSION, DEFAULT_MAX_RETAINED_CLOSED_SESSIONS, DEFAULT_MAX_SESSIONS,
+    MAX_CODING_INSTRUCTION_CHARS, MAX_MESSAGE_CHARS, MAX_MESSAGE_COMPLETION_KEY_CHARS,
+    MAX_MESSAGE_DELIVERY_KEY_CHARS, MAX_MESSAGE_LIST_LIMIT, MAX_MESSAGE_RESOLUTION_CHARS,
+    MAX_MESSAGE_TAGS, MAX_MESSAGE_TAG_CHARS, MAX_MODEL_VALIDATION_ASSERTION_NAME_CHARS,
+    MAX_TOOL_CALL_ACK_MESSAGE_IDS, MAX_TOOL_CALL_ACK_REF_CHARS,
+    SESSION_INBOX_ACK_REQUIRED_ATTENTION_INSTRUCTION, SESSION_INBOX_ACK_REQUIRED_ATTENTION_REASON,
+    TOOL_ACCEPTED_EXIT_CODES_FIELD, TOOL_ASSERTION_NAME_FIELD, TOOL_CALL_ACK_REF_FIELD,
+    TOOL_CALL_ACK_SESSION_MESSAGE_IDS_FIELD, TOOL_CALL_RECORDING_SESSION_ID_FIELD,
+    TOOL_CALL_SESSION_MESSAGE_RESOLUTION_FIELD, TOOL_EXPECTATION_RESULT_UNEXPECTED_FAILURE,
+    TOOL_RESULT_EXPECTATION_FIELD,
 };
 pub use store::SessionStore;
 pub use util::redact_and_bound_instruction;
@@ -104,3 +109,6 @@ pub mod root_test_support {
     pub use crate::persistence::write_ledger_atomic;
     pub use webcodex_core::workflow_session_contract::TOOL_CALL_EXPECTATION_METADATA_FIELDS;
 }
+
+#[cfg(test)]
+mod discovery_tests;

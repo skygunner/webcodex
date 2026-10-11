@@ -269,6 +269,9 @@ pub async fn tools_call(req: &mut Request, depot: &mut Depot, res: &mut Response
             return;
         }
     };
+    if let Some(tool) = body.get("tool").and_then(Value::as_str) {
+        guard.capture_request_diagnostic(tool, body.get("params").unwrap_or(&body));
+    }
     let (tool, params) = match extract_tool_call(&body) {
         Ok(pair) => pair,
         Err(msg) => {
@@ -854,6 +857,29 @@ pub async fn runtime_status(req: &mut Request, depot: &mut Depot, res: &mut Resp
 #[cfg(all(test, feature = "legacy-gpt-actions"))]
 mod job_action_routing_tests {
     use super::*;
+
+    #[test]
+    fn frozen_endpoint_name_keeps_legacy_admission_and_canonical_audit_parity() {
+        use crate::tool_runtime::tool_audit::ToolCallAuditProjection;
+        let gateway = crate::model_surface::ADAPTIVE_RUNTIME_GATEWAY_TOOL_NAME;
+        assert!(gpt_action_admit_target(gateway, "attach_agent_endpoint").is_ok());
+        assert!(gpt_action_admit_target(gateway, "rotate_agent_continuation_endpoint").is_err());
+        let args = serde_json::json!({
+            "agent_id":"wc_dagent_qqqqqqqqqqqqqqqq", "host":"ChatGPT",
+            "client_attachment_id":"exact-window", "idempotency_key":"legacy-endpoint"
+        });
+        let legacy = ToolCall::from_tool_name("attach_agent_endpoint", args.clone()).unwrap();
+        let canonical =
+            ToolCall::from_tool_name("rotate_agent_continuation_endpoint", args).unwrap();
+        assert_eq!(
+            legacy.session_log_arguments(),
+            canonical.session_log_arguments()
+        );
+        assert_eq!(
+            gpt_action_suggested_tool_call_route("attach_agent_endpoint"),
+            crate::model_surface::SuggestedToolCallRoute::Gateway(gateway)
+        );
+    }
 
     #[test]
     fn stop_job_actions_admission_and_followup_use_definition_owned_gateway_policy() {

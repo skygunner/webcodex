@@ -348,7 +348,7 @@ def validate_public_manifest(manifest: dict, version: str) -> dict[str, dict[str
 
 def validate_public_installers(manifest: dict, version: str) -> dict[str, dict[str, str]]:
     installers = manifest.get("installers")
-    if installers is None:
+    if "installers" not in manifest:
         return {}
     if not isinstance(installers, dict) or set(installers) != set(INSTALLER_TARGETS):
         raise VerificationError("release manifest installers must contain exactly the eight installer targets")
@@ -905,7 +905,7 @@ def verify_supplemental_desktop_asset(
     )
 
 
-def verify_public_release(version: str, timeout: float) -> None:
+def verify_public_release(version: str, timeout: float, *, require_unified_installers: bool = False) -> None:
     encoded_package = urllib.parse.quote(PACKAGE, safe="@")
     npm_url = f"https://registry.npmjs.org/{encoded_package}/{version}"
     npm_metadata = fetch_json(npm_url, timeout)
@@ -917,7 +917,7 @@ def verify_public_release(version: str, timeout: float) -> None:
 
     release_url = f"https://api.github.com/repos/{REPO}/releases/tags/v{version}"
     release = fetch_json(release_url, timeout)
-    assets = validate_github_assets(release, version)
+    assets = validate_github_assets(release, version, unified_installers=True if require_unified_installers else None)
 
     with tempfile.TemporaryDirectory(prefix=f"webcodex-v{version}-verify-") as temp:
         root = Path(temp)
@@ -929,6 +929,8 @@ def verify_public_release(version: str, timeout: float) -> None:
             raise VerificationError("published npm tarball has the wrong package/version")
         manifest_artifacts = validate_public_manifest(manifest, version)
         manifest_installers = validate_public_installers(manifest, version)
+        if require_unified_installers and not manifest_installers:
+            raise VerificationError("required unified installer contract is missing")
         if bool(manifest_installers) != any(name.startswith(f"webcodex-unified-v{version}-") for name in assets):
             raise VerificationError("GitHub installer assets and npm manifest disagree")
 
@@ -1098,13 +1100,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Verify published WebCodex npm/GitHub release bytes on one network host."
     )
+    parser.add_argument("--require-unified-installers", action="store_true")
     parser.add_argument("version", help="release version, for example 0.3.8 or v0.3.8")
     parser.add_argument("--timeout", type=float, default=60.0, help="per-request timeout in seconds")
     args = parser.parse_args()
     version = normalize_version(args.version)
     if args.timeout <= 0 or args.timeout > 300:
         raise VerificationError("--timeout must be in (0, 300]")
-    verify_public_release(version, args.timeout)
+    verify_public_release(version, args.timeout, require_unified_installers=args.require_unified_installers)
     return 0
 
 

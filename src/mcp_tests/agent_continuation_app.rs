@@ -231,7 +231,7 @@ fn post_message(
 }
 
 #[tokio::test]
-async fn agent_continuation_app_surface_is_sparse_app_only_and_resource_backed() {
+async fn agent_continuation_app_surface_is_sparse_app_only_without_rendering_bindings() {
     assert_eq!(
         MCP_AGENT_CONTINUATION_UI_RESOURCE_URI,
         "ui://webcodex/agent-continuation/v17"
@@ -252,20 +252,8 @@ async fn agent_continuation_app_surface_is_sparse_app_only_and_resource_backed()
     let McpOutcome::Ok(ui) = ui else {
         panic!("expected UI tools/list")
     };
-    let present = tool(&ui["result"], "present_agent_continuation")
-        .expect("present_agent_continuation must remain a card-creating entry");
-    let wait = tool(&ui["result"], "wait_for_agent_events")
-        .expect("wait_for_agent_events must be a descriptor-time continuation card entry");
-    assert_eq!(
-        present.pointer("/_meta/ui/resourceUri"),
-        Some(&json!(MCP_AGENT_CONTINUATION_UI_RESOURCE_URI))
-    );
-    assert!(present.pointer("/_meta/ui/visibility").is_none());
-    assert_eq!(
-        wait.pointer("/_meta/ui/resourceUri"),
-        Some(&json!(MCP_AGENT_CONTINUATION_UI_RESOURCE_URI))
-    );
-    assert!(wait.pointer("/_meta/ui/visibility").is_none());
+    assert!(tool(&ui["result"], "present_agent_continuation").is_none());
+    assert!(tool(&ui["result"], "wait_for_agent_events").is_none());
     let bound_tools: Vec<_> = ui["result"]["tools"]
         .as_array()
         .unwrap()
@@ -277,21 +265,17 @@ async fn agent_continuation_app_surface_is_sparse_app_only_and_resource_backed()
         })
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(bound_tools.len(), APP_TOOLS.len() + 2);
-    assert!(bound_tools.contains(&"present_agent_continuation"));
-    assert!(bound_tools.contains(&"wait_for_agent_events"));
+    assert!(bound_tools.is_empty());
     for name in APP_TOOLS {
         let descriptor = tool(&ui["result"], name).unwrap_or_else(|| panic!("missing {name}"));
         assert_eq!(
             descriptor.pointer("/_meta/ui/visibility"),
             Some(&json!(["app"]))
         );
-        assert_eq!(
-            descriptor.pointer("/_meta/ui/resourceUri"),
-            Some(&json!(MCP_AGENT_CONTINUATION_UI_RESOURCE_URI)),
-            "{name} must be associated with the continuation View for Host bridge calls"
+        assert!(
+            descriptor.pointer("/_meta/ui/resourceUri").is_none(),
+            "{name} is a bridge helper, not a rendering entrypoint"
         );
-        assert!(bound_tools.contains(&name));
         assert_eq!(
             descriptor.pointer("/inputSchema/properties/app_call_id/pattern"),
             Some(&json!("^wc_app_call_[0-9a-f]{16}_[1-9][0-9]{0,5}$")),
@@ -334,16 +318,8 @@ async fn agent_continuation_app_surface_is_sparse_app_only_and_resource_backed()
     let McpOutcome::Ok(plain) = plain else {
         panic!("expected plain tools/list")
     };
-    assert!(tool(&plain["result"], "present_agent_continuation").is_some());
-    assert!(tool(&plain["result"], "present_agent_continuation")
-        .unwrap()
-        .pointer("/_meta/ui/resourceUri")
-        .is_none());
-    assert!(tool(&plain["result"], "wait_for_agent_events").is_some());
-    assert!(tool(&plain["result"], "wait_for_agent_events")
-        .unwrap()
-        .pointer("/_meta/ui/resourceUri")
-        .is_none());
+    assert!(tool(&plain["result"], "present_agent_continuation").is_none());
+    assert!(tool(&plain["result"], "wait_for_agent_events").is_none());
     for name in APP_TOOLS {
         assert!(tool(&plain["result"], name).is_none());
     }
@@ -362,14 +338,8 @@ async fn agent_continuation_app_surface_is_sparse_app_only_and_resource_backed()
     let McpOutcome::Ok(disabled) = disabled else {
         panic!("expected disabled tools/list")
     };
-    assert!(tool(&disabled["result"], "present_agent_continuation")
-        .expect("presentation remains ordinary bounded read")
-        .pointer("/_meta/ui/resourceUri")
-        .is_none());
-    assert!(tool(&disabled["result"], "wait_for_agent_events")
-        .expect("Wait creation remains an ordinary model tool when Apps are unavailable")
-        .pointer("/_meta/ui/resourceUri")
-        .is_none());
+    assert!(tool(&disabled["result"], "present_agent_continuation").is_none());
+    assert!(tool(&disabled["result"], "wait_for_agent_events").is_none());
     for name in APP_TOOLS {
         assert!(tool(&disabled["result"], name).is_none());
     }
@@ -1107,27 +1077,17 @@ async fn agent_continuation_app_protocol_uses_standard_result_without_model_proj
         "continuation-conversation",
     );
 
-    let present = handle_with_server_apps_enabled(
-        &runtime,
-        rpc(
-            "tools/call",
-            Some(json!(5201)),
-            mcp_2026_ui_params(json!({
-                "name": "present_agent_continuation",
-                "arguments": {
-                    "agent_id": receiver,
-                    "endpoint_id": receiver_endpoint,
-                    "expected_controller_generation": receiver_generation
-                }
-            })),
-        ),
+    // Exercise the retained domain projection without advertising a new model
+    // presentation entry. Existing App protocol calls below remain real MCP.
+    let present = runtime.present_agent_continuation(
         Some(&owner),
-        true,
-    )
-    .await;
-    let McpOutcome::Ok(present) = present else {
-        panic!("presentation failed")
-    };
+        receiver.clone(),
+        receiver_endpoint.clone(),
+        receiver_generation,
+    );
+    let present = json!({"result": super::super::tools::mcp_runtime_tool_result(
+        "present_agent_continuation", false, present,
+    )});
     assert_eq!(present["result"]["structuredContent"]["success"], true);
     assert_eq!(
         present["result"]["structuredContent"]["output"]["agent_continuation"]["display_name"],
@@ -1426,28 +1386,13 @@ async fn all_agent_wait_mcp_automatic_message_is_compact_and_guides_authoritativ
     let (watcher_endpoint, watcher_generation) =
         attach(&runtime, &owner, &watcher, "continuation-all-wait-endpoint");
 
-    let present = handle_with_server_apps_enabled(
-        &runtime,
-        rpc(
-            "tools/call",
-            Some(json!(5301)),
-            mcp_2026_ui_params(json!({
-                "name": "present_agent_continuation",
-                "arguments": {
-                    "agent_id": watcher,
-                    "endpoint_id": watcher_endpoint,
-                    "expected_controller_generation": watcher_generation
-                }
-            })),
-        ),
+    let present = runtime.present_agent_continuation(
         Some(&owner),
-        true,
-    )
-    .await;
-    let McpOutcome::Ok(present) = present else {
-        panic!("ALL Wait continuation presentation failed")
-    };
-    assert_eq!(present["result"]["structuredContent"]["success"], true);
+        watcher.clone(),
+        watcher_endpoint.clone(),
+        watcher_generation,
+    );
+    assert!(present.success, "retained ALL Wait projection: {present:?}");
 
     let bind = handle_with_server_apps_enabled(
         &runtime,
@@ -1671,28 +1616,16 @@ async fn goal_scoped_agent_wait_mcp_message_names_goal_and_authoritative_rereads
         "continuation-goal-scoped-endpoint",
     );
 
-    let present = handle_with_server_apps_enabled(
-        &runtime,
-        rpc(
-            "tools/call",
-            Some(json!(5401)),
-            mcp_2026_ui_params(json!({
-                "name": "present_agent_continuation",
-                "arguments": {
-                    "agent_id": controller,
-                    "endpoint_id": controller_endpoint,
-                    "expected_controller_generation": controller_generation
-                }
-            })),
-        ),
+    let present = runtime.present_agent_continuation(
         Some(&owner),
-        true,
-    )
-    .await;
-    let McpOutcome::Ok(present) = present else {
-        panic!("Goal-scoped Wait continuation presentation failed")
-    };
-    assert_eq!(present["result"]["structuredContent"]["success"], true);
+        controller.clone(),
+        controller_endpoint.clone(),
+        controller_generation,
+    );
+    assert!(
+        present.success,
+        "retained Goal-scoped Wait projection: {present:?}"
+    );
 
     let bind = handle_with_server_apps_enabled(
         &runtime,

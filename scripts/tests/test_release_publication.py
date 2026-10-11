@@ -640,8 +640,43 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertNotIn('rustc -vV | grep -Fxq "host:', workflow)
         self.assertNotIn('file "$binary" | grep -Fq "$EXPECTED_FILE_ARCH"', workflow)
 
+    def test_public_macos_release_requires_persistent_signing_and_finalization(self) -> None:
+        for path in ("release-build.yml", "release-desktop-darwin-x64.yml"):
+            workflow = Path(".github/workflows", path).read_text()
+            self.assertIn("macos_ci_signing_setup.sh", workflow)
+            self.assertIn("vars.MACOS_SIGNING_MODE || 'self-signed'", workflow)
+            self.assertIn("vars.MACOS_CERTIFICATE_SHA1", workflow)
+            self.assertIn("secrets.MACOS_SIGNING_P12", workflow)
+            self.assertIn("macos_finalize_dmg.sh", workflow)
+            self.assertIn("security delete-keychain", workflow)
+            self.assertIn("if: always()", workflow)
+            self.assertNotIn('export APPLE_SIGNING_IDENTITY="-"', workflow)
+        primary = Path(".github/workflows/release-build.yml").read_text()
+        self.assertIn("macos_finalize_desktop.sh", primary)
+        self.assertIn("public release requires persistent signing identity", primary)
+
+    def test_supplemental_macos_intel_tracks_release_identity_generation(self) -> None:
+        supplemental = Path(".github/workflows/release-desktop-darwin-x64.yml").read_text(encoding="utf-8")
+
+        self.assertIn('expected_commit="$SOURCE_SHA"', supplemental)
+        self.assertIn('core < (0, 4, 4)', supplemental)
+        self.assertIn('expected_commit="$SOURCE_SHORT"', supplemental)
+        self.assertIn(
+            'expected_version="$name $VERSION (commit $expected_commit, dirty=false, built_at=$WEBCODEX_BUILT_AT)"',
+            supplemental,
+        )
+        self.assertNotIn(
+            'expected_version="$name $VERSION (commit $SOURCE_SHORT, dirty=false, built_at=$WEBCODEX_BUILT_AT)"',
+            supplemental,
+        )
+
     def test_release_build_stages_desktop_candidates_in_workspace_dist(self) -> None:
         workflow = Path(".github/workflows/release-build.yml").read_text(encoding="utf-8")
+
+        self.assertIn('Get-Content -LiteralPath "apps/desktop/src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json', workflow)
+        self.assertIn('$tauriConfig.mainBinaryName', workflow)
+        self.assertIn('(\"release\\{0}.exe\" -f $tauriConfig.mainBinaryName)', workflow)
+        self.assertNotIn('"release\\webcodex-desktop.exe"', workflow)
 
         self.assertIn('desktop_dist="$GITHUB_WORKSPACE/dist"', workflow)
         self.assertIn('desktop="$desktop_dist/${{ steps.desktop_bundle.outputs.desktop_name }}"', workflow)
@@ -671,6 +706,56 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertNotIn('desktop="dist/${{ steps.desktop_bundle.outputs.desktop_name }}"', workflow)
         self.assertNotIn('$installer = Join-Path "dist" $env:DESKTOP_INSTALLER_NAME', workflow)
         self.assertNotIn('-Installer (Join-Path "dist" $env:DESKTOP_INSTALLER_NAME)', workflow)
+
+    def test_release_build_pins_full_source_identity_and_fences_generated_inputs(self) -> None:
+        workflow = Path(".github/workflows/release-build.yml").read_text(encoding="utf-8")
+        windows_stage = Path("scripts/prepare_desktop_bundle.ps1").read_text(encoding="utf-8")
+        windows_smoke = Path("scripts/desktop_install_windows_smoke.ps1").read_text(encoding="utf-8")
+        mac_stage = Path("scripts/prepare_desktop_bundle_macos.py").read_text(encoding="utf-8")
+        mac_smoke = Path("scripts/desktop_install_macos_smoke.sh").read_text(encoding="utf-8")
+
+        self.assertGreaterEqual(
+            workflow.count("WEBCODEX_GIT_COMMIT: ${{ needs.prepare.outputs.source_sha }}"), 4
+        )
+        self.assertGreaterEqual(workflow.count("WEBCODEX_GIT_DIRTY: 'false'"), 4)
+        self.assertGreaterEqual(workflow.count("-e WEBCODEX_GIT_COMMIT"), 2)
+        self.assertNotIn("$shortCommit", workflow)
+        self.assertNotIn('short_commit="$(git rev-parse --short=12 HEAD)"', workflow)
+        self.assertIn(
+            'expected="$name $VERSION (commit $SOURCE_SHA, dirty=false, built_at=$WEBCODEX_BUILT_AT)"',
+            workflow,
+        )
+        self.assertIn(
+            '$expected = "$name $env:VERSION (commit $env:SOURCE_SHA, dirty=false, built_at=$env:WEBCODEX_BUILT_AT)"',
+            workflow,
+        )
+
+        unified = workflow.index("  unified-native:")
+        fence = workflow.index("Fence exact clean source before generated inputs", unified)
+        download = workflow.index("path: runtime-input", unified)
+        self.assertLess(fence, download)
+        windows = workflow.index("  windows:")
+        self.assertGreater(fence, windows)
+        self.assertNotIn('[ -z "$(git status --porcelain --untracked-files=all)" ]\n              mkdir -p native-input', workflow)
+
+        self.assertIn("$sourceIdentity = $SourceSha.ToLowerInvariant()", windows_stage)
+        self.assertIn("commit $sourceIdentity", windows_stage)
+        self.assertIn("$sourceIdentity = $SourceSha.ToLowerInvariant()", windows_smoke)
+        self.assertIn("commit $sourceIdentity", windows_smoke)
+        self.assertIn("source_identity = args.source_sha.lower()", mac_stage)
+        self.assertIn("commit {source_identity}", mac_stage)
+        self.assertIn('source_identity="$(printf \'%s\' "$source_sha"', mac_smoke)
+        self.assertIn("commit $source_identity", mac_smoke)
+
+        ci = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+        self.assertIn('export WEBCODEX_GIT_COMMIT="$source_sha"', ci)
+        self.assertIn('export WEBCODEX_GIT_DIRTY=false', ci)
+        self.assertIn('expected="$name $version (commit $source_sha, dirty=false, built_at=$built_at)"', ci)
+        self.assertIn('$env:WEBCODEX_GIT_COMMIT = $source', ci)
+        self.assertIn('$env:WEBCODEX_GIT_DIRTY = "false"', ci)
+        self.assertIn('$expected = "$name $version (commit $source, dirty=false, built_at=$builtAt)"', ci)
+        self.assertNotIn('expected="$name $version (commit $short_source, dirty=false, built_at=$built_at)"', ci)
+        self.assertNotIn('$expected = "$name $version (commit $short, dirty=false, built_at=$builtAt)"', ci)
 
     def test_server_image_publication_is_separate_and_multi_arch(self) -> None:
         candidate = Path(".github/workflows/release-build.yml").read_text(encoding="utf-8")

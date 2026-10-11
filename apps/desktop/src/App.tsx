@@ -3,7 +3,7 @@ import { WorkspaceProvider } from "./features/workspace/WorkspaceContext";
 import { Alert, Button } from "@mantine/core";
 import { DesktopMantineProvider } from "./components/DesktopMantineProvider";
 import { BrandMark } from "../../../frontend/src/ui/BrandMark";
-import { ExtensionsPanel } from "./features/extensions/ExtensionsPanel";
+import { ExtensionsPanel, type ExtensionTab } from "./features/extensions/ExtensionsPanel";
 import { ComputerPermissions } from "./features/settings/ComputerPermissions";
 import { Sidebar } from "./components/Sidebar";
 import { useDesktopWorkspace } from "./hooks/useDesktopWorkspace";
@@ -21,6 +21,7 @@ import { ProjectsPanel } from "./features/projects/ProjectsPanel";
 import { ConnectionPanel } from "./features/connection/ConnectionPanel";
 import { ActivityPanel } from "./features/activity/ActivityPanel";
 import { SettingsPanel } from "./features/settings/SettingsPanel";
+import { RuntimeConsolePanel } from "./features/console/RuntimeConsolePanel";
 import { useLocale } from "./i18n/locale";
 import { desktopCommandDiagnostics, desktopErrorPresentation, operationLabel } from "./i18n/presentation";
 
@@ -31,10 +32,11 @@ export default function App() {
 function DesktopApp() {
   const { t } = useLocale();
   const s = useShellText();
-  const [settingsSection, setSettingsSection] = useState<"diagnostics" | "runtime" | undefined>();
-  const { state, activity, navigation, setNavigation, refreshing, error, setError, cancelSubmittingId, showSetup, setShowSetup, setStartupAttempt, mainRef, commitState, openSetup, refresh, resumeRuntime, cancelCurrentOperation, runStateOperation } = useDesktopWorkspace();
+  const [extensionTab, setExtensionTab] = useState<ExtensionTab>();
+  const [settingsSection, setSettingsSection] = useState<"diagnostics" | "runtime" | "network" | "access" | undefined>();
+  const { state, activity, navigation, setNavigation, refreshing, preserveWorkspacePollDeadline, error, setError, cancelSubmittingId, showSetup, setShowSetup, setStartupAttempt, mainRef, commitState, openSetup, refresh, resumeRuntime, cancelCurrentOperation, runStateOperation } = useDesktopWorkspace();
   const updates = useRuntimeUpdates(Boolean(state && !state.current_operation && !state.configuration_issue));
-  const openSettings = (section: "diagnostics" | "runtime") => { setSettingsSection(section); setNavigation("settings"); };
+  const openSettings = (section: "diagnostics" | "runtime" | "network" | "access") => { setSettingsSection(section); setNavigation("settings"); };
   if (!state) {
     return (
       <main className="splash">
@@ -64,7 +66,7 @@ function DesktopApp() {
   const needsSetup = !state.topology || showSetup;
 
   return (
-    <WorkspaceProvider state={state}><div className="app-shell">
+    <WorkspaceProvider state={state} suspended={refreshing} preservePollDeadline={preserveWorkspacePollDeadline}><div className="app-shell">
       <Sidebar state={state} navigation={navigation} setNavigation={setNavigation} />
 
       <main className="main-content" ref={mainRef} tabIndex={-1}>
@@ -108,10 +110,10 @@ function DesktopApp() {
             )}
           </section>
         )}
-        {error && <><AppError error={error} /><div className="shell-actions"><button type="button" className="secondary-button" onClick={() => openSettings("diagnostics")}>{s("Diagnostics")}</button><button type="button" className="text-button" onClick={() => openSettings("runtime")}>{s("Select another Runtime")}</button></div></>}
+        {error && !(navigation === "home" && state.runtime_error?.code === error.code) && <><AppError error={error} /><div className="shell-actions"><button type="button" className="secondary-button" onClick={() => openSettings("diagnostics")}>{s("Diagnostics")}</button><button type="button" className="text-button" onClick={() => openSettings("runtime")}>{s("Select another Runtime")}</button></div></>}
         {navigation !== "settings" && <ComputerPermissions welcome />}
         {navigation === "home" && <UpdateBanner updates={updates} />}
-        {navigation === "home" && (state.topology || state.configuration_issue) && <ReadinessBanner state={state} onState={commitState} onDiagnostics={() => openSettings("diagnostics")} onRuntime={() => openSettings("runtime")} onConnection={() => setNavigation("connection")} />}
+        {navigation === "home" && (state.topology || state.configuration_issue || state.runtime_error) && <ReadinessBanner state={state} onState={commitState} onDiagnostics={() => openSettings("diagnostics")} onRuntime={() => openSettings("runtime")} onConnection={() => setNavigation("connection")} onProviders={kind => { setExtensionTab(kind === "mcp" ? "mcpProviders" : "codingAgents"); setNavigation("extensions"); }} />}
         {navigation === "home" && !state.configuration_issue && (needsSetup ? (
           <FirstRun
             state={state}
@@ -123,21 +125,21 @@ function DesktopApp() {
           <Dashboard
             state={state}
             refreshing={refreshing}
-            onRefresh={() => void refresh()}
+            onRefresh={refresh}
             onResumeRuntime={() => void resumeRuntime()}
             onChangeSetup={openSetup}
             onNavigate={setNavigation}
             onStopQuickShare={() => void runStateOperation(desktopApi.stopQuickShare)}
-            onStopRuntime={() => void runStateOperation(desktopApi.stopLocalRuntime)}
           />
         ))}
         {navigation === "projects" && (
-          <ProjectsPanel />
+          <ProjectsPanel onComputerSettings={() => openSettings("access")} onState={commitState} />
         )}
-        {navigation === "connection" && <ConnectionPanel state={state} onState={commitState} />}
+        {navigation === "connection" && <ConnectionPanel state={state} onState={commitState} onSettings={openSettings} />}
         {navigation === "activity" && <ActivityPanel activity={activity} />}
-        {navigation === "extensions" && <ExtensionsPanel state={state} onState={commitState} />}
-        {navigation === "settings" && <SettingsPanel state={state} onState={commitState} onChangeSetup={openSetup} onStopRuntime={() => void runStateOperation(desktopApi.stopLocalRuntime)} initialSection={settingsSection} onActivity={() => setNavigation("activity")} updates={updates} />}
+        {navigation === "extensions" && <ExtensionsPanel state={state} onState={commitState} initialTab={extensionTab} />}
+        {navigation === "console" && <RuntimeConsolePanel state={state} onSettings={() => openSettings("runtime")} />}
+        {navigation === "settings" && <SettingsPanel state={state} onState={commitState} onChangeSetup={openSetup} onStopRuntime={() => void runStateOperation(desktopApi.stopLocalRuntime)} initialSection={settingsSection} onActivity={() => setNavigation("activity")} onConnection={() => setNavigation("connection")} updates={updates} />}
       </main>
     </div></WorkspaceProvider>
   );

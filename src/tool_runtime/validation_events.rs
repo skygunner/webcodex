@@ -21,7 +21,7 @@ use webcodex_workflow_session::{
 };
 
 use super::session_context::{
-    session_project_mismatch_result, unknown_session_result, SessionProjectMismatch,
+    absent_workflow_session_result, session_project_mismatch_result, SessionProjectMismatch,
 };
 use super::{ToolResult, ToolRuntime};
 use crate::auth::AuthContext;
@@ -63,7 +63,7 @@ impl ToolRuntime {
             .sessions
             .summary(&session_id, Some(PUBLIC_VALIDATION_SESSION_EVENT_LIMIT))
         else {
-            return unknown_session_result(&session_id);
+            return absent_workflow_session_result(&self.sessions, &session_id, auth);
         };
         if summary.project.as_deref() != Some(resolved.resolved_id.as_str()) {
             let mismatch = SessionProjectMismatch {
@@ -384,10 +384,26 @@ impl ToolRuntime {
                 validation_passed,
                 assertion_name,
             ) = if let Some(validation) = validation {
-                let Some(tool_name) = validation
-                    .get("tool")
-                    .and_then(Value::as_str)
-                    .filter(|tool| validation_adapter_for_tool(tool).is_some())
+                let Some(tool_name) =
+                    validation
+                        .get("tool")
+                        .and_then(Value::as_str)
+                        .filter(|tool| {
+                            *tool == "project_validate"
+                                || validation_adapter_for_tool(tool).is_some()
+                        })
+                else {
+                    continue;
+                };
+                // Portable validation retains its wrapper tool identity; the
+                // verified Job metadata supplies its read-only adapter separately.
+                let adapter = if tool_name == "project_validate" {
+                    validation.get("adapter").and_then(Value::as_str)
+                } else {
+                    Some(tool_name)
+                };
+                let Some(adapter) =
+                    adapter.filter(|adapter| validation_adapter_for_tool(adapter).is_some())
                 else {
                     continue;
                 };
@@ -401,7 +417,7 @@ impl ToolRuntime {
                 (
                     tool_name,
                     identity,
-                    Some(tool_name),
+                    Some(adapter),
                     validation.get("passed").and_then(Value::as_bool),
                     None,
                 )
@@ -449,6 +465,9 @@ impl ToolRuntime {
             };
             if let Some(validation) = validation {
                 for field in [
+                    "adapter",
+                    "backend",
+                    "action",
                     "passed",
                     "warnings_count",
                     "errors_count",

@@ -8,8 +8,8 @@
 use super::tool_inputs::CheckpointValidationInput;
 use super::tool_inputs::{
     default_true, deserialize_optional_coding_guidance_profile, ApplyFileChangeInput,
-    CodingGuidanceProfile, ExecutionPurpose, ExecutionShell, GoalLifecycleInput, SessionMode,
-    WorkOnProjectMode,
+    CodingGuidanceProfile, ExecutionPurpose, ExecutionShell, GoalLifecycleInput,
+    SessionLifecycleInput, SessionMode, WorkOnProjectMode,
 };
 use crate::{lookup_tool_definition, model_visible_tool_names_csv};
 use schemars::JsonSchema;
@@ -48,6 +48,15 @@ pub const TOOL_CALL_WRAPPER_FIELDS: &[&str] = &[TOOL_CALL_TOOL_FIELD, TOOL_CALL_
 /// Compact model-facing form of one exact Agent continuation tuple.
 /// The server stores the mapping. This text is not a credential.
 pub const AGENT_CONTINUATION_REF_PATTERN: &str = "^~ac[1-9][0-9]{0,18}$";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WebcodexResourceKind {
+    Project,
+    File,
+    Goal,
+    Artifact,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -438,13 +447,7 @@ fn deserialize_optional_read_revision<'de, D>(deserializer: D) -> Result<Option<
 where
     D: serde::Deserializer<'de>,
 {
-    let revision = u64::deserialize(deserializer)?;
-    if !(1..=9_007_199_254_740_991_u64).contains(&revision) {
-        return Err(serde::de::Error::custom(
-            "expected_read_revision must be a positive JSON-safe integer",
-        ));
-    }
-    Ok(Some(revision))
+    crate::read_revision::deserialize(deserializer).map(Some)
 }
 
 fn deserialize_non_empty_job_id<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -854,7 +857,62 @@ impl BrowserKeyCall {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BrowserBatchOperation {
+    Click {
+        #[schemars(length(min = 1, max = 128))]
+        #[schemars(regex(pattern = "^element_[A-Za-z0-9_-]{16,64}$"))]
+        element_id: String,
+    },
+    InputText {
+        #[schemars(length(min = 1, max = 128))]
+        #[schemars(regex(pattern = "^element_[A-Za-z0-9_-]{16,64}$"))]
+        element_id: String,
+        #[schemars(length(min = 1, max = 4096))]
+        text: String,
+    },
+    SelectOption {
+        #[schemars(length(min = 1, max = 128))]
+        #[schemars(regex(pattern = "^element_[A-Za-z0-9_-]{16,64}$"))]
+        element_id: String,
+        /// Exact native option value or trimmed visible option text.
+        #[schemars(length(min = 1, max = 4096))]
+        option: String,
+    },
+    SetValue {
+        #[schemars(length(min = 1, max = 128))]
+        #[schemars(regex(pattern = "^element_[A-Za-z0-9_-]{16,64}$"))]
+        element_id: String,
+        /// Exact native form-control value, for example 2027-06 for input[type=month].
+        #[schemars(length(min = 1, max = 4096))]
+        value: String,
+    },
+    UploadFile {
+        #[schemars(length(min = 1, max = 128))]
+        #[schemars(regex(pattern = "^element_[A-Za-z0-9_-]{16,64}$"))]
+        element_id: String,
+        /// Authorized Runner project containing the file to upload.
+        #[schemars(length(min = 1, max = 512))]
+        project: String,
+        /// Project-relative path to one existing regular file.
+        #[schemars(length(min = 1, max = 4096))]
+        path: String,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BrowserActToolCall {
+    Batch {
+        #[schemars(length(min = 1, max = 128))]
+        client_id: String,
+        #[schemars(regex(pattern = "^browser_[A-Za-z0-9_-]{16,64}$"))]
+        browser_id: String,
+        #[schemars(regex(pattern = "^page_[A-Za-z0-9_-]{16,64}$"))]
+        page_id: String,
+        #[schemars(length(min = 1, max = 32))]
+        operations: Vec<BrowserBatchOperation>,
+    },
+
     Launch {
         #[schemars(length(min = 1, max = 128))]
         client_id: String,
@@ -1020,6 +1078,7 @@ impl BrowserActToolCall {
             Self::SelectOption { .. } => "select_option",
             Self::SetValue { .. } => "set_value",
             Self::UploadFile { .. } => "upload_file",
+            Self::Batch { .. } => "batch",
             Self::Key { .. } => "key",
             Self::ClearDiagnostics { .. } => "clear_diagnostics",
             Self::ClosePage { .. } => "close_page",
@@ -1434,7 +1493,9 @@ pub enum ToolCall {
     WorkOnProject {
         /// Existing Runtime Project selector. Prefer a Server-issued project_ref from prior bootstrap or
         /// discovery; canonical agent:<client_id>:<project_id>, client_id:project_id, and existing human
-        /// convenience forms remain accepted. Use project + instruction; do not combine with client_id/path.
+        /// convenience forms remain accepted. Required for fresh work unless client_id + path is supplied.
+        /// May be omitted for exact checkout resume with session_id; the authorized Session supplies its
+        /// bound Project, which is reauthorized. An explicit Project must still match. Do not combine with client_id/path.
         #[schemars(length(min = 1))]
         #[serde(default)]
         project: String,
@@ -1451,7 +1512,8 @@ pub enum ToolCall {
         path: Option<String>,
         #[schemars(extend("default" = "checkout"))]
         #[schemars(with = "Option<WorkOnProjectMode>")]
-        /// Optional bootstrap mode. Omitted or checkout preserves existing behavior exactly. With an
+        /// Optional bootstrap mode. Omitted or checkout permits exact session-only resume. worktree always
+        /// requires an explicit source Project or client_id + path; a Session never supplies that source. With an
         /// existing registered Project, worktree is the canonical model-facing path: the Server reauthorizes
         /// that Project and derives the authoritative Runner/source checkout before asking the Runner to create
         /// an isolated managed detached worktree. client_id + path remains a compatibility/bootstrap form and
@@ -1492,8 +1554,10 @@ pub enum ToolCall {
         /// substitutes for plugin_tool describe before invocation.
         #[serde(default = "default_true")]
         include_extension_catalog: bool,
-        /// Optional explicit Workflow Session to continue exactly. It must be active and accessible and
-        /// remains bound to its exact Project. Creating a managed worktree from an existing source Project is
+        /// Optional explicit Workflow Session to continue exactly: canonical wc_sess_* or server-issued
+        /// principal-scoped session_ref (~sN). In checkout mode, session_id + instruction is sufficient:
+        /// the active accessible Session supplies its exact bound Project, with current Project authorization.
+        /// An explicit Project must match; refs grant no authority. Creating a managed worktree from an existing source Project is
         /// a fresh-Session transition: omit session_id, then continue using the returned managed Project/ref
         /// and its Session. A source Session is never retargeted to the new Project. The legacy client_id +
         /// path worktree form may re-observe an already registered managed Project on exact resume. Failure
@@ -1501,7 +1565,9 @@ pub enum ToolCall {
         /// model context still retains project instructions, workflow guidance, or extension metadata. On
         /// MCP, a fresh model context should request missing static guidance through `_wc.context`. This
         /// business input is distinct from recorder provenance supplied through `_wc.record`.
-        #[schemars(regex(pattern = "^wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})$"))]
+        #[schemars(regex(
+            pattern = "^(wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})|~s[1-9][0-9]{0,18})$"
+        ))]
         #[serde(default)]
         session_id: Option<String>,
     },
@@ -1515,6 +1581,14 @@ pub enum ToolCall {
         /// Required explicit wc_sess_* business Session id for the current coding task, obtained from its
         /// compatible Session bootstrap.
         session_id: String,
+        /// Optional 1..16 regular output files (up to 256 MiB each) to observe independently through the Runner.
+        /// Paths are project-relative, unique, at most 512 UTF-8 bytes, and must not be sensitive.
+        /// Observations retain size/SHA/MIME, not content. Missing/unavailable outputs block closeout;
+        /// existing files do not prove task-specific counts, content or format correctness.
+        #[schemars(length(max = 16))]
+        #[schemars(inner(length(min = 1, max = 512)))]
+        #[serde(default)]
+        outputs: Vec<String>,
         /// When true, return the minimal decision-complete closeout only: workspace cleanliness/conflicts,
         /// hygiene state, bounded Job counts, final validation state/counts, tool-failure actionability
         /// counts, canonical task_outcome, evidence_integrity, warnings, and suggested_next_actions. Omits
@@ -1551,19 +1625,30 @@ pub enum ToolCall {
         /// Required exact runtime Project input. It is independently resolved and authorized on every call.
         #[schemars(length(min = 1, max = 512))]
         project: String,
-        /// Optional exact project-scoped Workflow Session association for compatibility.
+        /// Optional exact project-scoped Workflow Session (canonical wc_sess_* or server-issued ~sN)
+        /// for authorized Server Job state.
         /// Omit it when the Window has not created or resumed a Workflow Session.
         #[serde(default)]
-        #[schemars(regex(pattern = "^wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})$"))]
+        #[schemars(regex(
+            pattern = "^(wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})|~s[1-9][0-9]{0,18})$"
+        ))]
         session_id: Option<String>,
     },
 
     /// App-only read of the same Window card projection. Optional Session identity
-    /// is association evidence only and is deliberately excluded from generic recording.
+    /// selects authorized Server Job state and is deliberately excluded from generic recording.
     WorkResultState {
         project: String,
+        // App timer polls may reuse a recent workspace observation. Missing/false
+        // forces a fresh observation; never affects authorization or sealed Changes.
+        // The bundled App owns this option; keep its implementation note out of
+        // the outer tools/list schema description budget.
         #[serde(default)]
-        #[schemars(regex(pattern = "^wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})$"))]
+        automatic: bool,
+        #[serde(default)]
+        #[schemars(regex(
+            pattern = "^(wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})|~s[1-9][0-9]{0,18})$"
+        ))]
         session_id: Option<String>,
         /// Explicit file page or lazy diff; omission keeps lightweight card state.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1585,7 +1670,9 @@ pub enum ToolCall {
         project: String,
         /// Optional exact work context explicitly linked to the current Window; never the recipient.
         #[serde(default)]
-        #[schemars(regex(pattern = "^wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})$"))]
+        #[schemars(regex(
+            pattern = "^(wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})|~s[1-9][0-9]{0,18})$"
+        ))]
         session_id: Option<String>,
         #[schemars(length(min = 1, max = 8000))]
         message: String,
@@ -1601,6 +1688,22 @@ pub enum ToolCall {
         session_id: String,
         snapshot_id: String,
         path: String,
+    },
+
+    /// Discover retained caller-authorized Workflow Sessions in one exact Project.
+    /// Discovery never selects, resumes, creates, or records into a Session implicitly.
+    ListSessions {
+        #[schemars(length(min = 1))]
+        project: String,
+        /// Omit to list both active and retained closed Sessions.
+        #[serde(default)]
+        lifecycle: Option<SessionLifecycleInput>,
+        /// Inventory offset; concurrent Session changes can change page membership.
+        #[serde(default)]
+        offset: Option<usize>,
+        /// Defaults to 10; the Server normalizes values to 1..20.
+        #[serde(default)]
+        limit: Option<usize>,
     },
 
     /// Return a bounded structured summary of recorded session ledger data for
@@ -1623,7 +1726,9 @@ pub enum ToolCall {
         project: String,
         /// Required explicit active, project-scoped Workflow Session id. Unknown ids fail without creating
         /// a Session.
-        #[schemars(regex(pattern = "^wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})$"))]
+        #[schemars(regex(
+            pattern = "^(wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})|~s[1-9][0-9]{0,18})$"
+        ))]
         session_id: String,
         /// Complete replacement execution context. `{}` clears all defaults. The context cannot store
         /// environment variables, credentials, SSH host/configuration, keys, passwords, connections, or
@@ -1778,7 +1883,9 @@ pub enum ToolCall {
     /// Session-store snapshot and return an opaque assignment fence.
     GetSessionAssignment {
         /// Required coordinator/business Workflow Session containing the exact todo.
-        #[schemars(regex(pattern = "^wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})$"))]
+        #[schemars(regex(
+            pattern = "^(wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})|~s[1-9][0-9]{0,18})$"
+        ))]
         session_id: String,
         /// Required exact open todo id. No implicit or recent-message inference is used.
         #[schemars(regex(pattern = "^wc_msg_([A-Za-z0-9_-]{16}|[0-9a-f]{32})$"))]
@@ -1790,7 +1897,9 @@ pub enum ToolCall {
     /// no history. Optional waiting is one bounded wait, never a subscription.
     ObserveSessionMessages {
         /// Required explicit Workflow Session whose message-state delta is observed.
-        #[schemars(regex(pattern = "^wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})$"))]
+        #[schemars(regex(
+            pattern = "^(wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})|~s[1-9][0-9]{0,18})$"
+        ))]
         session_id: String,
         /// Optional opaque Session-bound durable observation token returned by an earlier
         /// observe_session_messages call.
@@ -1981,7 +2090,9 @@ pub enum ToolCall {
         /// Required Project target. Nested JavaScript tool calls cannot select or override Project authority.
         project: String,
         /// Required exact Workflow Session. Nested JavaScript tool calls remain bound to this Session and record canonical evidence there.
-        #[schemars(regex(pattern = "^wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})$"))]
+        #[schemars(regex(
+            pattern = "^(wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})|~s[1-9][0-9]{0,18})$"
+        ))]
         session_id: String,
         /// Bounded JavaScript orchestration source. tools.<name>(args) returns a Promise for admitted read-only tools; use direct primitives for simple one-step observations, Promise.all only for independent observations, and sequential adaptive follow-ups inside the cell. Filter and synthesize raw child results before text(value); emit distilled evidence, not raw-result dumps, before reaching the outer-output limit. Project/Session are outer-bound. No shell, filesystem, network, Node, Deno, WebAssembly, mutation, validation, Jobs, plugins, or MCP are exposed.
         #[schemars(length(max = 65536))]
@@ -2000,7 +2111,9 @@ pub enum ToolCall {
         /// Required Project target. Nested JavaScript tool calls cannot select or override Project authority.
         project: String,
         /// Required exact Workflow Session. Every nested child remains a canonical ToolRuntime invocation in this same Session.
-        #[schemars(regex(pattern = "^wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})$"))]
+        #[schemars(regex(
+            pattern = "^(wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})|~s[1-9][0-9]{0,18})$"
+        ))]
         session_id: String,
         /// Experimental E2a JavaScript orchestration source. Admitted tools are the E1 read-only set plus cargo_check and cargo_test. Structured validators may hand off the same execution as ordinary Jobs; no mutation, shell, generic process, Job observation, plugins/MCP, or recursive Code Mode is exposed.
         #[schemars(length(max = 65536))]
@@ -2018,7 +2131,9 @@ pub enum ToolCall {
         /// Required Project target. Nested JavaScript tool calls cannot select or override Project authority.
         project: String,
         /// Required exact Workflow Session. Every nested child remains a canonical ToolRuntime invocation in this same Session.
-        #[schemars(regex(pattern = "^wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})$"))]
+        #[schemars(regex(
+            pattern = "^(wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})|~s[1-9][0-9]{0,18})$"
+        ))]
         session_id: String,
         /// Experimental E2c source: E1 reads, at most one canonical edit_project_files attempt, then cargo_check/cargo_test only after a successful known edit (including no-op). Use read_revision for guarded edits. Inspect source_state independently of execution success. Return Job handoffs to the outer workflow, never wait inside JS. No shell/process, nested Job observation, alternate writes, gateways, recursion or automatic whole-program retry.
         #[schemars(length(max = 65536))]
@@ -2029,12 +2144,17 @@ pub enum ToolCall {
         timeout_ms: Option<u64>,
     },
 
-    /// Execute one native process directly from a structured executable and
-    /// argv. No shell parser, environment mutation, PTY, or durable handoff is
-    /// part of this synchronous v1 contract.
+    /// Execute native argv. Ordinary calls use bounded synchronous handoff;
+    /// explicit interactive pipes return one public Job and retain stdin.
     RunProcess {
         /// Configured project id.
         project: String,
+        /// Keep a pipe open for subsequent job_write_input calls. No PTY or shell
+        /// Session. Returns the same public Job without waiting for input-dependent
+        /// completion. Requires job_process_input_v1; incompatible with initial stdin.
+        /// Send required input before waiting for terminal completion.
+        #[serde(default)]
+        interactive: bool,
         /// Executable name or path, resolved through the Runner execution environment. Native executables
         /// use literal argv. Windows .cmd/.bat shims use Runner-owned cmd.exe conversion with AutoRun and
         /// delayed expansion disabled; no model shell string. Batch paths/arguments reject quotes, %, !, ^,
@@ -2158,6 +2278,14 @@ pub enum ToolCall {
         /// telemetry bodies.
         #[schemars(length(min = 1, max = 65536))]
         instruction: String,
+        /// Optional exact authorized Workflow Session or session_ref to quote as bounded recovery
+        /// context for this Run. Requires runtime:read and matching Project/Session authority;
+        /// does not resume the source Session, select a recorder, or grant execution authority.
+        /// The resulting snapshot is part of the initiation intent; if it changes under the same
+        /// idempotency_key, observe the original Run rather than dispatching a replacement.
+        #[serde(default)]
+        #[schemars(regex(pattern = "^(wc_sess_[A-Za-z0-9_.-]+|~s[1-9][0-9]*)$"))]
+        context_session_id: Option<String>,
         /// Optional explicit run-level ACP config overrides. Omission or {} sends no caller-requested
         /// set_config_option calls; Runner-owned forced_config policy may still apply its own values.
         /// Every caller key/value must be live-advertised and operator-allowed before prompt dispatch.
@@ -2766,6 +2894,33 @@ pub enum ToolCall {
         sync_wait_secs: Option<u64>,
     },
 
+    /// Run one portable project build. The Runner resolves the nearest supported
+    /// Rust/Go recipe, plans canonical argv, and admits one typed build Job.
+    ProjectBuild {
+        /// Exact registered Runner Project.
+        project: String,
+        #[serde(default)]
+        session_id: Option<String>,
+        /// Project-relative directory; Runner resolves the nearest recipe root.
+        #[serde(default)]
+        cwd: Option<String>,
+        /// Omission means auto. Rust and Go are supported; Node/Python return unavailable.
+        #[serde(default)]
+        adapter: Option<webcodex_core::project_build::ProjectBuildAdapter>,
+        /// Optional bounded Cargo package selectors or project-relative Go package patterns.
+        #[serde(default)]
+        scope: Option<webcodex_core::project_build::ProjectBuildScope>,
+        /// Optional portable dependency-resolution policy. locked forbids adapters from
+        /// repairing dependency selection state; it does not imply offline execution.
+        #[serde(default)]
+        dependency_policy: Option<webcodex_core::project_build::ProjectDependencyPolicy>,
+        /// Total build execution budget, default 1800 seconds, clamped to 7 days.
+        /// Host handoff timing never extends this budget or starts a second build.
+        #[serde(default)]
+        #[schemars(range(min = 1))]
+        timeout_secs: Option<u64>,
+    },
+
     /// Run portable read-only project validation. The Runner resolves the nearest
     /// supported Rust/Go recipe and admits one canonical structured validation Job.
     ProjectValidate {
@@ -2785,6 +2940,14 @@ pub enum ToolCall {
         /// scope is not supported.
         #[serde(default)]
         scope: Option<webcodex_core::project_validation::ProjectValidationScope>,
+        /// Optional portable dependency-resolution policy. locked forbids adapters from
+        /// repairing dependency selection state; it does not imply offline execution.
+        #[serde(default)]
+        dependency_policy: Option<webcodex_core::project_validation::ProjectDependencyPolicy>,
+        /// Test-only selector and count postconditions. Rust uses a libtest substring;
+        /// Go uses native -run regexp. Omission preserves unfiltered positive-test proof.
+        #[serde(default)]
+        test: Option<webcodex_core::project_validation::ProjectValidationTestOptions>,
         /// Total execution budget, clamped to 3600 seconds. Host grace never starts another execution.
         #[serde(default)]
         #[schemars(range(min = 1))]
@@ -3053,7 +3216,9 @@ pub enum ToolCall {
     /// This is Runtime/Store workflow composition only; it does not establish any Host carrier.
     PrepareGoalWorkflow {
         /// Exact Workflow Session independently re-authorized before durable admission.
-        #[schemars(regex(pattern = "^wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})$"))]
+        #[schemars(regex(
+            pattern = "^(wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})|~s[1-9][0-9]{0,18})$"
+        ))]
         session_id: String,
         /// Fixed durable completion intent; the Server does not evaluate natural-language conditions.
         /// At most 8 conditions, each additionally bounded to 512 UTF-8 bytes.
@@ -3159,8 +3324,43 @@ pub enum ToolCall {
         idempotency_key: String,
     },
 
+    /// Open the readonly workbench. Empty arguments show a chooser; a Project is selected only
+    /// when explicitly supplied. Session selection never creates a recorder or execution context.
+    OpenWebcodexWorkbench {
+        #[serde(default)]
+        project: Option<String>,
+        #[serde(default)]
+        session_id: Option<String>,
+    },
+
+    /// Search bounded authorized resources. File and artifact searches require an explicit project;
+    /// artifact search additionally requires an exact retained Workflow Session.
+    SearchWebcodexResources {
+        kind: WebcodexResourceKind,
+        #[serde(default)]
+        #[schemars(length(max = 200))]
+        query: Option<String>,
+        #[serde(default)]
+        project: Option<String>,
+        #[serde(default)]
+        session_id: Option<String>,
+        #[serde(default)]
+        offset: Option<usize>,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+    /// Read current content of one pinned resource. References grant no authority.
+    ReadWebcodexResource {
+        #[schemars(length(min = 1, max = 8192))]
+        uri: String,
+    },
+
     /// List caller-visible durable Goals with an optional authoritative lifecycle filter.
     ListGoals {
+        /// Literal title/objective substring, matched within the current owner only.
+        #[serde(default)]
+        #[schemars(length(max = 200))]
+        query: Option<String>,
         /// Closed authoritative Goal lifecycle. Execution/presentation states such as implementing,
         /// blocked, or waiting_validation are not Goal lifecycle values.
         #[serde(default)]
@@ -3236,7 +3436,9 @@ pub enum ToolCall {
         goal_id: String,
         /// Exact Workflow Session id. The target Session is independently re-authorized before association;
         /// the correlation never grants Session or Project authority.
-        #[schemars(regex(pattern = "^wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})$"))]
+        #[schemars(regex(
+            pattern = "^(wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})|~s[1-9][0-9]{0,18})$"
+        ))]
         session_id: String,
         /// Caller-generated Goal-to-Workflow-Session association key. Exact retry replays; changed reuse
         /// fails closed.
@@ -3423,24 +3625,34 @@ pub enum ToolCall {
         /// CodingAgentRun authority.
         #[schemars(length(min = 1))]
         project: String,
-        /// Canonical durable AgentTask id. It is not a credential or Connector Task id.
+        /// Server-issued ~ta selector for one exact task, attempt, assignee, fence, and generation.
+        /// Not authority. Omit it when passing the explicit tuple; Project and provider remain explicit.
+        #[schemars(regex(pattern = "^~ta[1-9][0-9]{0,18}$"))]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempt_ref: Option<String>,
+        /// Canonical durable AgentTask id. Required with the explicit tuple; omit with attempt_ref.
         #[schemars(regex(pattern = "^wc_agent_task_[A-Za-z0-9_-]{16}$"))]
-        task_id: String,
-        /// Exact durable AgentTaskAttempt id.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task_id: Option<String>,
+        /// Exact durable AgentTaskAttempt id. Required with the explicit tuple; omit with attempt_ref.
         #[schemars(regex(pattern = "^wc_agent_task_attempt_[A-Za-z0-9_-]{16}$"))]
-        attempt_id: String,
-        /// Explicit current durable Agent assignee. Agent identity does not grant Project or executor
-        /// authority.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempt_id: Option<String>,
+        /// Exact current Agent assignee. Required with the explicit tuple; omit with attempt_ref.
+        /// Agent identity does not grant Project or executor authority.
         #[schemars(regex(pattern = "^wc_dagent_[A-Za-z0-9_-]{16}$"))]
-        assignee_agent_id: String,
-        /// Opaque exact-Attempt freshness fence returned by start_agent_task_attempt. It is not a bearer
-        /// credential or idempotency key.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        assignee_agent_id: Option<String>,
+        /// Exact Attempt fence. Required with the explicit tuple; omit with attempt_ref.
+        /// Not a bearer credential or idempotency key.
         #[schemars(regex(pattern = "^wc_agent_task_fence_[A-Za-z0-9_-]{21}[AQgw]$"))]
-        attempt_fence: String,
-        /// Exact current Attempt-local controller generation. Carrier replacement increments it without
-        /// creating a new Attempt.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempt_fence: Option<String>,
+        /// Exact Attempt controller generation. Required with the explicit tuple; omit with attempt_ref.
+        /// Stale selectors never select a newer controller or Attempt.
         #[schemars(range(min = 1))]
-        attempt_controller_generation: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempt_controller_generation: Option<i64>,
         /// Logical Runner-advertised CodingAgent provider. The Server binds its exact provider instance;
         /// callers cannot supply provider_instance_id.
         #[schemars(length(min = 1, max = 64))]
@@ -3650,8 +3862,9 @@ pub enum ToolCall {
         idempotency_key: String,
     },
 
-    /// Compatibility name for server-local continuation Endpoint rotation.
-    /// Attach a current Host/Client Endpoint to a durable Agent.
+    /// Frozen GPT Actions spelling only; absent from the default canonical parser.
+    /// This exception retires with the legacy adapter, not with a schema refresh.
+    #[cfg(feature = "legacy-gpt-actions")]
     AttachAgentEndpoint {
         /// Canonical durable Agent id owned by the current communication principal.
         #[schemars(regex(pattern = "^wc_dagent_[A-Za-z0-9_-]{16}$"))]
@@ -4116,6 +4329,28 @@ pub enum ToolCall {
         shell: Option<ExecutionShell>,
     },
 
+    /// Send exact keyed bytes or EOF to an existing interactive Job.
+    JobWriteInput {
+        /// Exact authorized Project selector of the existing Job.
+        project: String,
+        /// Existing public interactive Job; never a process name or PID.
+        #[schemars(length(min = 1, max = 160))]
+        job_id: String,
+        /// Stable per-Job identity for this exact input and EOF choice. Reuse with
+        /// identical bytes to reconcile; changing bytes conflicts. Never choose a
+        /// new key merely because delivery is pending or unknown.
+        #[schemars(length(min = 1, max = 128))]
+        input_id: String,
+        /// UTF-8 bytes written literally to the pipe, at most 65536. Omit only for EOF.
+        #[serde(default)]
+        #[schemars(length(max = 65536))]
+        data: String,
+        /// Close stdin after these bytes. Empty data without close is rejected;
+        /// use observe_jobs for observation, not this effectful tool.
+        #[serde(default)]
+        close: bool,
+    },
+
     /// Stop a bounded runtime job after explicit confirmation.
     StopJob {
         /// Configured project id that must match the job project.
@@ -4294,6 +4529,11 @@ pub enum ToolCall {
     /// project" in a single bounded call and never descends into ignored
     /// directories such as `.venv` or `target`.
     ListProjectTrackedFiles {
+        /// Literal case-sensitive path substring, filtered before paging. Supplying query (including
+        /// an empty query) lists exact file paths instead of directory rollup.
+        #[serde(default)]
+        #[schemars(length(max = 200))]
+        query: Option<String>,
         /// Runner-registered project id.
         project: String,
         /// Optional explicit wc_sess_* Workflow Session id from a prior compatible bootstrap. When
@@ -4582,6 +4822,26 @@ pub enum ToolCall {
         overwrite: Option<bool>,
     },
 
+    /// Accept one exact `ArtifactHandoffGrant` as the destination principal and
+    /// import its frozen source snapshot through the existing Control↔Runner
+    /// artifact transfer path.
+    AcceptArtifactHandoff {
+        /// Opaque durable grant id created by the source authority.
+        #[schemars(length(min = 1, max = 128))]
+        grant_id: String,
+        /// Exact or resolvable destination Runtime Project.
+        destination_project: String,
+        /// Project-relative destination artifact path.
+        #[schemars(length(min = 1, max = 4096))]
+        destination_path: String,
+        /// Allow replacing an existing destination artifact (default false).
+        #[serde(default)]
+        overwrite: Option<bool>,
+        /// Stable caller-selected key for the complete logical import request.
+        #[schemars(length(min = 1, max = 128))]
+        idempotency_key: String,
+    },
+
     /// Preferred unified read-side facade for Project artifacts. Physical
     /// dispatch remains action-specific: Runner-backed metadata/inspection and
     /// MCP presentation/authority for native images and complete export.
@@ -4612,8 +4872,8 @@ pub enum ToolCall {
         expected_sha256: Option<String>,
     },
 
-    /// Read bounded metadata for a binary project artifact. Zip files are
-    /// counted but never extracted.
+    /// Read metadata for a project artifact up to 256 MiB using bounded streaming hashing.
+    /// Zip files are counted but never extracted.
     ReadProjectArtifactMetadata {
         /// Runner-registered project id.
         project: String,
@@ -5196,9 +5456,14 @@ pub enum ToolCall {
         client_id: Option<String>,
     },
 
-    /// Admin-only bounded read of one Server-hosted full tool-request trace.
+    /// Admin-only diagnostic query or exact retained metadata/full trace read.
+    /// Omit trace_ref to query calls by time/Project/tool/Window; supply it to
+    /// read an event page, or add payload_index for one retained full payload.
     ReadToolTrace {
-        trace_ref: String,
+        #[serde(default)]
+        trace_ref: Option<String>,
+        #[serde(default)]
+        query: Option<crate::tool_inputs::ToolTraceQuery>,
         #[serde(default)]
         offset: Option<usize>,
         #[serde(default)]
@@ -5297,8 +5562,25 @@ fn validate_coding_project_source_shape(tool_name: &str, arguments: &Value) -> R
             "invalid arguments for tool '{tool_name}': missing path required with client_id"
         ));
     }
+    // A Session is an exact continuation selector, not a worktree source or
+    // permission to infer a current Project. The runtime authorizes its binding.
+    if arguments
+        .get("session_id")
+        .and_then(Value::as_str)
+        .is_some_and(|session_id| !session_id.trim().is_empty())
+        && arguments
+            .get("mode")
+            .and_then(Value::as_str)
+            .unwrap_or("checkout")
+            == "checkout"
+        && !arguments
+            .get("base_ref")
+            .is_some_and(|value| !value.is_null())
+    {
+        return Ok(());
+    }
     Err(format!(
-        "invalid arguments for tool '{tool_name}': missing project source; expected project or client_id + path"
+        "invalid arguments for tool '{tool_name}': missing project source; expected project or client_id + path, or session_id for exact checkout resume"
     ))
 }
 
@@ -5446,7 +5728,7 @@ fn canonicalize_process_argv_alias(name: &str, arguments: &mut Value) -> Result<
     };
     if let Some(canonical) = object.get("args") {
         if canonical != &alias {
-            return Err("ambiguous compatibility alias: args and argv differ".to_string());
+            return Err("ambiguous input alias: args and argv differ".to_string());
         }
     } else {
         object.insert("args".to_string(), alias);
@@ -5469,11 +5751,12 @@ impl ToolCall {
         Self::from_tool_name_with_normalization(name, arguments).map(|(call, _)| call)
     }
 
-    /// Returns a stable code only when a documented compatibility alias was used.
+    /// Returns a stable code only when an explicit ergonomic input alias was
+    /// normalized to avoid a mechanical retry. This is not API compatibility.
     pub fn from_tool_name_with_normalization(
         name: &str,
         arguments: Value,
-    ) -> Result<(Self, Option<&'static str>), String> {
+    ) -> Result<(Self, Option<crate::ToolInputNormalizationCode>), String> {
         validate_model_facing_assertion_name(name, &arguments)?;
         validate_model_facing_result_expectation(name, &arguments)?;
         if name == "create_project"
@@ -5524,8 +5807,8 @@ impl ToolCall {
         }
         let mut arguments = strip_tool_call_expectation_metadata(arguments);
         validate_run_shell_login(name, &arguments)?;
-        let normalization =
-            canonicalize_process_argv_alias(name, &mut arguments)?.then_some("argv_to_args");
+        let normalization = canonicalize_process_argv_alias(name, &mut arguments)?
+            .then_some(crate::ToolInputNormalizationCode::ArgvToArgs);
         canonicalize_cargo_check_packages(name, &mut arguments)?;
         if name == "tool_manifest" {
             if let Some(object) = arguments.as_object_mut() {
@@ -5650,6 +5933,7 @@ impl ToolCall {
             Self::WorkResultActivityDetail { .. } => "work_result_activity_detail",
             Self::WorkResultSendMessage { .. } => "work_result_send_message",
             Self::ChangesFileDiff { .. } => "changes_file_diff",
+            Self::ListSessions { .. } => "list_sessions",
             Self::SessionSummary { .. } => "session_summary",
             Self::UpdateSessionContext { .. } => "update_session_context",
             Self::CloseSession { .. } => "close_session",
@@ -5707,6 +5991,7 @@ impl ToolCall {
             Self::CargoFmt { .. } => "cargo_fmt",
             Self::CargoCheck { .. } => "cargo_check",
             Self::CargoTest { .. } => "cargo_test",
+            Self::ProjectBuild { .. } => "project_build",
             Self::ProjectValidate { .. } => "project_validate",
             Self::GoTest { .. } => "go_test",
             Self::ReadFiles { .. } => "read_files",
@@ -5724,6 +6009,9 @@ impl ToolCall {
             Self::PresentGoalPlan { .. } => "present_goal_plan",
             Self::GoalPlanSync { .. } => "goal_plan_sync",
             Self::CheckpointGoal { .. } => "checkpoint_goal",
+            Self::OpenWebcodexWorkbench { .. } => "open_webcodex_workbench",
+            Self::SearchWebcodexResources { .. } => "search_webcodex_resources",
+            Self::ReadWebcodexResource { .. } => "read_webcodex_resource",
             Self::ListGoals { .. } => "list_goals",
             Self::UpdateGoal { .. } => "update_goal",
             Self::AssociateGoalAgentTask { .. } => "associate_goal_agent_task",
@@ -5748,6 +6036,7 @@ impl ToolCall {
             Self::ListAgentIdentities { .. } => "list_agent_identities",
             Self::UpdateAgentIdentity { .. } => "update_agent_identity",
             Self::RotateAgentContinuationEndpoint { .. } => "rotate_agent_continuation_endpoint",
+            #[cfg(feature = "legacy-gpt-actions")]
             Self::AttachAgentEndpoint { .. } => "attach_agent_endpoint",
             Self::PresentAgentContinuation { .. } => "present_agent_continuation",
             Self::AgentContinuationBind { .. } => "agent_continuation_bind",
@@ -5774,6 +6063,7 @@ impl ToolCall {
             Self::MemoryScopePurge { .. } => "memory_scope_purge",
             Self::RunJob { .. } => "run_job",
             Self::StopJob { .. } => "stop_job",
+            Self::JobWriteInput { .. } => "job_write_input",
             Self::ObserveJobs { .. } => "observe_jobs",
             Self::WaitForJobReadiness { .. } => "wait_for_job_readiness",
             Self::WaitForJobTerminal { .. } => "wait_for_job_terminal",
@@ -5797,6 +6087,7 @@ impl ToolCall {
             Self::SaveProjectArtifact { .. } => "save_project_artifact",
             Self::ImportConversationFilesToProject { .. } => "import_conversation_files_to_project",
             Self::TransferProjectArtifact { .. } => "transfer_project_artifact",
+            Self::AcceptArtifactHandoff { .. } => "accept_artifact_handoff",
             Self::ProjectArtifact { .. } => "project_artifact",
             Self::ReadProjectArtifactMetadata { .. } => "read_project_artifact_metadata",
             Self::ReadProjectArtifact { .. } => "read_project_artifact",
@@ -5862,6 +6153,7 @@ impl ToolCall {
             | Self::CargoFmt { session_id, .. }
             | Self::CargoCheck { session_id, .. }
             | Self::CargoTest { session_id, .. }
+            | Self::ProjectBuild { session_id, .. }
             | Self::ProjectValidate { session_id, .. }
             | Self::GoTest { session_id, .. }
             | Self::ReadFiles { session_id, .. }
@@ -5910,7 +6202,8 @@ impl ToolCall {
             | Self::WorkspaceCheckpointShow { session_id, .. }
             | Self::WorkspaceCheckpointRestore { session_id, .. }
             | Self::WorkspaceCheckpointDelete { session_id, .. } => session_id.as_deref(),
-            Self::SessionHandoffSummary { session_id, .. } => Some(session_id.as_str()),
+            Self::SessionHandoffSummary { session_id, .. }
+            | Self::FinishCodingTask { session_id, .. } => Some(session_id.as_str()),
             // Window-card presentation/refresh never becomes generic Session recorder
             // evidence. An optional Session selector is association evidence only.
             Self::PresentWorkResult { .. }
@@ -5962,6 +6255,7 @@ impl ToolCall {
             | Self::RunDetachedProcess { cwd, .. }
             | Self::RunScript { cwd, .. }
             | Self::RunSkillResource { cwd, .. }
+            | Self::ProjectBuild { cwd, .. }
                 if cwd.is_none() =>
             {
                 *cwd = execution_context.default_cwd.clone();
@@ -5983,12 +6277,17 @@ impl ToolCall {
 
     pub fn project(&self) -> Option<&str> {
         match self {
-            Self::RecordExternalObservation { project, .. }
+            Self::ListSessions { project, .. }
+            | Self::RecordExternalObservation { project, .. }
             | Self::ListExternalObservations { project, .. } => Some(project),
             #[cfg(feature = "experimental-code-mode")]
             Self::CodeModeExec { project, .. }
             | Self::CodeModeExecEffectful { project, .. }
             | Self::CodeModeExecMutating { project, .. } => Some(project.as_str()),
+            Self::AcceptArtifactHandoff {
+                destination_project,
+                ..
+            } => Some(destination_project.as_str()),
             Self::RunProcess { project, .. }
             | Self::RunDetachedProcess { project, .. }
             | Self::CodingAgentStart { project, .. }
@@ -6013,6 +6312,7 @@ impl ToolCall {
             | Self::CargoFmt { project, .. }
             | Self::CargoCheck { project, .. }
             | Self::CargoTest { project, .. }
+            | Self::ProjectBuild { project, .. }
             | Self::ProjectValidate { project, .. }
             | Self::GoTest { project, .. }
             | Self::ReadFiles { project, .. }
@@ -6030,6 +6330,7 @@ impl ToolCall {
             | Self::MemoryDelete { project, .. }
             | Self::RunJob { project, .. }
             | Self::StopJob { project, .. }
+            | Self::JobWriteInput { project, .. }
             | Self::ListProjectFiles { project, .. }
             | Self::ListProjectTrackedFiles { project, .. }
             | Self::ProjectOverview { project, .. }

@@ -1,3 +1,6 @@
+import { useState } from "react";
+import type { RuntimeV2Client } from "../api/client.js";
+import { TraceCallDetails } from "./TraceCallDetails.js";
 import { CopyIdentity } from "./ui/CopyIdentity.js";
 import { displayProjectPath } from "../../ui/projectPresentation.js";
 import type { RuntimeLanguage } from "../../runtime_i18n.js";
@@ -10,6 +13,7 @@ import {
 } from "../model/windowSessions.js";
 
 type Props = {
+  client?: RuntimeV2Client;
   detail: WindowDetail;
   projects: ProjectRow[];
   language: RuntimeLanguage;
@@ -19,6 +23,7 @@ type Props = {
 };
 
 export function WindowActivityFeed({
+  client,
   detail,
   projects,
   language,
@@ -27,6 +32,7 @@ export function WindowActivityFeed({
   onOpenSessionRecord,
 }: Props) {
   const t = (value: string) => translate(value, language);
+  const [order, setOrder] = useState<"newest" | "oldest">("newest");
   const orderedSessions = windowSessionCatalog(detail);
   const sessionOrder = new Map(orderedSessions.map((session, index) => [session.workflow_session_id, index]));
   const sessionMeta = new Map(orderedSessions.map((session) => [session.workflow_session_id, session]));
@@ -38,6 +44,7 @@ export function WindowActivityFeed({
   const calls = [
     ...detail.activity.map((row, index) => ({
       key: row.server_trace_id || `completed-${row.started_at_ms}-${index}`,
+      traceRef: row.server_trace_id,
       tool: row.tool_name || row.method,
       project: row.project,
       startedAt: row.started_at_ms,
@@ -53,6 +60,7 @@ export function WindowActivityFeed({
     })),
     ...detail.active_requests.filter((row) => !completedTraces.has(row.server_trace_id)).map((row) => ({
       key: row.server_trace_id,
+      traceRef: row.server_trace_id,
       tool: row.tool_name || row.method,
       project: row.project,
       startedAt: row.started_at_ms,
@@ -66,12 +74,22 @@ export function WindowActivityFeed({
   ].sort((a, b) => a.startedAt - b.startedAt);
   const activeSessionId = selectedSessionId;
   const focusedKeys = focusedWindowCallKeys(calls, activeSessionId);
-  const visibleCalls = activeSessionId ? calls.filter((call) => focusedKeys.has(call.key)) : calls;
+  // Session segments must be resolved chronologically; ordering is presentation
+  // only and must never change the membership of untagged continuation calls.
+  const filteredCalls = activeSessionId ? calls.filter((call) => focusedKeys.has(call.key)) : calls;
+  const visibleCalls = order === "newest" ? filteredCalls.slice().reverse() : filteredCalls;
   const selectedProject = sessionMeta.get(activeSessionId)?.project;
   const selectedTone = activeSessionId ? (sessionOrder.get(activeSessionId) ?? 0) % 8 : 0;
 
   return (
     <section className="window-detail-section window-workflow-section" aria-label={t("Window activity")}>
+      <div className="window-session-focus">
+        <label htmlFor="window-activity-order">{t("Activity order")}</label>
+        <select id="window-activity-order" value={order} onChange={event => setOrder(event.currentTarget.value === "oldest" ? "oldest" : "newest")}>
+          <option value="newest">{t("Newest first")}</option>
+          <option value="oldest">{t("Oldest first")}</option>
+        </select>
+      </div>
       {(filterSessions.length > 0 || activeSessionId) && (
         <div className="window-session-focus">
           <span>{t("Session")}</span>
@@ -101,7 +119,7 @@ export function WindowActivityFeed({
       {activeSessionId && <CopyIdentity key={activeSessionId} value={activeSessionId} label={t("Session")} language={language} />}
       {activeSessionId && !visibleCalls.length && <p className="inventory-note">{t("This Session is linked to the Window but has no retained calls.")}</p>}
       {detail.active_count > detail.active_requests.length && <div className="inventory-note">{t("Some running calls are not shown.")} {detail.active_requests.length}/{detail.active_count}</div>}
-      {detail.activity_truncated && <div className="inventory-note">{t("Earlier calls are not available in this view. Showing retained activity from oldest to newest.")}</div>}
+      {detail.activity_truncated && <div className="inventory-note">{t("Earlier calls are not available in this view. Only retained activity is shown.")}</div>}
       <div className="window-workflow-list">
         {visibleCalls.map((call) => {
           const project = projects.find((row) => row.id === call.project);
@@ -192,6 +210,7 @@ export function WindowActivityFeed({
                   </>
                 )}
               </div>
+              {client && call.traceRef && <TraceCallDetails client={client} traceRef={call.traceRef} language={language} />}
             </article>
           );
         })}

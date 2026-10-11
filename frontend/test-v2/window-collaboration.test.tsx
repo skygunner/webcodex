@@ -11,7 +11,7 @@ const transcript = { available: true, can_send: true, messages: [
 ], truncated: false };
 
 describe("Window collaboration", () => {
-  it("polls only while visible and refreshes immediately on return", async () => {
+  it("polls only while visible and coalesces refresh events on return", async () => {
     vi.useFakeTimers();
     let visibility: DocumentVisibilityState = "visible";
     vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
@@ -39,7 +39,13 @@ describe("Window collaboration", () => {
       await act(async () => { await vi.advanceTimersByTimeAsync(9000); });
       expect(post).toHaveBeenCalledTimes(3);
       visibility = "visible";
-      await act(async () => { fireEvent(document, new Event("visibilitychange")); });
+      await act(async () => {
+        fireEvent(document, new Event("visibilitychange"));
+        fireEvent(window, new Event("focus"));
+        fireEvent(window, new Event("online"));
+      });
+      expect(post).toHaveBeenCalledTimes(3);
+      await act(async () => { await vi.advanceTimersByTimeAsync(150); });
       expect(post).toHaveBeenCalledTimes(4);
     } finally {
       view.unmount();
@@ -92,7 +98,7 @@ describe("Window collaboration", () => {
 
     visibility = "visible";
     fireEvent(document, new Event("visibilitychange"));
-    expect(reads).toHaveLength(2);
+    await waitFor(() => expect(reads).toHaveLength(2));
     await act(async () => { reads[1].resolve({ ok: true, status: 200, data: transcript }); });
     expect(screen.getByText("Review done")).toBeTruthy();
     view.unmount();
@@ -158,6 +164,53 @@ describe("Window collaboration", () => {
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(post).toHaveBeenCalledWith("window-collaboration-post", expect.objectContaining({ client_window_key: "exact-window", context_session_id: "wc_sess_context" })));
     view.unmount();
+  });
+
+  it("settles a successful send without waiting for a slow transcript refresh", async () => {
+    let reads = 0;
+    let finishRead!: (value: any) => void;
+    const post = vi.fn(async (path: string) => {
+      if (path === "window-collaboration-post") return { ok: true, status: 200, data: { message_id: "wc_msg_new" } };
+      if (++reads === 1) return { ok: true, status: 200, data: transcript };
+      return new Promise(resolve => { finishRead = resolve; });
+    });
+    const view = render(<WindowCollaboration client={{ post } as unknown as RuntimeV2Client} windowKey="exact-window" selectedSessionId="" language="en" onUnauthorized={vi.fn()} />);
+    await screen.findByText("Review done");
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Send promptly" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(reads).toBe(2));
+    await waitFor(() => expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(""));
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Next draft" } });
+    await act(async () => { finishRead({ ok: true, status: 200, data: transcript }); });
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Next draft");
+    view.unmount();
+  });
+
+  it("replaces a pre-send poll immediately and ignores its stale response", async () => {
+    vi.useFakeTimers();
+    const reads: { signal?: AbortSignal; resolve: (response: any) => void }[] = [];
+    const post = vi.fn(async (path: string, _payload: unknown, signal?: AbortSignal) => {
+      if (path === "window-collaboration-post") return { ok: true, status: 200, data: { message_id: "wc_msg_new" } };
+      return new Promise(resolve => { reads.push({ signal, resolve }); });
+    });
+    const view = render(<WindowCollaboration client={{ post } as unknown as RuntimeV2Client} windowKey="exact-window" selectedSessionId="" language="en" onUnauthorized={vi.fn()} />);
+    try {
+      await act(async () => { reads[0].resolve({ ok: true, status: 200, data: transcript }); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+      expect(reads).toHaveLength(2);
+      fireEvent.change(screen.getByRole("textbox"), { target: { value: "New message" } });
+      await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Send" })); });
+      expect(reads[1].signal?.aborted).toBe(true);
+      expect(reads).toHaveLength(3);
+      const updated = { ...transcript, messages: [...transcript.messages, { ...transcript.messages[0], message_id: "wc_msg_new", message: "New message" }] };
+      await act(async () => { reads[2].resolve({ ok: true, status: 200, data: updated }); });
+      await act(async () => { reads[1].resolve({ ok: true, status: 200, data: transcript }); });
+      expect(screen.getByText("New message")).toBeTruthy();
+      expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
   });
 
   it("clears deterministic conflict identity and uses a new key on the next explicit send", async () => {

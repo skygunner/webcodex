@@ -24,7 +24,7 @@ fn write_init_script(dir: &Path, name: &str, value: &str) -> PathBuf {
 
 #[test]
 fn shell_config_default_preserves_sh_c_behavior() {
-    let tmp = crate::tests::executable_tempdir();
+    let tmp = tempfile::tempdir().unwrap();
     let cfg = test_config(tmp.path().join("config/project-registry"));
     let cwd = tmp.path().to_string_lossy().to_string();
     let result = run_shell(
@@ -79,7 +79,7 @@ fn shell_config_default_shell_is_platform_native() {
 #[cfg(windows)]
 #[test]
 fn shell_config_windows_default_prefers_pwsh_and_falls_back() {
-    let pwsh_dir = crate::tests::executable_tempdir();
+    let pwsh_dir = tempfile::tempdir().unwrap();
     std::fs::write(pwsh_dir.path().join("pwsh.exe"), b"").unwrap();
     let pwsh_path = std::env::join_paths([pwsh_dir.path()]).unwrap();
     assert_eq!(
@@ -87,7 +87,7 @@ fn shell_config_windows_default_prefers_pwsh_and_falls_back() {
         "pwsh.exe"
     );
 
-    let fallback_dir = crate::tests::executable_tempdir();
+    let fallback_dir = tempfile::tempdir().unwrap();
     let fallback_path = std::env::join_paths([fallback_dir.path()]).unwrap();
     assert_eq!(
         default_windows_shell_program_for_path(Some(fallback_path.as_os_str())),
@@ -130,7 +130,7 @@ fn shell_config_path_prepend_discovers_fake_executable() {
 #[cfg(windows)]
 #[test]
 fn shell_config_path_prepend_discovers_fake_executable_and_keeps_windows_path() {
-    let tmp = crate::tests::executable_tempdir();
+    let tmp = tempfile::tempdir().unwrap();
     let cfg = test_config(tmp.path().join("config/project-registry"));
     let bin_dir = tmp.path().join("bin dir");
     std::fs::create_dir(&bin_dir).unwrap();
@@ -202,7 +202,7 @@ fn shell_config_path_prepend_discovers_fake_executable_and_keeps_windows_path() 
 fn shell_config_dialect_field_parses_and_validates() {
     use crate::webcodex_runner::config::ShellDialect;
 
-    let tmp = crate::tests::executable_tempdir();
+    let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("runner.toml");
     std::fs::write(
         &path,
@@ -258,27 +258,28 @@ dialect = "cmd"
 
 #[test]
 fn shell_config_default_environment_is_inherited() {
-    let _guard = test_env_lock();
-    let tmp = crate::tests::executable_tempdir();
+    let tmp = tempfile::tempdir().unwrap();
     let cfg = test_config(tmp.path().join("config/project-registry"));
     let cwd = tmp.path().to_string_lossy().to_string();
-    let _env = EnvGuard::new().set("WEBCODEX_INHERITED_TEST", "inherited-ok");
-    let result = run_shell(
-        &cfg.policy,
-        &ShellConfig::default(),
-        Some(&cwd),
-        &shell_env_var("WEBCODEX_INHERITED_TEST"),
-        None,
-        10,
-        None,
-    );
-    assert_eq!(result.exit_code, Some(0), "{result:?}");
-    assert_eq!(result.stdout.as_deref(), Some("inherited-ok"));
+    IsolatedEnv::new()
+        .set("WEBCODEX_INHERITED_TEST", "inherited-ok")
+        .run("inherited", || {
+            let result = run_shell(
+                &cfg.policy,
+                &ShellConfig::default(),
+                Some(&cwd),
+                &shell_env_var("WEBCODEX_INHERITED_TEST"),
+                None,
+                10,
+                None,
+            );
+            assert_eq!(result.exit_code, Some(0), "{result:?}");
+            assert_eq!(result.stdout.as_deref(), Some("inherited-ok"));
+        });
 }
-
 #[test]
 fn shell_config_env_values_are_available() {
-    let tmp = crate::tests::executable_tempdir();
+    let tmp = tempfile::tempdir().unwrap();
     let cfg = test_config(tmp.path().join("config/project-registry"));
     let shell = ShellConfig {
         env: HashMap::from([("WEBCODEX_TEST_VALUE".to_string(), "env-ok".to_string())]),
@@ -300,7 +301,7 @@ fn shell_config_env_values_are_available() {
 
 #[test]
 fn shell_config_init_script_is_sourced() {
-    let tmp = crate::tests::executable_tempdir();
+    let tmp = tempfile::tempdir().unwrap();
     let cfg = test_config(tmp.path().join("config/project-registry"));
     let init = write_init_script(tmp.path(), "WEBCODEX_INIT_TEST", "init-ok");
     let shell = ShellConfig {
@@ -323,7 +324,7 @@ fn shell_config_init_script_is_sourced() {
 
 #[test]
 fn shell_config_init_script_awkward_path_is_sourced() {
-    let tmp = crate::tests::executable_tempdir();
+    let tmp = tempfile::tempdir().unwrap();
     let cfg = test_config(tmp.path().join("config/project-registry"));
     // Space, single quote, and non-ASCII characters in the init script path.
     let init_dir = tmp.path().join("init dir '脚本");
@@ -349,7 +350,7 @@ fn shell_config_init_script_awkward_path_is_sourced() {
 
 #[test]
 fn shell_job_init_script_failure_blocks_command_and_reports_exit() {
-    let tmp = crate::tests::executable_tempdir();
+    let tmp = tempfile::tempdir().unwrap();
     let cfg = test_config(tmp.path().join("config/project-registry"));
     // Windows: `exit 3` inside the dot-sourced script terminates the process
     // with 3. Unix: `false` fails the sourced script so `&&` short-circuits
@@ -392,7 +393,7 @@ fn shell_config_bash_like_args_are_respected_when_available() {
     if !Path::new("/bin/bash").exists() {
         return;
     }
-    let tmp = crate::tests::executable_tempdir();
+    let tmp = tempfile::tempdir().unwrap();
     let cfg = test_config(tmp.path().join("config/project-registry"));
     let shell = ShellConfig {
         program: "/bin/bash".to_string(),

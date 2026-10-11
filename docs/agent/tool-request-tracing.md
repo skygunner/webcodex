@@ -8,26 +8,66 @@ is actually required.
 
 ## Enable a bounded capture
 
-Tracing is disabled by default. Metadata mode records lightweight lifecycle
-information; `full` additionally captures request/response payloads for forensic
-debugging.
+Tracing is disabled by default. `metadata` now persists lifecycle events and
+bounded operator diagnostic details for selected development tools; it is no
+longer journal-only. It retains actual paths, selection parameters and bounded
+command/argv text, while omitting large bodies and credential-labelled fields.
+`full` additionally captures request/response payloads. This is operator data,
+not the safe business-audit projection; arbitrary inline secrets in commands or
+arguments are not guaranteed to be redacted.
 
 ```text
-WEBCODEX_TOOL_REQUEST_TRACE=full
+WEBCODEX_TOOL_REQUEST_TRACE=metadata
 WEBCODEX_TOOL_REQUEST_TRACE_DIR=/var/lib/webcodex/tool-request-traces
 WEBCODEX_TOOL_REQUEST_TRACE_RETENTION_HOURS=168
 WEBCODEX_TOOL_REQUEST_TRACE_MAX_TOTAL_BYTES=2147483648
 ```
 
-Apply the Server environment change using the normal deployment lifecycle, then
-reproduce the target call once. Disable `full` tracing again when the diagnostic
-capture is complete.
+Apply the Server environment change using the normal deployment lifecycle.
+Use `full` only when the omitted body is necessary to reproduce a specific
+problem, and disable it again after capture. Changing this switch does not
+reconstruct earlier omitted data. Already-retained metadata and payloads remain
+readable by an administrator when capture is off.
+
+In WebUI, open Work / Windows and use **Find calls by time or Project**. A Window
+hash is optional. Calls in the existing Window activity view also have an explicit
+**Inspect call diagnostics** action. Listing and expansion never automatically
+fetch full payloads or introduce a refresh timer. The shared MCP reader remains
+the admin-only `read_tool_trace` operator extension, behind its existing protocol
+and authority checks; no new Direct tool is added.
+
+Examples of `read_tool_trace` arguments:
+
+```json
+{"query":{"project":"agent:xa:webcodex","tool_name":"work_on_project"},"limit":20}
+```
+
+```json
+{"trace_ref":"<exact-server-trace-uuid>","limit":20}
+```
+
+```json
+{"trace_ref":"<exact-server-trace-uuid>","payload_index":0}
+```
+
+Use either query filters or an exact trace, not both. Default query range is the
+last 24 hours; explicit Unix-millisecond ranges may span at most 31 days. Copy
+the returned effective `query` and `next_offset` when paging. The retained
+ActionAudit index is live: late inserts and retention can change later pages;
+a fixed time range is not a transaction held across requests. Window summaries
+cover the returned page only. Missing Host Window identity stays missing.
+
+The default trace listing returns lifecycle/diagnostic **events**, including
+payload-index entries when full data exists. A full payload is fetched only by
+an explicit `payload_index` read; its existing size/digest/private-file checks
+remain enforced. Unknown or malformed selectors never authorize another read.
 
 ## Server trace layout
 
-Each captured request has a Server-generated `server_trace_id`. The default full
-store keeps one directory per trace under the configured trace root. The trace
-directory contains lifecycle events plus compressed JSON payloads, for example:
+Each captured request has a Server-generated `server_trace_id`. Both enabled
+modes use the existing private, bounded trace directory and background writer.
+Metadata writes only `events.jsonl`; full can additionally write compressed JSON
+payloads. The following raw file commands are operator-only, for example:
 
 ```bash
 TRACE_ROOT=/var/lib/webcodex/tool-request-traces
@@ -51,6 +91,38 @@ These layers let a maintainer determine where a field disappeared or changed.
 For example, a caller-visible wrapper field such as
 `context_request` can be compared between the raw and effective
 argument layers without making that field part of ordinary user troubleshooting.
+
+## Metadata evidence stages
+
+- `mcp_request_policy_selected`: the MCP adapter's validated effective profile,
+  Host budget and wait slices, with separate `deployment`/`request_header` sources
+  and a parsed requested-budget/cap comparison. No raw headers or brand inference.
+  This is Server selection evidence, not observed Host execution or delivery.
+- `supplied_arguments`: selected bounded arguments and `_wc` before MCP envelope
+  parsing; gateway entry and selected target remain distinct. `_wc` is captured
+  even on other ordinary tools, without copying their business payload. Suppressed
+  trace-reader/continuation tools keep their existing sensitive-data exclusions.
+- `kernel_arguments`: the business arguments entering the canonical parser after
+  adapter envelope processing. This is not a claim that parsing, authorization,
+  execution or all later normalization succeeded.
+- `execution_evidence`: producer-reported normalization, effect, execution state,
+  Job and effective timing fields before model compaction, when available.
+- `response_summary`: bounded final returned selectors/outcomes and context
+  receipts. Instructions record source path/scope/fingerprint, content inclusion,
+  returned byte count, truncation and continuation, not instruction content.
+  Missing materials keep their actual reason (including budget omission).
+
+Each diagnostic is at most 8 KiB, with bounded nodes, depth, fields, items and
+UTF-8 text previews. Large script/stdin/file/patch/text/log bodies are omitted
+without serializing them merely to find their size. An explicit truncation or
+omission marker is not an empty value. There is no guarantee of complete args
+when the bound is reached. A fingerprint is identity evidence, not recoverable
+content. Returned instruction material does not prove model reading/compliance.
+
+The current implementation does not add per-Window full-capture arming, automatic
+failure-triggered capture, or retroactive payload reconstruction. Those require
+an independently designed operator control boundary; ordinary diagnostics stay
+read-only. Details: [bounded metadata diagnostics](../implementation/bounded-meta-trace-diagnostics.md).
 
 ## Runner correlation
 
@@ -77,6 +149,13 @@ Check the Server journal for trace-capture diagnostics. In particular:
 
 Trace failures are fail-open for the underlying tool call: they reduce forensic
 evidence but do not redefine the tool result.
+
+Diagnostic reads return `capture_health` counters for queue/budget drops and write
+failures since this Server process started. These aggregate counters neither
+attribute a loss to one trace nor survive process replacement. A missing capture
+returns `trace_not_retained` with possible causes instead of claiming execution
+never happened. Missing handoff events are likewise inconclusive. Legacy
+metadata captured only in journals is not backfilled into the file index.
 
 ## Delivery boundary
 

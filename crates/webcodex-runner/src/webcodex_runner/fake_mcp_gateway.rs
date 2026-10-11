@@ -103,6 +103,10 @@ fn main() -> io::Result<()> {
             "tools/list" => {
                 lists += 1;
                 append(marker, "list\n")?;
+                if scenario == "slow_second_list" && lists == 2 {
+                    append(marker, "preflight-wait\n")?;
+                    thread::sleep(Duration::from_millis(250));
+                }
                 if scenario == "notifications" {
                     send(
                         &mut writer,

@@ -13,7 +13,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::Instant;
 
-const STARTUP_TIMEOUT: Duration = Duration::from_secs(90);
+// The child owns normal phase deadlines. A first-run managed tunnel-client
+// download may consume the shared 120s download budget before verification and
+// the bounded 60s doctor/control-plane/readiness phase begins. Keep Desktop's
+// deadline as a supervision fail-safe so it cannot mask the child's typed error.
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(240);
 const HEALTH_STALE_AFTER: Duration = Duration::from_secs(12);
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -64,6 +68,9 @@ pub struct ConnectionRuntimeSnapshot {
     pub local_mcp_ready: Option<bool>,
     pub failure_stage: Option<String>,
     pub reason_code: Option<String>,
+    /// Whether this exact process attempt used an Auto-resolved proxy. This is
+    /// attempt evidence, not the current global proxy preference.
+    pub auto_proxy_used: Option<bool>,
     pub runtime_directory: Option<PathBuf>,
     pub health_url: Option<String>,
     pub log_file: Option<PathBuf>,
@@ -138,6 +145,7 @@ impl ConnectionRuntimes {
         events: MachineEventReceiver,
         expected_runtime_root: PathBuf,
         local_mcp_url: String,
+        auto_proxy_used: bool,
         supervisor: Arc<tokio::sync::Mutex<ProcessSupervisor>>,
         activity: ActivityLog,
     ) {
@@ -146,6 +154,7 @@ impl ConnectionRuntimes {
             lifecycle: ConnectionLifecycle::Starting,
             pid: process.pid,
             process_started: true,
+            auto_proxy_used: Some(auto_proxy_used),
             ..Default::default()
         };
         log(&mut state, "starting");
@@ -460,7 +469,9 @@ fn safe_failure_evidence(event: &Value) -> Option<(&str, &str)> {
         (
             "tunnel_client_verification",
             "tunnel_client_verification_failed"
-        ) | ("tunnel_doctor", "tunnel_doctor_failed")
+        ) | ("tunnel_client_download", "tunnel_client_download_failed")
+            | ("tunnel_client_install", "tunnel_client_install_failed")
+            | ("tunnel_doctor", "tunnel_doctor_failed")
             | ("tunnel_control_plane", "tunnel_control_plane_unreachable")
             | ("tunnel_control_plane", "tunnel_control_plane_probe_failed")
             | ("tunnel_daemon_start", "tunnel_daemon_start_failed")

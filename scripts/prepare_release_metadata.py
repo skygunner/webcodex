@@ -152,6 +152,7 @@ def atomic_write(path: Path, content: str) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", required=True)
+    parser.add_argument("--require-unified-installers", action="store_true")
     parser.add_argument("--artifact-dir", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--repo", default="yyjeqhc/webcodex")
@@ -224,6 +225,8 @@ def main() -> int:
     }
     if unexpected_installers:
         raise SystemExit(f"unexpected unified installers: {', '.join(sorted(unexpected_installers))}")
+    if args.require_unified_installers and present_installers != set(INSTALLER_TARGETS):
+        raise SystemExit("required unified installer set is missing or incomplete")
     if present_sources and not present_installers:
         raise SystemExit("source manifests are present without unified installers")
     if present_installers and present_installers != set(INSTALLER_TARGETS):

@@ -217,12 +217,17 @@ h2 { margin: 0; font-size: 11px; font-weight: 650; letter-spacing: .01em; color:
 .activity-detail { display: grid; min-width: 0; gap: 7px; padding: 0 1px 10px 17px; }
 .activity-detail .detail-grid { padding: 0; }
 .activity-detail-state { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.background-work { display: grid; min-width: 0; gap: 6px; }
+.background-results > summary { padding: 8px 0; cursor: pointer; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.background-results > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .section p { margin: 0; }
+.thread-review .workspace-files { max-height: min(600px, 55vh); }
+.thread-review .diff { max-height: min(640px, 65vh); }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; } }
 </style>
 </head>
 <body>
-<main class="card" aria-live="polite">
+<main id="workResultCard" class="card" aria-live="polite">
   <header class="app-header">
     <div class="brand">
       <span class="brand-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"></circle><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="18" r="3"></circle><path d="M8.6 7.5 15.4 16.5M15.4 7.5 8.6 16.5"></path></svg></span>
@@ -230,8 +235,8 @@ h2 { margin: 0; font-size: 11px; font-weight: 650; letter-spacing: .01em; color:
     </div>
     <div class="actions"><button id="refresh" class="refresh" type="button" disabled>Refresh</button><span id="badge" class="badge">Loading</span></div>
   </header>
-  <div class="task-context"><span id="projectIdentity" class="diagnostic-identity"></span><span id="windowIdentity" class="diagnostic-identity"></span><span id="sessionIdentity" class="diagnostic-identity"></span><span id="windowSource"></span></div>
-  <nav class="card-tabs" role="tablist" aria-label="Window views">
+  <div id="taskContext" class="task-context"><span id="projectIdentity" class="diagnostic-identity"></span><span id="windowIdentity" class="diagnostic-identity"></span><span id="sessionIdentity" class="diagnostic-identity"></span><span id="windowSource"></span></div>
+  <nav id="viewTabs" class="card-tabs" role="tablist" aria-label="Window views">
     <button id="tabActivity" type="button" role="tab" aria-selected="true" aria-controls="panelActivity">Activity</button>
     <button id="tabResults" type="button" role="tab" aria-selected="false" aria-controls="panelResults" tabindex="-1">Results</button>
     <button id="tabCollaboration" type="button" role="tab" aria-selected="false" aria-controls="panelCollaboration" tabindex="-1">Collaboration</button>
@@ -244,18 +249,33 @@ h2 { margin: 0; font-size: 11px; font-weight: 650; letter-spacing: .01em; color:
           <div id="activityStatus" class="activity-current">Waiting for activity…</div>
           <div id="activityDetail" class="activity-age"></div>
         </div>
+        <div id="jobsSection" class="background-work" hidden>
+          <div id="jobsList" aria-label="Work continuing in the background"></div>
+          <details id="jobResults" class="background-results" hidden>
+            <summary id="jobResultsSummary">Recent background results</summary>
+            <div id="jobResultsList"></div>
+          </details>
+          <p id="jobsMeta" class="secondary"></p>
+        </div>
       </section>
       <section class="section">
         <div class="section-head"><h2>Window activity</h2><span id="windowCoverage" class="secondary"></span></div>
-        <p class="secondary">Window calls in start-time order. Expand a completed call for trace, Session, Job, timing, and transition details.</p>
+        <p class="secondary">Calls in this chat, earliest first. Expand a call for technical details. Background work above belongs to this task.</p>
         <div id="windowActivity" class="workflow-activity"></div>
         <button id="askActivity" class="refresh" type="button">Send an instruction</button>
       </section>
       <button id="viewResults" class="refresh" type="button">View changed files</button>
     </div>
     <div id="panelResults" class="card-panel" role="tabpanel" aria-labelledby="tabResults" hidden>
+      <section id="taskOutputsSection" class="section" hidden>
+        <div class="section-head"><h2>Task outputs</h2><span id="taskOutputsSummary" class="stats-inline"></span></div>
+        <p id="taskOutputsObserved" class="secondary"></p>
+        <div id="taskOutputsList" class="workspace-files" role="list" aria-label="Task outputs"></div>
+        <p id="taskOutputsAction" class="secondary"></p>
+      </section>
       <section id="finalChanges" class="section" hidden>
         <div class="section-head"><h2>Final changes</h2><span id="frozenStats" class="stats-inline"></span></div>
+        <p id="finalChangesDescription" class="secondary" hidden>Final task changes captured at completion. Later edits appear in Changed files.</p>
         <div id="frozenSummary" class="primary"></div>
         <div id="frozenFiles"></div>
         <button id="frozenMore" class="refresh" type="button" hidden></button>
@@ -263,10 +283,10 @@ h2 { margin: 0; font-size: 11px; font-weight: 650; letter-spacing: .01em; color:
         <button id="frozenCollapse" class="refresh" type="button">Collapse all files</button>
         <div id="frozenFooter" class="secondary"></div>
       </section>
-      <section class="section">
-        <div class="section-head"><h2>Workspace changes</h2><span id="workspaceStats" class="stats-inline"></span></div>
+      <section id="workspaceChangesSection" class="section">
+        <div class="section-head"><h2 id="workspaceHeading">Workspace changes</h2><span id="workspaceStats" class="stats-inline"></span></div>
         <div id="workspaceStatus" class="primary">Waiting for files…</div>
-        <p class="secondary">Current uncommitted changes in this Project, including other work. Final task changes are shown separately above.</p>
+        <p class="secondary">Current uncommitted changes in this Project, including other work. Final task changes are shown separately.</p>
         <div id="workspaceFiles" class="workspace-files" role="list" aria-label="Changed files"></div>
         <button id="workspaceMore" class="refresh" type="button" hidden>Show more files</button>
         <button id="workspaceLess" class="refresh" type="button" hidden>Show fewer files</button>
@@ -293,6 +313,10 @@ h2 { margin: 0; font-size: 11px; font-weight: 650; letter-spacing: .01em; color:
         <div id="composerState" class="secondary"></div>
       </section>
     </div>
+    <details id="diagnostics" class="details" hidden>
+      <summary>Diagnostics</summary>
+      <div id="diagnosticContent"></div>
+    </details>
   </div>
   <footer class="app-footer"><span class="live-dot" aria-hidden="true"></span><div id="status" class="status">Connecting…</div></footer>
 </main>
@@ -301,6 +325,7 @@ h2 { margin: 0; font-size: 11px; font-weight: 650; letter-spacing: .01em; color:
   "use strict";
   const APP_PROTOCOL = "2026-01-26";
   const WORK_RESULT_META_KEY = "webcodex/workResult";
+  const THREAD_CONTEXT_META_KEY = "webcodex/workResultThread";
   const SESSION_ID = /^wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})$/;
   const STATE_VERSION = /^wr2_[0-9a-f]{64}$/;
   const MESSAGE_ID = /^wc_msg_[A-Za-z0-9_-]+$/;
@@ -333,6 +358,9 @@ h2 { margin: 0; font-size: 11px; font-weight: 650; letter-spacing: .01em; color:
   let identity = null;
   let lastStateVersion = null;
   let hostInitialized = false;
+  let explicitSession = null;
+  let threadInput = false;
+  let threadSession;
   let refreshInFlight = false;
   let unchangedRefreshes = 0;
   let refreshFailures = 0;
@@ -388,6 +416,11 @@ h2 { margin: 0; font-size: 11px; font-weight: 650; letter-spacing: .01em; color:
     el("workspaceStats").replaceChildren();
     el("workspaceMeta").textContent = "";
     el("resultChecks").hidden = true;
+    el("jobsSection").hidden = true;
+    el("jobsList").replaceChildren();
+    el("jobResults").hidden = true;
+    el("jobResults").open = false;
+    el("jobResultsList").replaceChildren();
     diffCache.clear();
     activityDetailCache.clear();
     activityDetailInFlight.clear();
@@ -552,17 +585,52 @@ h2 { margin: 0; font-size: 11px; font-weight: 650; letter-spacing: .01em; color:
         && (row.duration_ms === null || safeCount(row.duration_ms)) && safeCount(row.count) && row.count > 0);
   }
 
+  function validJobs(jobs, session) {
+    if (jobs === undefined) return true;
+    if (!jobs || typeof jobs.available !== "boolean") return false;
+    if (!jobs.available) return Object.keys(jobs).length === 1;
+    return validSession(session) && (!explicitSession || explicitSession === session)
+      && typeof jobs.active === "boolean" && typeof jobs.truncated === "boolean"
+      && Array.isArray(jobs.items) && jobs.items.length <= 8
+      && jobs.items.every(job => job && typeof job.job_id === "string" && job.job_id.length > 0 && job.job_id.length <= 128
+        && typeof job.tool === "string" && job.tool.length > 0 && job.tool.length <= 64
+        && typeof job.status === "string" && job.status.length > 0 && job.status.length <= 64
+        && ["active", "terminal"].includes(job.state)
+        && (job.outcome === undefined || (typeof job.outcome === "string" && job.outcome.length <= 64))
+        && (job.recovery_state === undefined || (typeof job.recovery_state === "string" && job.recovery_state.length <= 64)));
+  }
+
   function validState(value) {
     if (!value || typeof value !== "object" || Array.isArray(value) || value.version !== 2) return null;
     if (!validProject(value.project) || typeof value.state_version !== "string" || !STATE_VERSION.test(value.state_version)) return null;
     if (value.session_id !== undefined && !validSession(value.session_id)) return null;
+    if (threadSession != null && value.session_id !== threadSession) return null;
     if (!validWindowIdentity(value.window) || !validWorkspace(value.workspace) || !validActivity(value.activity) || !validWindowActivity(value.window_activity) || !validCollaboration(value.collaboration)) return null;
+    if (!validJobs(value.jobs, value.session_id)) return null;
+    if (value.task_outputs !== undefined && (!validSession(value.session_id) || !validTaskOutputs(value.task_outputs))) return null;
     if (value.validation !== undefined && !validValidation(value.validation)) return null;
     if (value.review !== undefined && !validReview(value.review)) return null;
     if (value.session !== undefined && !validSessionState(value.session)) return null;
     if (value.workflow !== undefined && !validWorkflow(value.workflow)) return null;
     if (value.final_changes !== undefined && (!validSession(value.session_id) || !validFrozen(value.final_changes))) return null;
     return value;
+  }
+
+  function validTaskOutputs(outputs) {
+    if (!outputs || typeof outputs !== "object" || !Array.isArray(outputs.items) || !outputs.items.length || outputs.items.length > 16) return false;
+    if (!Number.isSafeInteger(outputs.observed_at) || outputs.observed_at < 0) return false;
+    const paths = new Set();
+    for (const file of outputs.items) {
+      if (!file || !validPath(file.path, 512) || file.path === "." || paths.has(file.path) || new TextEncoder().encode(file.path).length > 512) return false;
+      paths.add(file.path);
+      if (!["verified", "missing", "unavailable"].includes(file.status)) return false;
+      if (file.status === "verified") {
+        if (!safeCount(file.file_bytes) || typeof file.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(file.sha256)) return false;
+        if (typeof file.mime_type !== "string" || !/^[\x21-\x7e]{1,128}$/.test(file.mime_type)) return false;
+      } else if (file.sha256 !== undefined || file.file_bytes !== undefined || file.mime_type !== undefined) return false;
+    }
+    return ["verified", "missing", "unavailable"].every(status => safeCount(outputs[status + "_count"])
+      && outputs[status + "_count"] === outputs.items.filter(file => file.status === status).length);
   }
 
   function callToolResultOf(result) {
@@ -1282,6 +1350,18 @@ h2 { margin: 0; font-size: 11px; font-weight: 650; letter-spacing: .01em; color:
     }
   }
   const panes = ["Activity", "Results", "Collaboration"];
+  function enableThreadReview() {
+    el("workResultCard").className = "card thread-review";
+    el("workspaceHeading").textContent = "Changed files";
+    el("tabResults").textContent = "Review";
+    panes.splice(0, panes.length, "Results", "Activity", "Collaboration");
+    el("viewTabs").append(el("tabResults"), el("tabActivity"), el("tabCollaboration"));
+    el("panelResults").append(el("workspaceChangesSection"), el("resultChecks"), el("finalChanges"), el("taskOutputsSection"), el("discussResults"));
+    el("diagnosticContent").append(el("taskContext"));
+    el("diagnostics").hidden = false;
+    el("finalChangesDescription").hidden = false;
+    selectPane("Results");
+  }
   function selectPane(name, focus = false) {
     if (!panes.includes(name)) return;
     selectedPane = name;
@@ -1328,6 +1408,39 @@ h2 { margin: 0; font-size: 11px; font-weight: 650; letter-spacing: .01em; color:
     }
   }
 
+  function jobOutcomeLabel(job) {
+    const state = job.state === "active" ? job.status : job.outcome || job.status;
+    return ({ running: "Running", queued: "Queued", completed: "Completed", passed: "Passed", failed: "Failed", recovering: "Reconnecting", lost: "Execution lost", stopped: "Stopped", cancelled: "Cancelled", timed_out: "Timed out", inconclusive: "Inconclusive", stop_requested: "Stopping" })[state] || state.replaceAll("_", " ");
+  }
+
+  function renderJobs(jobs) {
+    const root = el("jobsList"); root.replaceChildren();
+    const results = el("jobResultsList"); results.replaceChildren();
+    el("jobsSection").hidden = !jobs?.available || (!jobs.items.length && !jobs.active);
+    el("jobsMeta").textContent = jobs?.truncated ? "Showing up to 8 background executions; more may be active or finished." : "";
+    el("jobResults").hidden = true;
+    if (!jobs?.available) return;
+    const outcomes = new Map();
+    for (const job of jobs.items) {
+      const row = document.createElement("article"); row.className = "workflow-row";
+      const header = document.createElement("header");
+      const label = document.createElement("strong"); label.textContent = job.tool.replaceAll("_", " ");
+      const status = document.createElement("span"); status.className = "secondary";
+      const outcome = jobOutcomeLabel(job);
+      status.textContent = outcome;
+      if (job.recovery_state) status.textContent += " · " + job.recovery_state.replaceAll("_", " ");
+      header.append(label, status); row.append(header);
+      if (job.state === "active") root.append(row);
+      else {
+        results.append(row);
+        outcomes.set(outcome, (outcomes.get(outcome) || 0) + 1);
+      }
+    }
+    el("jobResults").hidden = !results.children.length;
+    el("jobResultsSummary").textContent = "Recent background results · "
+      + [...outcomes].map(([outcome, count]) => count + " " + outcome.toLowerCase()).join(" · ");
+  }
+
   function render(state) {
     if (tornDown) return;
     lastRenderedState = state;
@@ -1336,20 +1449,28 @@ h2 { margin: 0; font-size: 11px; font-weight: 650; letter-spacing: .01em; color:
     el("sessionIdentity").textContent = state.session_id ? "Session · " + state.session_id : "Session · not linked yet";
     el("windowSource").textContent = state.window ? "Source · " + state.window.source : "";
     const hasFinalChanges = snapshot !== null || state.final_changes !== undefined;
-    el("taskTitle").textContent = state.session?.title || "WebCodex activity";
+    el("taskTitle").textContent = state.session?.title || (threadSession !== undefined ? "WebCodex review" : "WebCodex activity");
     renderWindowCurrentActivity(state.activity);
     renderWindowActivity(state.window_activity);
+    renderJobs(state.jobs);
+    renderTaskOutputs(state.task_outputs);
+    if (!state.activity.active && state.jobs?.available && state.jobs.active) {
+      el("activityStatus").textContent = "Work continuing in the background";
+      el("activityDetail").textContent = "This task still has background work. Current execution states are shown below.";
+      el("activityAge").textContent = "";
+    }
     renderMessages(state.collaboration);
     renderWorkspace(state.workspace);
+    el("workspaceChangesSection").hidden = !state.workspace.git_available && !!state.task_outputs;
     el("resultChecks").hidden = !state.session_id || (!state.validation && !state.review);
     if (state.validation) renderValidation(state.validation);
     else { el("validationStatus").textContent = "Check status unavailable"; el("validationMeta").textContent = ""; }
     if (state.review) renderReview(state.review);
     else { el("reviewStatus").textContent = "Review status unavailable"; el("reviewMeta").textContent = ""; }
-    el("viewResults").textContent = hasFinalChanges ? "View final result" : `View changed files · ${state.workspace.files_total}`;
+    el("viewResults").textContent = state.task_outputs ? "View task results" : hasFinalChanges ? "View final result" : `View changed files · ${state.workspace.files_total}`;
     el("finalChanges").hidden = !hasFinalChanges;
 
-    if (state.activity.active) {
+    if (state.activity.active || state.jobs?.active) {
       el("badge").className = "badge tone-changed";
       el("badge").textContent = "Working";
     } else if ((activityIdleElapsed(state.activity) ?? -1) >= ACTIVITY_IDLE_AFTER_MS) {
@@ -1358,6 +1479,41 @@ h2 { margin: 0; font-size: 11px; font-weight: 650; letter-spacing: .01em; color:
     } else {
       el("badge").className = "badge";
       el("badge").textContent = "Waiting";
+    }
+  }
+
+  function renderTaskOutputs(outputs) {
+    el("taskOutputsSection").hidden = !outputs;
+    const root = el("taskOutputsList"); root.replaceChildren();
+    el("taskOutputsAction").textContent = "";
+    if (!outputs) return;
+    el("taskOutputsSummary").textContent = `${outputs.verified_count} observed · ${outputs.missing_count} missing · ${outputs.unavailable_count} unavailable`;
+    el("taskOutputsObserved").textContent = `Files observed ${new Date(outputs.observed_at * 1000).toLocaleString()}. Task-specific checks are shown separately; files may change after this observation.`;
+    for (const file of outputs.items) {
+      const row = document.createElement("article"); row.className = "workflow-row"; row.setAttribute("role", "listitem");
+      const title = document.createElement("strong"); title.textContent = file.path; row.append(title);
+      const status = document.createElement("p"); status.className = "secondary";
+      status.textContent = file.status === "verified" ? `${file.file_bytes} bytes · ${file.mime_type}` : file.status === "missing" ? "File missing" : "File could not be verified";
+      row.append(status);
+      if (file.status === "verified") {
+        const details = document.createElement("details");
+        const summary = document.createElement("summary"); summary.textContent = "File details";
+        const hash = document.createElement("code"); hash.textContent = "SHA-256 · " + file.sha256;
+        details.append(summary, hash); row.append(details);
+        const button = document.createElement("button"); button.type = "button"; button.className = "refresh"; button.textContent = "Get file in chat";
+        button.onclick = async () => {
+          if (tornDown || !hostInitialized || button.disabled) return;
+          const current = () => !tornDown && lastRenderedState?.task_outputs === outputs;
+          button.disabled = true;
+          try {
+            await send("ui/message", { role: "user", content: [{ type: "text", text: `Export the task output ${JSON.stringify(file.path)} from Project ${identity.project} to this chat using project_artifact(action=export). First check that its current SHA-256 matches the observed ${file.sha256}; if it changed, explain that before exporting.` }] });
+            if (current()) el("taskOutputsAction").textContent = "File requested in chat.";
+          } catch (_) { if (current()) el("taskOutputsAction").textContent = "Could not request the file. Try again."; }
+          finally { if (current()) button.disabled = false; }
+        };
+        row.append(button);
+      }
+      root.append(row);
     }
   }
 
@@ -1429,7 +1585,7 @@ h2 { margin: 0; font-size: 11px; font-weight: 650; letter-spacing: .01em; color:
 
   function automaticRefreshDelay() {
     const idleMs = lastStateChangeAt === null ? 0 : Math.max(0, Date.now() - lastStateChangeAt);
-    const active = lastRenderedState?.window_activity.active;
+    const active = lastRenderedState?.window_activity.active || lastRenderedState?.jobs?.active;
     const base = active || idleMs < IDLE_BACKOFF_AFTER_MS ? VISIBLE_REFRESH_MS : VISIBLE_IDLE_REFRESH_MS;
     const steady = Math.min(active ? 60000 : 120000, base * 2 ** Math.min(unchangedRefreshes, 4));
     return Math.max(steady, Math.min(120000, VISIBLE_REFRESH_MS * 2 ** Math.min(refreshFailures, 4)));
@@ -1439,7 +1595,7 @@ h2 { margin: 0; font-size: 11px; font-weight: 650; letter-spacing: .01em; color:
     if (refreshTimer !== null) clearTimeout(refreshTimer);
     refreshTimer = null;
     if (tornDown || !hostInitialized || !identity || lastStateVersion === null || document.hidden) return;
-    if (!lastRenderedState?.window_activity.active && lastStateChangeAt !== null && Date.now() - lastStateChangeAt >= AUTO_REFRESH_IDLE_PAUSE_MS) {
+    if (!lastRenderedState?.window_activity.active && !lastRenderedState?.jobs?.active && lastStateChangeAt !== null && Date.now() - lastStateChangeAt >= AUTO_REFRESH_IDLE_PAUSE_MS) {
       if (!refreshInFlight) el("status").textContent = "Updates paused · Refresh to check";
       return;
     }
@@ -1459,7 +1615,7 @@ h2 { margin: 0; font-size: 11px; font-weight: 650; letter-spacing: .01em; color:
     updateRefreshControl();
     if (!automatic) el("status").textContent = "Refreshing…";
     try {
-      const response = await send("tools/call", { name: "work_result_state", arguments: { project: identity.project } });
+      const response = await send("tools/call", { name: "work_result_state", arguments: { project: identity.project, ...(explicitSession ? { session_id: explicitSession } : {}), ...(automatic ? { automatic: true } : {}) } });
       if (tornDown) return;
       const structured = structuredOf(response);
       if (!structured) {
@@ -1494,6 +1650,9 @@ h2 { margin: 0; font-size: 11px; font-weight: 650; letter-spacing: .01em; color:
       el("status").textContent = completedNow ? "Live · final changes available"
         : changed ? (automatic ? "Live · updated" : "Updated")
         : (automatic ? "Live" : "Up to date");
+      el("status").title = state.workspace_observation?.reused === true
+        ? "Workspace metadata is a recent snapshot (at most 30 seconds). Refresh to observe external file changes now."
+        : "";
     } catch (_) {
       if (!tornDown) el("status").textContent = hadSnapshot ? "Refresh unavailable · showing last snapshot" : "Refresh unavailable · retry";
     } finally {
@@ -1505,6 +1664,22 @@ h2 { margin: 0; font-size: 11px; font-weight: 650; letter-spacing: .01em; color:
 
   function acceptToolInput(params) {
     const args = params && params.arguments;
+    // ChatGPT thread entrypoints are invoked with an empty object. In that case
+    // identity arrives from the entrypoint ToolResult after WebCodex resolves the
+    // Work Result previously presented in this exact Host Window.
+    if (args && typeof args === "object" && !Array.isArray(args) && Object.keys(args).length === 0) {
+      threadInput = true;
+      if (lastRenderedState && threadSession === undefined) failClosed("Thread binding unavailable");
+      return;
+    }
+    if (args?.session_id !== undefined) {
+      if (!validSession(args.session_id) || (explicitSession && explicitSession !== args.session_id)
+        || (threadSession !== undefined && threadSession !== args.session_id)
+        || (lastRenderedState?.jobs?.available && lastRenderedState.session_id !== args.session_id)) {
+        failClosed("Conflicting Workflow Session"); return;
+      }
+      explicitSession = args.session_id;
+    }
     if (!acceptIdentity(target(args && !Array.isArray(args) && args.project))) return;
     if (initialResultTransportMissing && hostInitialized && lastStateVersion === null) void refresh(false);
   }
@@ -1524,6 +1699,22 @@ h2 { margin: 0; font-size: 11px; font-weight: 650; letter-spacing: .01em; color:
     if (structured.success === false || !state || !acceptIdentity(target(state.project))) {
       if (!tornDown) failClosed("Task state unavailable");
       return;
+    }
+    const context = callToolResultOf(result)?._meta?.[THREAD_CONTEXT_META_KEY];
+    if (context !== undefined) {
+      const session = context?.session_id;
+      if (!context || Array.isArray(context) || Object.keys(context).length !== 1
+        || !(session === null || validSession(session))
+        || (session !== null && state.session_id !== session)
+        || (explicitSession && explicitSession !== session)
+        || (threadSession !== undefined && threadSession !== session)) {
+        failClosed("Conflicting thread binding"); return;
+      }
+      if (threadSession === undefined) enableThreadReview();
+      threadSession = session;
+      explicitSession = session;
+    } else if (threadInput || threadSession !== undefined) {
+      failClosed("Thread binding unavailable"); return;
     }
     initialResultTransportMissing = false;
     const hadFrozen = snapshot !== null;

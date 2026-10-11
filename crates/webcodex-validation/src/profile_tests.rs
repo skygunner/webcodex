@@ -20,6 +20,49 @@ use webcodex_tool_runtime_contracts::{
 };
 
 #[test]
+fn project_test_filter_plans_and_identities_share_native_semantics() {
+    for (backend, filter, expected) in [
+        (
+            "rust",
+            "  module::selected  ",
+            vec!["test", "module::selected", "-p", "pkg"],
+        ),
+        (
+            "go",
+            "^TestA/sub.*$",
+            vec!["test", "-json", "-run", "^TestA/sub.*$", "./pkg"],
+        ),
+        (
+            "go",
+            "  space  ",
+            vec!["test", "-json", "-run", "  space  ", "./pkg"],
+        ),
+    ] {
+        let packages = Some(vec![
+            if backend == "rust" { "pkg" } else { "./pkg" }.to_owned()
+        ]);
+        let operation =
+            project_validation_operation(backend, SemanticCheck::Test, packages).unwrap();
+        let baseline = operation.validation_target_id(Some("."));
+        let selected = operation.clone().with_test_filter(Some(filter)).unwrap();
+        let plan = selected.build_readonly_plan().unwrap();
+        assert_eq!(plan.structured_step.args, expected);
+        assert!(plan.structured_step.is_canonical());
+        assert_ne!(selected.validation_target_id(Some(".")), baseline);
+        let empty = operation.with_test_filter(Some("")).unwrap();
+        assert_eq!(empty.validation_target_id(Some(".")), baseline);
+    }
+    let rust = project_validation_operation("rust", SemanticCheck::Test, None).unwrap();
+    for bad in ["--all-features", "bad\nfilter"] {
+        assert!(rust.clone().with_test_filter(Some(bad)).is_err());
+    }
+    for backend in ["rust", "go"] {
+        let check = project_validation_operation(backend, SemanticCheck::Check, None).unwrap();
+        assert!(check.with_test_filter(Some("test")).is_err());
+    }
+}
+
+#[test]
 fn semantic_read_only_operations_preserve_legacy_leaf_plans_and_identity_profiles() {
     let cases = [
         (
@@ -39,6 +82,7 @@ fn semantic_read_only_operations_preserve_legacy_leaf_plans_and_identity_profile
                     features: Some("feature-a,feature-b".to_string()),
                     package: None,
                     packages: Some(vec!["package-a".to_string(), "package-b".to_string()]),
+                    dependency_mode: None,
                 },
             )),
             "cargo_check",
@@ -63,6 +107,7 @@ fn semantic_read_only_operations_preserve_legacy_leaf_plans_and_identity_profile
                     package: Some("webcodex".to_string()),
                     packages: None,
                     no_run: Some(true),
+                    dependency_mode: None,
                 },
             )),
             "cargo_test",
@@ -80,10 +125,12 @@ fn semantic_read_only_operations_preserve_legacy_leaf_plans_and_identity_profile
         ),
         (
             ReadOnlyValidationOperation::Go(GoReadOnlyValidationOperation::Test(GoTestOptions {
+                filter: None,
                 packages: Some(vec![
                     "./internal/control".to_string(),
                     "./internal/node".to_string(),
                 ]),
+                dependency_mode: None,
             })),
             "go_test",
             ValidationCommandOptions {
@@ -207,6 +254,7 @@ fn go_check_semantic_operation_uses_canonical_vet_adapter() {
     let operation =
         ReadOnlyValidationOperation::Go(GoReadOnlyValidationOperation::Check(GoCheckOptions {
             packages: Some(vec!["./internal/control".to_string()]),
+            dependency_mode: None,
         }));
     assert_eq!(operation.compatibility_profile().tool_identity, "go_vet");
     assert_eq!(operation.adapter().tool_identity(), "go_vet");
@@ -217,6 +265,81 @@ fn go_check_semantic_operation_uses_canonical_vet_adapter() {
             .compatibility_command,
         "go vet './internal/control'"
     );
+}
+
+#[test]
+fn locked_project_dependency_policy_maps_to_native_validation_argv_and_identity() {
+    use webcodex_core::project_validation::{ProjectDependencyMode, ProjectDependencyPolicy};
+
+    let policy = Some(ProjectDependencyPolicy {
+        mode: ProjectDependencyMode::Locked,
+    });
+    let cases = [
+        (
+            "rust",
+            SemanticCheck::Check,
+            vec!["check", "--locked", "--all-targets"],
+        ),
+        ("rust", SemanticCheck::Test, vec!["test", "--locked"]),
+        (
+            "go",
+            SemanticCheck::Check,
+            vec!["vet", "-mod=readonly", "./..."],
+        ),
+        (
+            "go",
+            SemanticCheck::Test,
+            vec!["test", "-json", "-mod=readonly", "./..."],
+        ),
+    ];
+
+    for (backend, action, expected) in cases {
+        let default = project_validation_operation(backend, action, None).unwrap();
+        let default_identity = default.validation_target_id(Some(".")).unwrap();
+        let locked = project_validation_operation(backend, action, None)
+            .unwrap()
+            .with_dependency_policy(policy)
+            .unwrap();
+        let plan = locked.build_readonly_plan().unwrap();
+        assert_eq!(plan.structured_step.args, expected, "{backend} {action:?}");
+        assert_ne!(
+            locked.validation_target_id(Some(".")).unwrap(),
+            default_identity,
+            "{backend} {action:?}"
+        );
+    }
+
+    let format = project_validation_operation("rust", SemanticCheck::Format, None).unwrap();
+    assert_eq!(
+        format.with_dependency_policy(policy).unwrap_err(),
+        "dependency_policy_unsupported"
+    );
+}
+
+#[test]
+fn default_dependency_policy_preserves_historical_validation_argv_and_identity() {
+    for (backend, action, expected) in [
+        ("rust", SemanticCheck::Check, vec!["check", "--all-targets"]),
+        ("rust", SemanticCheck::Test, vec!["test"]),
+        ("go", SemanticCheck::Check, vec!["vet", "./..."]),
+        ("go", SemanticCheck::Test, vec!["test", "-json", "./..."]),
+    ] {
+        let operation = project_validation_operation(backend, action, None).unwrap();
+        assert_eq!(
+            operation
+                .build_readonly_plan()
+                .unwrap()
+                .structured_step
+                .args,
+            expected
+        );
+        assert_eq!(
+            operation.validation_target_id(Some(".")),
+            project_validation_operation(backend, action, None)
+                .unwrap()
+                .validation_target_id(Some("."))
+        );
+    }
 }
 
 #[test]
@@ -479,10 +602,19 @@ fn go_profile_selects_only_go_test_and_preserves_json_command() {
             .unwrap(),
         "go test -json './internal/control' './internal/node'"
     );
+    assert_eq!(
+        adapter
+            .build_command(ValidationCommandOptions {
+                filter: Some("TestOne".to_string()),
+                ..ValidationCommandOptions::default()
+            })
+            .unwrap(),
+        "go test -json -run 'TestOne' ./..."
+    );
     assert!(adapter
         .build_command(ValidationCommandOptions {
-            filter: Some("TestOne".to_string()),
-            ..ValidationCommandOptions::default()
+            filter: Some("bad\nfilter".into()),
+            ..Default::default()
         })
         .is_err());
     assert!(validation_adapter_for_tool("go_check").is_none());

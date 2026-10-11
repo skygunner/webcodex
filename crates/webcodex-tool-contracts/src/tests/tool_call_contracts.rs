@@ -1,6 +1,7 @@
 //! Canonical ToolCall parser, wire, accessor, and request-audit helper tests.
 
 use super::tool_call_test_support::*;
+use super::{required_fields, spec_named};
 use crate::*;
 use serde_json::{json, Value};
 use webcodex_core::workflow_session_contract as sessions;
@@ -207,20 +208,62 @@ fn start_agent_task_endpoint_continuation_parses_ref_or_explicit_tuple() {
             ..
         } if selector == "~ta1" && outcome == "succeeded" && completion_key == "completion-by-ref"
     ));
-    assert!(ToolCall::from_tool_name(
-        "start_agent_task_coding_run",
-        json!({
-            "attempt_ref": "~ta1",
-            "project": "agent:special:task-project",
-            "task_id": "wc_agent_task_ERERERERERERERER",
-            "attempt_id": "wc_agent_task_attempt_IiIiIiIiIiIiIiIi",
-            "assignee_agent_id": "wc_dagent_MzMzMzMzMzMzMzMz",
-            "attempt_fence": "wc_agent_task_fence_RERERERERERERERERERERA",
-            "attempt_controller_generation": 1,
-            "provider_id": "codex"
-        }),
-    )
-    .is_err());
+}
+
+#[test]
+fn start_agent_task_coding_run_parses_ref_or_explicit_tuple() {
+    let by_ref = json!({
+        "attempt_ref": "~ta1",
+        "project": "agent:special:task-project",
+        "provider_id": "codex"
+    });
+    let call = ToolCall::from_tool_name("start_agent_task_coding_run", by_ref.clone()).unwrap();
+    assert!(matches!(call, ToolCall::StartAgentTaskCodingRun {
+        attempt_ref: Some(ref selector), task_id: None, attempt_id: None,
+        assignee_agent_id: None, attempt_fence: None, attempt_controller_generation: None, ..
+    } if selector == "~ta1"));
+    let by_tuple = json!({
+        "project": "agent:special:task-project",
+        "task_id": "wc_agent_task_ERERERERERERERER",
+        "attempt_id": "wc_agent_task_attempt_IiIiIiIiIiIiIiIi",
+        "assignee_agent_id": "wc_dagent_MzMzMzMzMzMzMzMz",
+        "attempt_fence": "wc_agent_task_fence_RERERERERERERERERERERA",
+        "attempt_controller_generation": 1,
+        "provider_id": "codex"
+    });
+    let call = ToolCall::from_tool_name("start_agent_task_coding_run", by_tuple).unwrap();
+    assert!(matches!(
+        call,
+        ToolCall::StartAgentTaskCodingRun {
+            attempt_ref: None,
+            task_id: Some(_),
+            attempt_id: Some(_),
+            assignee_agent_id: Some(_),
+            attempt_fence: Some(_),
+            attempt_controller_generation: Some(1),
+            ..
+        }
+    ));
+    let specs = registered_tool_specs();
+    let spec = spec_named(&specs, "start_agent_task_coding_run");
+    assert_eq!(spec.input_schema["additionalProperties"], false);
+    assert_eq!(required_fields(spec), vec!["project", "provider_id"]);
+    assert!(test_support::validate_schema_instance(&by_ref, &spec.input_schema).is_ok());
+    for missing in ["project", "provider_id"] {
+        let mut invalid = by_ref.clone();
+        invalid.as_object_mut().unwrap().remove(missing);
+        assert!(ToolCall::from_tool_name("start_agent_task_coding_run", invalid).is_err());
+    }
+    for forbidden in [
+        "session_id",
+        "instruction",
+        "idempotency_key",
+        "provider_instance_id",
+    ] {
+        let mut invalid = by_ref.clone();
+        invalid[forbidden] = json!("not-inferred");
+        assert!(ToolCall::from_tool_name("start_agent_task_coding_run", invalid).is_err());
+    }
 }
 
 #[test]
@@ -913,6 +956,7 @@ fn from_tool_name_parses_structured_run_process_boundaries() {
     match call {
         ToolCall::RunProcess {
             project,
+            interactive,
             executable,
             args,
             cwd,
@@ -924,6 +968,7 @@ fn from_tool_name_parses_structured_run_process_boundaries() {
         } => {
             assert_eq!(project, "demo");
             assert_eq!(executable, "git");
+            assert!(!interactive);
             assert_eq!(
                 args,
                 ["status", "--porcelain", "two words", "$(literal)"].map(str::to_string)
@@ -957,6 +1002,51 @@ fn from_tool_name_parses_structured_run_process_boundaries() {
 }
 
 #[test]
+fn interactive_pipe_schema_is_opt_in_and_input_is_adaptive_direct() {
+    let ordinary =
+        ToolCall::from_tool_name("run_process", json!({"project":"p","executable":"python"}))
+            .unwrap();
+    assert!(matches!(
+        ordinary,
+        ToolCall::RunProcess {
+            interactive: false,
+            ..
+        }
+    ));
+    let interactive = ToolCall::from_tool_name(
+        "run_process",
+        json!({"project":"p","executable":"python","interactive":true}),
+    )
+    .unwrap();
+    assert!(matches!(
+        interactive,
+        ToolCall::RunProcess {
+            interactive: true,
+            ..
+        }
+    ));
+    let definition = crate::lookup_tool_definition("job_write_input").unwrap();
+    assert!(!definition.effect_annotations().read_only_hint);
+    assert!(definition.effect_annotations().idempotent_hint);
+    assert_eq!(definition.adaptive_runtime_direct_rank(), Some(71));
+    for field in [
+        "command",
+        "executable",
+        "runner_instance_id",
+        "pid",
+        "session_id",
+        "tty",
+    ] {
+        let mut value = json!({"project":"~p1","job_id":"exact","input_id":"same","data":"bytes"});
+        value[field] = json!("forbidden");
+        assert!(
+            ToolCall::from_tool_name("job_write_input", value).is_err(),
+            "{field}"
+        );
+    }
+}
+
+#[test]
 fn process_argv_alias_is_exact_and_canonical() {
     for name in ["run_process", "run_detached_process"] {
         let mut base = json!({"project":"demo", "executable":"git"});
@@ -967,7 +1057,7 @@ fn process_argv_alias_is_exact_and_canonical() {
         alias["argv"] = json!(["status"]);
         let (call, code) =
             ToolCall::from_tool_name_with_normalization(name, alias.clone()).unwrap();
-        assert_eq!(code, Some("argv_to_args"));
+        assert_eq!(code, Some(ToolInputNormalizationCode::ArgvToArgs));
         assert_eq!(
             serde_json::to_value(&call).unwrap()["params"]["args"],
             json!(["status"])
@@ -982,17 +1072,25 @@ fn process_argv_alias_is_exact_and_canonical() {
                 .1,
             None
         );
+        let canonical_value =
+            serde_json::to_value(ToolCall::from_tool_name(name, canonical).unwrap()).unwrap();
+        assert_eq!(serde_json::to_value(&call).unwrap(), canonical_value);
+        assert_eq!(call.tool_name(), name);
         alias["args"] = json!(["status"]);
+        assert_eq!(
+            serde_json::to_value(ToolCall::from_tool_name(name, alias.clone()).unwrap()).unwrap(),
+            canonical_value
+        );
         assert_eq!(
             ToolCall::from_tool_name_with_normalization(name, alias.clone())
                 .unwrap()
                 .1,
-            Some("argv_to_args")
+            Some(ToolInputNormalizationCode::ArgvToArgs)
         );
         alias["args"] = json!(["different"]);
         assert_eq!(
             ToolCall::from_tool_name(name, alias).unwrap_err(),
-            "ambiguous compatibility alias: args and argv differ"
+            "ambiguous input alias: args and argv differ"
         );
         for (field, value) in [("argv", json!("status")), ("arguments", json!(["status"]))] {
             let mut invalid = base.clone();
@@ -1000,6 +1098,15 @@ fn process_argv_alias_is_exact_and_canonical() {
             assert!(
                 ToolCall::from_tool_name(name, invalid).is_err(),
                 "{name}: {field}"
+            );
+        }
+        for invalid_value in [json!(null), json!(7), json!([7]), json!({})] {
+            let mut invalid = base.clone();
+            invalid["argv"] = invalid_value.clone();
+            invalid["args"] = invalid_value;
+            assert!(
+                ToolCall::from_tool_name(name, invalid).is_err(),
+                "identical aliases do not bypass typing"
             );
         }
         for field in ["timeout", "workdir", "arg", "command_args", "params"] {
@@ -1158,7 +1265,7 @@ fn from_tool_name_rejects_retired_inspection_tools_and_parses_retained_git_tools
 }
 
 #[test]
-fn continuation_endpoint_rotation_has_canonical_and_legacy_tool_names() {
+fn continuation_endpoint_rotation_only_retains_legacy_name_with_legacy_feature() {
     let args = json!({
         "agent_id": "wc_dagent_qqqqqqqqqqqqqqqq".to_string(),
         "host": "ChatGPT",
@@ -1174,9 +1281,20 @@ fn continuation_endpoint_rotation_has_canonical_and_legacy_tool_names() {
         ToolCall::RotateAgentContinuationEndpoint { .. }
     ));
 
-    let legacy = ToolCall::from_tool_name("attach_agent_endpoint", args).unwrap();
-    assert_eq!(legacy.tool_name(), "attach_agent_endpoint");
-    assert!(matches!(legacy, ToolCall::AttachAgentEndpoint { .. }));
+    #[cfg(feature = "legacy-gpt-actions")]
+    {
+        let legacy = ToolCall::from_tool_name("attach_agent_endpoint", args).unwrap();
+        assert_eq!(legacy.tool_name(), "attach_agent_endpoint");
+        assert!(matches!(legacy, ToolCall::AttachAgentEndpoint { .. }));
+    }
+    #[cfg(not(feature = "legacy-gpt-actions"))]
+    {
+        assert!(ToolCall::from_tool_name("attach_agent_endpoint", args.clone()).is_err());
+        assert!(serde_json::from_value::<ToolCall>(
+            json!({"tool":"attach_agent_endpoint", "params":args})
+        )
+        .is_err());
+    }
 }
 
 #[test]
@@ -1227,6 +1345,10 @@ fn tool_call_project_accessor_covers_project_tool_specs() {
                 // already_unregistered outcome remains representable.
                 None
             }
+            "accept_artifact_handoff" => args
+                .get("destination_project")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             _ => args
                 .get("project")
                 .and_then(Value::as_str)
@@ -1301,7 +1423,7 @@ fn tool_call_session_id_accessor_covers_session_tool_specs() {
                 // foreign or missing filter value into an existence oracle.
                 None
             }
-            "present_work_result" => {
+            "present_work_result" | "search_webcodex_resources" | "open_webcodex_workbench" => {
                 // Work Result is Window-first. Its optional session_id is
                 // compatibility/context evidence only and must not re-enter the
                 // generic business-Session lookup or recorder projection.
@@ -1585,8 +1707,10 @@ fn from_tool_name_parses_finish_coding_task_workspace_projection_flag() {
     )
     .unwrap();
 
+    assert_eq!(call.session_id(), Some("wc_sess_demo"));
     match call {
         ToolCall::FinishCodingTask {
+            outputs,
             project,
             session_id,
             summary_only,
@@ -1596,6 +1720,7 @@ fn from_tool_name_parses_finish_coding_task_workspace_projection_flag() {
             include_handoff,
             include_validation_summary,
         } => {
+            assert!(outputs.is_empty());
             assert_eq!(project, "agent:client:demo");
             assert_eq!(session_id, "wc_sess_demo");
             assert!(summary_only);
@@ -2147,14 +2272,14 @@ fn retired_start_coding_task_is_a_canonical_unknown_tool() {
 
 #[test]
 fn present_agent_continuation_parses_ref_or_explicit_tuple_without_session() {
-    let spec = registered_tool_specs()
-        .into_iter()
-        .find(|spec| spec.name == "present_agent_continuation")
-        .unwrap();
-    let properties = spec.input_schema["properties"].as_object().unwrap();
+    assert!(!registered_tool_specs()
+        .iter()
+        .any(|spec| spec.name == "present_agent_continuation"));
+    let schema = input_schema_for_tool("present_agent_continuation");
+    let properties = schema["properties"].as_object().unwrap();
     assert!(properties.contains_key("agent_continuation_ref"));
     assert!(properties.contains_key("agent_id"));
-    if let Some(fields) = spec.input_schema["required"].as_array() {
+    if let Some(fields) = schema["required"].as_array() {
         for field in fields {
             assert!(
                 field != "agent_id"
@@ -2165,7 +2290,7 @@ fn present_agent_continuation_parses_ref_or_explicit_tuple_without_session() {
             );
         }
     }
-    let schema_text = spec.input_schema.to_string();
+    let schema_text = schema.to_string();
     assert!(schema_text.contains(crate::AGENT_CONTINUATION_REF_PATTERN));
 
     let by_ref = ToolCall::from_tool_name(

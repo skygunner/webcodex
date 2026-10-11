@@ -154,6 +154,16 @@ pub(super) const ROUTES: &[RouteSpec] = &[
         AuthMiddleware,
     ),
     route(
+        RuntimeConsoleTrace,
+        Post,
+        "/api/runtime-console/trace",
+        Require(webcodex_core::authority::SCOPE_ADMIN),
+        RuntimeConsole,
+        Hidden,
+        Other,
+        AuthMiddleware,
+    ),
+    route(
         RuntimeConsoleWindowCollaboration,
         Post,
         "/api/runtime-console/window-collaboration",

@@ -585,6 +585,7 @@ def verify_bundle_directory(
     expected_source_sha: str,
     expected_tag: str,
     artifact_name: str,
+    require_unified_installers: bool = False,
 ) -> dict:
     if not root.is_dir():
         raise CollectionError("assembled bundle directory is missing")
@@ -698,7 +699,9 @@ def verify_bundle_directory(
     installer_artifacts = release_build.get("installer_artifacts")
     installer_files: dict[str, str] = {}
     installer_hashes: dict[str, str] = {}
-    if installer_artifacts is not None:
+    if require_unified_installers and "installer_artifacts" not in release_build:
+        raise CollectionError("required unified installer contract is missing")
+    if "installer_artifacts" in release_build:
         if not isinstance(installer_artifacts, dict) or set(installer_artifacts) != set(INSTALLER_TARGETS):
             raise CollectionError("release-build.json must contain exactly the eight unified installer targets")
         for target, (platform, _package_format) in INSTALLER_TARGETS.items():
@@ -889,6 +892,7 @@ def collect_bundle(
     output_dir: Path,
     timeout: float,
     token: str | None = None,
+    require_unified_installers: bool = False,
 ) -> dict:
     if run_id <= 0:
         raise CollectionError("run id must be positive")
@@ -923,6 +927,7 @@ def collect_bundle(
             expected_source_sha=source_sha,
             expected_tag=tag,
             artifact_name=artifact["name"],
+            require_unified_installers=require_unified_installers,
         )
         os.replace(extracted, destination)
     finally:
@@ -942,6 +947,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Collect one same-run assembled WebCodex release bundle through the GitHub REST API."
     )
+    parser.add_argument("--require-unified-installers", action="store_true")
     parser.add_argument("--run-id", type=int, required=True)
     parser.add_argument("--source-sha", required=True)
     parser.add_argument("--tag", required=True)
@@ -957,6 +963,7 @@ def main(argv: list[str] | None = None) -> int:
         summary = collect_bundle(
             repo=args.repo,
             run_id=args.run_id,
+            require_unified_installers=args.require_unified_installers,
             expected_source_sha=args.source_sha,
             expected_tag=args.tag,
             output_dir=args.output_dir,

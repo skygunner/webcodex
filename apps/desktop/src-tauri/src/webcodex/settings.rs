@@ -11,6 +11,8 @@ mod mcp;
 pub use mcp::reconcile_mcp;
 mod acp;
 pub use acp::reconcile_acp;
+mod provider_preflight;
+pub use provider_preflight::preflight_providers;
 
 const MAX_BYTES: u64 = 256 * 1024;
 
@@ -25,6 +27,7 @@ pub struct RunnerPaths {
 #[serde(deny_unknown_fields)]
 pub struct RunnerFileAccess {
     pub configured_roots: Vec<String>,
+    pub default_roots: Vec<String>,
     pub effective_roots: Vec<String>,
     pub using_default_roots: bool,
     pub allow_cwd_anywhere: bool,
@@ -82,13 +85,13 @@ pub struct AllowedRootsUpdate {
     pub roots: Vec<String>,
 }
 
-pub struct PendingAllowedRootsEdit {
+pub struct PendingSettingsEdit {
     path: PathBuf,
     original: String,
     candidate: String,
 }
 
-impl PendingAllowedRootsEdit {
+impl PendingSettingsEdit {
     pub fn candidate_unchanged(&self) -> DesktopResult<bool> {
         Ok(read(&self.path)? == self.candidate)
     }
@@ -182,6 +185,11 @@ fn configured_allowed_roots(doc: &DocumentMut) -> DesktopResult<Vec<String>> {
 
 fn file_access(doc: &DocumentMut) -> DesktopResult<RunnerFileAccess> {
     let configured_roots = configured_allowed_roots(doc)?;
+    let default_roots = webcodex_runner_config::effective_allowed_roots(&[], true)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
     let allow_cwd_anywhere = match doc.get("policy") {
         None => false,
         Some(policy) if policy.is_table_like() => policy
@@ -204,6 +212,7 @@ fn file_access(doc: &DocumentMut) -> DesktopResult<RunnerFileAccess> {
     Ok(RunnerFileAccess {
         using_default_roots: configured_roots.is_empty(),
         configured_roots,
+        default_roots,
         effective_roots,
         allow_cwd_anywhere,
     })
@@ -230,9 +239,17 @@ fn validate(paths: &[String]) -> DesktopResult<()> {
     Ok(())
 }
 
-fn validate_allowed_roots(roots: &[String]) -> DesktopResult<()> {
+fn validate_allowed_roots(current: &[String], roots: &[String]) -> DesktopResult<()> {
     validate(roots)?;
     for root in roots {
+        if current.iter().any(|existing| {
+            webcodex_runner_config::paths::paths_equal(Path::new(existing), Path::new(root))
+        }) {
+            // Existing configured roots are not new authority. A directory may
+            // have disappeared since it was configured; keep that stale entry
+            // editable so users can remove stale roots one at a time.
+            continue;
+        }
         let canonical = Path::new(root).canonicalize().map_err(|_| error())?;
         if !canonical.is_dir() {
             return Err(error());
@@ -296,26 +313,30 @@ fn plugin_ids(doc: &DocumentMut) -> DesktopResult<Vec<String>> {
 pub fn stage_allowed_roots_update(
     runtime: &StoredRuntime,
     request: AllowedRootsUpdate,
-) -> DesktopResult<PendingAllowedRootsEdit> {
+) -> DesktopResult<PendingSettingsEdit> {
     verify_target(runtime, &request.target)?;
-    validate_allowed_roots(&request.roots)?;
     let path = runtime.runner_config.as_ref().ok_or_else(error)?;
     let original = read(path)?;
     let mut doc = parse(&original, runtime)?;
-    if configured_allowed_roots(&doc)? != request.expected {
+    let current = configured_allowed_roots(&doc)?;
+    if current != request.expected {
         return Err(error());
     }
+    validate_allowed_roots(&current, &request.roots)?;
     doc["policy"]["allowed_roots"] = toml_edit::value(request.roots.into_iter().collect::<Array>());
     let candidate = doc.to_string();
     persist_text(path, &original, &candidate)?;
-    Ok(PendingAllowedRootsEdit {
+    Ok(PendingSettingsEdit {
         path: path.clone(),
         original,
         candidate,
     })
 }
 
-pub fn update(runtime: &StoredRuntime, request: SettingsUpdate) -> DesktopResult<()> {
+pub fn stage_paths_update(
+    runtime: &StoredRuntime,
+    request: SettingsUpdate,
+) -> DesktopResult<PendingSettingsEdit> {
     verify_target(runtime, &request.target)?;
     validate(&request.paths.instruction_files)?;
     validate(&request.paths.skill_roots)?;
@@ -332,7 +353,46 @@ pub fn update(runtime: &StoredRuntime, request: SettingsUpdate) -> DesktopResult
         let array: Array = values.into_iter().collect();
         doc[section][key] = toml_edit::value(array);
     }
-    persist(path, &original, &doc)
+    let candidate = doc.to_string();
+    persist_text(path, &original, &candidate)?;
+    Ok(PendingSettingsEdit {
+        path: path.clone(),
+        original,
+        candidate,
+    })
+}
+
+#[cfg(test)]
+pub fn update(runtime: &StoredRuntime, request: SettingsUpdate) -> DesktopResult<()> {
+    stage_paths_update(runtime, request).map(|_| ())
+}
+
+/// Append the fixed managed path without changing existing file order or Skills.
+/// Paths are still only configuration; instruction authority remains Runner-owned.
+pub fn stage_managed_instructions(
+    runtime: &StoredRuntime,
+    target: SettingsTarget,
+    expected: RunnerPaths,
+    managed_path: &Path,
+) -> DesktopResult<PendingSettingsEdit> {
+    let mut paths = expected.clone();
+    if !paths
+        .instruction_files
+        .iter()
+        .any(|path| webcodex_runner_config::paths::paths_equal(Path::new(path), managed_path))
+    {
+        paths
+            .instruction_files
+            .push(managed_path.to_string_lossy().into_owned());
+    }
+    stage_paths_update(
+        runtime,
+        SettingsUpdate {
+            target,
+            expected,
+            paths,
+        },
+    )
 }
 
 fn persist(path: &Path, original: &str, doc: &DocumentMut) -> DesktopResult<()> {

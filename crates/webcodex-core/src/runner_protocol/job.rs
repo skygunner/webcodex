@@ -273,14 +273,16 @@ impl ShellJobValidationStep {
 
 /// Canonical `cargo check` argv: `check` followed by zero or more distinct
 /// read-only flags (`--all-targets`, `--all-features`,
-/// `--no-default-features`) and `--features <value>` / `-p <value>` pairs.
+/// `--no-default-features`, `--locked`) and `--features <value>` /
+/// `-p <value>` pairs.
 fn is_canonical_cargo_check_args(args: &[&str]) -> bool {
     args.first() == Some(&"check") && is_canonical_cargo_flags(&args[1..], false, true)
 }
 
 /// Canonical `cargo test` argv: the `test` subcommand, an optional libtest
 /// filter (never a Cargo option), then zero or more distinct read-only flags
-/// and `--features <value>` / repeated `-p <value>` pairs, optionally including
+/// (including `--locked`) and `--features <value>` / repeated `-p <value>`
+/// pairs, optionally including
 /// the Cargo test-only `--lib` and `--no-run` selectors.
 ///
 /// The flat argv boundary has inherent information loss: `["test",
@@ -365,12 +367,10 @@ pub fn normalize_cargo_packages(
     Ok(Some(normalized))
 }
 
-/// Normalize the optional package scope shared by structured Go validation.
-/// Omission preserves the historical `./...` scope; an explicit list must
-/// contain one to eight already-normalized project-relative patterns.
-pub fn normalize_go_test_packages(
-    packages: Option<&[String]>,
-) -> Result<Vec<String>, &'static str> {
+/// Normalize one bounded project-relative Go package scope.
+/// Omission preserves the canonical `./...` project scope; an explicit list
+/// must contain one to eight already-normalized project-relative patterns.
+pub fn normalize_go_packages(packages: Option<&[String]>) -> Result<Vec<String>, &'static str> {
     let Some(packages) = packages else {
         return Ok(vec!["./...".to_string()]);
     };
@@ -379,11 +379,18 @@ pub fn normalize_go_test_packages(
     }
     packages
         .iter()
-        .map(|package| normalize_go_test_package(package))
+        .map(|package| normalize_go_package(package))
         .collect()
 }
 
-fn normalize_go_test_package(raw: &str) -> Result<String, &'static str> {
+/// Compatibility entry for existing structured Go validation callers.
+pub fn normalize_go_test_packages(
+    packages: Option<&[String]>,
+) -> Result<Vec<String>, &'static str> {
+    normalize_go_packages(packages)
+}
+
+fn normalize_go_package(raw: &str) -> Result<String, &'static str> {
     if raw.is_empty() {
         return Err("package pattern cannot be empty");
     }
@@ -438,11 +445,29 @@ fn normalize_go_test_package(raw: &str) -> Result<String, &'static str> {
     Ok(raw.to_string())
 }
 
+/// Bounded native Go -run expression. Do not trim: spaces and slash-separated
+/// subtest expressions have native meaning. Go validates regexp syntax; the
+/// Runner transports one literal argv value, never shell or additional flags.
+pub fn normalize_go_test_filter(raw: &str) -> Result<Option<String>, &'static str> {
+    if raw.len() > RUST_TEST_FILTER_MAX_BYTES || raw.chars().any(char::is_control) {
+        return Err("Go test filter exceeds 200 bytes or contains control characters");
+    }
+    Ok((!raw.is_empty()).then(|| raw.to_owned()))
+}
+
 fn is_canonical_go_vet_args(args: &[&str]) -> bool {
     if args.len() < 2 || args[0] != "vet" {
         return false;
     }
-    let packages = args[1..]
+    let package_start = if args.get(1) == Some(&"-mod=readonly") {
+        2
+    } else {
+        1
+    };
+    if args.len() <= package_start {
+        return false;
+    }
+    let packages = args[package_start..]
         .iter()
         .map(|value| (*value).to_string())
         .collect::<Vec<_>>();
@@ -456,7 +481,21 @@ fn is_canonical_go_test_json_args(args: &[&str]) -> bool {
     if args.len() < 3 || args[0] != "test" || args[1] != "-json" {
         return false;
     }
-    let packages = args[2..]
+    let mut index = 2;
+    if args.get(index) == Some(&"-mod=readonly") {
+        index += 1;
+    }
+    if args.get(index) == Some(&"-run") {
+        let Some(filter) = args.get(index + 1) else {
+            return false;
+        };
+        if !matches!(normalize_go_test_filter(filter), Ok(Some(value)) if value == *filter) {
+            return false;
+        }
+        index += 2;
+    }
+    let package_start = index;
+    let packages = args[package_start..]
         .iter()
         .map(|value| (*value).to_string())
         .collect::<Vec<_>>();
@@ -484,7 +523,7 @@ fn is_canonical_cargo_flags(
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         let key = match *arg {
-            "--all-targets" | "--all-features" | "--no-default-features" => *arg,
+            "--all-targets" | "--all-features" | "--no-default-features" | "--locked" => *arg,
             "--lib" | "--no-run" if cargo_test => *arg,
             "--features" => {
                 if !seen.insert(*arg) {
@@ -764,10 +803,9 @@ impl ShellJobValidationMetadata {
                     ("rust", "cargo_fmt" | "cargo_check" | "cargo_test")
                         | ("go", "go_vet" | "go_test")
                 )
-                || (self.kind == "test"
-                    && (self.require_tests != Some(true)
-                        || self.minimum_tests != Some(1)
-                        || self.no_run.is_some()))
+                || (self.require_tests, self.minimum_tests)
+                    != provenance.request.test_requirements()
+                || self.no_run.is_some()
             {
                 return false;
             }
@@ -866,6 +904,24 @@ impl ShellJobStructuredExecutionMetadata {
                 self.language.is_none()
                     && self.script_bytes.is_none()
                     && self.arg_count <= PROCESS_ARG_MAX_COUNT
+            }
+            "run_process_interactive" => {
+                self.language.is_none()
+                    && self.script_bytes.is_none()
+                    && self.arg_count <= PROCESS_ARG_MAX_COUNT
+                    && !self.stdin_present
+                    && self.validation_identity.is_none()
+                    && self.validation_tool.is_none()
+                    && self.assertion_name.is_none()
+            }
+            "project_build" => {
+                self.language.is_none()
+                    && self.script_bytes.is_none()
+                    && self.arg_count <= PROCESS_ARG_MAX_COUNT
+                    && !self.stdin_present
+                    && self.validation_identity.is_none()
+                    && self.validation_tool.is_none()
+                    && self.assertion_name.is_none()
             }
             "run_script" => {
                 self.language.is_some()

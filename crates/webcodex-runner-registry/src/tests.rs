@@ -340,6 +340,8 @@ mod instance_lease;
 mod internal_posix;
 #[path = "tests/job_handoff.rs"]
 mod job_handoff;
+#[path = "tests/job_index.rs"]
+mod job_index;
 #[path = "tests/job_lifecycle.rs"]
 mod job_lifecycle;
 #[path = "tests/job_log_wait.rs"]
@@ -354,6 +356,10 @@ mod mcp_gateway;
 mod plugin_gateway;
 #[path = "tests/polling.rs"]
 mod polling;
+#[path = "tests/project_build.rs"]
+mod project_build;
+#[path = "tests/project_dependency_policy.rs"]
+mod project_dependency_policy;
 #[path = "tests/project_file_read.rs"]
 mod project_file_read;
 #[path = "tests/project_inventory.rs"]

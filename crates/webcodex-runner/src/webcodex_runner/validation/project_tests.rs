@@ -30,8 +30,46 @@ fn request(action: ProjectValidationAction) -> ProjectValidationRequest {
         action,
         adapter: ProjectValidationAdapter::Auto,
         scope: None,
+        dependency_policy: None,
+        test: None,
     }
 }
+
+#[test]
+fn project_validation_runner_plans_locked_dependency_policy_for_rust_and_go() {
+    for (marker, adapter, expected) in [
+        (
+            "Cargo.toml",
+            ProjectValidationAdapter::Rust,
+            vec!["check", "--locked", "--all-targets"],
+        ),
+        (
+            "go.mod",
+            ProjectValidationAdapter::Go,
+            vec!["vet", "-mod=readonly", "./..."],
+        ),
+    ] {
+        let (_tmp, _root, registry, policy) = fixture(marker);
+        let mut locked = request(ProjectValidationAction::Check);
+        locked.adapter = adapter;
+        locked.dependency_policy = Some(ProjectDependencyPolicy {
+            mode: ProjectDependencyMode::Locked,
+        });
+        let (plan, _) = project::plan(&policy, &registry, &locked).unwrap();
+        assert_eq!(plan.provenance.request, locked);
+        assert_eq!(plan.step.args, expected);
+
+        let mut default = locked.clone();
+        default.dependency_policy = None;
+        let (default_plan, _) = project::plan(&policy, &registry, &default).unwrap();
+        assert_ne!(plan.validation_target_id, default_plan.validation_target_id);
+        assert_ne!(
+            plan.provenance.invocation_digest,
+            default_plan.provenance.invocation_digest
+        );
+    }
+}
+
 #[test]
 fn project_validation_runner_resolves_all_production_actions() {
     use sha2::Digest;
@@ -101,6 +139,34 @@ fn project_validation_runner_resolves_all_production_actions() {
     }
 }
 #[test]
+fn go_project_validation_identity_is_single_module_domain_separated() {
+    for action in [
+        ProjectValidationAction::Check,
+        ProjectValidationAction::Test,
+    ] {
+        let (_tmp, _root, registry, policy) = fixture("go.mod");
+        let (plan, _) = project::plan(&policy, &registry, &request(action)).unwrap();
+        let semantic = match action {
+            ProjectValidationAction::Check => webcodex_validation::SemanticCheck::Check,
+            ProjectValidationAction::Test => webcodex_validation::SemanticCheck::Test,
+            ProjectValidationAction::FormatCheck => unreachable!(),
+        };
+        let operation =
+            webcodex_validation::project_validation_operation("go", semantic, None).unwrap();
+        let native_identity = operation
+            .validation_target_id(Some(&plan.provenance.recipe_root))
+            .unwrap();
+        let expected = webcodex_core::validation_identity::contextualize_structured_validation_target_identity(
+            &native_identity,
+            webcodex_core::validation_identity::StructuredValidationExecutionContext::GoProjectSingleModuleV1,
+        )
+        .unwrap();
+        assert_eq!(plan.validation_target_id, expected);
+        assert_ne!(plan.validation_target_id, native_identity);
+    }
+}
+
+#[test]
 fn project_validation_package_scope_maps_through_canonical_operations() {
     use ProjectValidationAction::*;
     let cases = [
@@ -165,12 +231,22 @@ fn project_validation_package_scope_maps_through_canonical_operations() {
                 .map(|scope| scope.packages.clone()),
         )
         .unwrap();
-        assert_eq!(
-            plan.validation_target_id,
-            operation
-                .validation_target_id(Some(&plan.provenance.recipe_root))
-                .unwrap()
-        );
+        let native_identity = operation
+            .validation_target_id(Some(&plan.provenance.recipe_root))
+            .unwrap();
+        let expected_identity = if plan.provenance.backend == "go" {
+            webcodex_core::validation_identity::contextualize_structured_validation_target_identity(
+                &native_identity,
+                webcodex_core::validation_identity::StructuredValidationExecutionContext::GoProjectSingleModuleV1,
+            )
+            .unwrap()
+        } else {
+            native_identity.clone()
+        };
+        assert_eq!(plan.validation_target_id, expected_identity);
+        if plan.provenance.backend == "go" {
+            assert_ne!(plan.validation_target_id, native_identity);
+        }
         assert_eq!(
             plan.step,
             operation.build_readonly_plan().unwrap().structured_step
@@ -264,6 +340,79 @@ fn project_validation_rejects_escape_and_unknown_project() {
     req.project_id = "missing".into();
     assert!(project::plan(&policy, &registry, &req).is_err());
 }
+#[test]
+fn project_validation_test_options_fence_selection_and_count_policy_separately() {
+    use webcodex_core::runner_protocol::ShellJobValidationMetadata;
+    for (marker, filter, expected) in [
+        ("Cargo.toml", " selected ", vec!["test", "selected"]),
+        (
+            "go.mod",
+            "^TestA/sub.*$",
+            vec!["test", "-json", "-run", "^TestA/sub.*$", "./..."],
+        ),
+    ] {
+        let (_tmp, _root, registry, policy) = fixture(marker);
+        let mut req = request(ProjectValidationAction::Test);
+        let (plain, _) = project::plan(&policy, &registry, &req).unwrap();
+        req.test = Some(ProjectValidationTestOptions {
+            filter: Some(filter.into()),
+            require_tests: Some(false),
+            min_tests: Some(3),
+        });
+        let (selected, _) = project::plan(&policy, &registry, &req).unwrap();
+        assert_eq!(selected.step.args, expected);
+        assert_ne!(selected.validation_target_id, plain.validation_target_id);
+        assert_ne!(
+            selected.provenance.invocation_digest,
+            plain.provenance.invocation_digest
+        );
+        let mut metadata = ShellJobValidationMetadata {
+            project_validation: Some(selected.provenance.clone()),
+            tool: "project_validate".into(),
+            kind: "test".into(),
+            adapter: selected.adapter,
+            steps: vec![selected.step],
+            effective_timeout_secs: 60,
+            sync_wait_secs: 5,
+            validation_target_id: Some(selected.validation_target_id.clone()),
+            source_fence: None,
+            minimum_tests: Some(3),
+            require_tests: Some(false),
+            no_run: None,
+        };
+        assert!(metadata.is_valid());
+        assert_eq!(
+            serde_json::from_str::<ShellJobValidationMetadata>(
+                &serde_json::to_string(&metadata).unwrap()
+            )
+            .unwrap(),
+            metadata
+        );
+        metadata.minimum_tests = Some(1);
+        assert!(!metadata.is_valid());
+        metadata.minimum_tests = Some(3);
+        metadata.require_tests = Some(true);
+        assert!(!metadata.is_valid());
+        metadata.require_tests = Some(false);
+        metadata.no_run = Some(true);
+        assert!(!metadata.is_valid());
+        // Policy changes fence a request/Job but do not pretend to alter argv.
+        req.test.as_mut().unwrap().min_tests = Some(9);
+        let (other_minimum, _) = project::plan(&policy, &registry, &req).unwrap();
+        assert_eq!(
+            other_minimum.validation_target_id,
+            selected.validation_target_id
+        );
+        assert_eq!(
+            other_minimum.provenance.invocation_digest,
+            selected.provenance.invocation_digest
+        );
+        assert_ne!(other_minimum.provenance, selected.provenance);
+        req.action = ProjectValidationAction::Check;
+        assert!(project::plan(&policy, &registry, &req).is_err());
+    }
+}
+
 #[test]
 fn project_validation_manifest_fence_and_exact_recovery_plan() {
     use webcodex_core::runner_operation::{RunnerJobOperation, RunnerJobValidationOperation};

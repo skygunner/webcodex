@@ -237,6 +237,12 @@ pub struct ProjectSelection {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectInspection {
+    pub project: ProjectSelection,
+    pub authorization_required: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BinaryInfo {
     pub directory: String,
     pub version: String,
@@ -414,6 +420,8 @@ pub struct DesktopStateSnapshot {
     pub saved_projects: Vec<ProjectSelection>,
     pub topology: Option<RuntimeTopology>,
     pub readiness: ReadinessSnapshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_error: Option<crate::error::DesktopError>,
     pub project: Option<ProjectSelection>,
     pub binaries: Option<BinaryInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -448,6 +456,7 @@ impl Default for DesktopStateSnapshot {
             saved_projects: Vec::new(),
             topology: None,
             readiness: ReadinessSnapshot::default(),
+            runtime_error: None,
             project: None,
             binaries: None,
             powershell_runtime: None,
@@ -554,6 +563,8 @@ pub struct StoredRuntime {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnvironmentInput {
+    /// New personal environments default to user scope; saved/migrated ones keep their namespace.
+    pub service_scope: Option<webcodex_environment::service::ServiceScope>,
     pub mode: String,
     pub server_url: Option<String>,
     pub project_path: Option<String>,

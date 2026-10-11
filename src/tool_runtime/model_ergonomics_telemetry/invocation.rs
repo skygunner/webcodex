@@ -210,6 +210,7 @@ impl BootstrapFacts {
                     "agent_capability_unavailable",
                     "probe_timeout",
                     "probe_failed",
+                    "not_observed",
                 ],
             ),
         }

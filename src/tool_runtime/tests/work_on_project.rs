@@ -1,9 +1,11 @@
 //! Focused tests for the canonical `work_on_project` coding entry point.
 //!
-//! `work_on_project` validates one of two project sources plus the task inputs,
+//! `work_on_project` validates an explicit project source or exact checkout Session plus the task inputs,
 //! invokes the shared coding workflow engine, and projects a compact startup
 //! result. It never binds a current window, never guesses a recent Session, and
 //! never falls back to a credential-wide Session.
+
+mod session_resume;
 
 use super::reconnect::dispatch_coding_call_in_window;
 use super::support::*;
@@ -908,7 +910,20 @@ async fn dispatch_with_path_runner(
     let task = tokio::spawn({
         let runtime = runtime.clone();
         let auth = auth_context(None, true);
-        async move { runtime.dispatch_with_auth(call, Some(&auth)).await }
+        async move {
+            runtime
+                .dispatch_with_auth_transport_options_and_metadata_with_recording_mode_and_context(
+                    call,
+                    Some(&auth),
+                    crate::tool_runtime::sessions::SessionTransport::Mcp,
+                    Default::default(),
+                    None,
+                    true,
+                    vec!["project.instructions".into()],
+                    Default::default(),
+                )
+                .await
+        }
     });
     let deadline = std::time::Instant::now() + CODING_WORKFLOW_FIXTURE_TIMEOUT;
     loop {
@@ -935,6 +950,7 @@ async fn dispatch_with_path_runner(
                     "allow_patch": true,
                     "disabled": false,
                     "revision": format!("sha256:{}", "a".repeat(64)),
+                    "root_fingerprint": format!("wc_projroot_{}", "b".repeat(64)),
                     "source": "path",
                     "outcome": outcome,
                     "registered": registered,
@@ -1124,7 +1140,7 @@ fn work_on_project_schema_and_registration() {
     assert_eq!(props["session_id"]["type"], "string");
     assert_eq!(
         props["session_id"]["pattern"],
-        "^wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})$"
+        "^(wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})|~s[1-9][0-9]{0,18})$"
     );
     assert_eq!(props["include_extension_catalog"]["type"], "boolean");
     assert_eq!(props["include_extension_catalog"]["default"], true);
@@ -2762,6 +2778,21 @@ async fn workflow_resume_context_is_window_principal_scoped_bounded_and_non_auth
         .with_project_reference_database(window_db.clone());
     let project =
         register_runner_project_at_path(&runtime, "workflow-resume", "demo", root.path()).await;
+    let mut summary = named_registered_project(
+        "workflow-resume",
+        "demo",
+        "demo",
+        &root.path().to_string_lossy(),
+        2,
+    );
+    summary.root_fingerprint = Some(format!("wc_projroot_{}", "a".repeat(64)));
+    crate::test_support::apply_project_inventory_snapshot(
+        &runtime.runner_registry,
+        "workflow-resume",
+        "inst",
+        vec![summary],
+    )
+    .await;
     let auth = auth_context(None, true);
     let owner_authority = crate::tool_runtime::workflow_session_authority_fingerprint(Some(&auth))
         .expect("test auth has stable Workflow Session authority");
@@ -2821,6 +2852,27 @@ async fn workflow_resume_context_is_window_principal_scoped_bounded_and_non_auth
         .unwrap();
     assert_eq!(single["count"], 1);
     assert_eq!(single["candidates"][0]["session_id"], first.session_id);
+    let project_ref = single["candidates"][0]["project_ref"]
+        .as_str()
+        .expect("authorized Project with a root fingerprint should expose its short selector");
+    assert!(project_ref.starts_with("~p"));
+    assert_eq!(
+        runtime
+            .resolve_project_input_for_auth(project_ref, Some(&auth))
+            .await
+            .unwrap()
+            .resolved_id,
+        project
+    );
+    assert_eq!(single["selection"], "caller_must_choose_exact_session");
+    let mut without_refs = runtime.clone();
+    without_refs.project_reference_db = None;
+    let canonical_only = without_refs
+        .workflow_resume_context_projection_for_test(Some(&window), Some(&auth))
+        .await
+        .unwrap();
+    assert_eq!(canonical_only["candidates"][0]["project"], project);
+    assert!(canonical_only["candidates"][0].get("project_ref").is_none());
     let first_ref = single["candidates"][0]["session_ref"]
         .as_str()
         .expect("authorized discovery candidate should expose a short Session selector");
@@ -3507,7 +3559,11 @@ async fn path_source_auto_registers_reuses_and_supports_canonical_coding_entry()
     std::fs::write(root.path().join("hello.txt"), "hello\n").unwrap();
     let project_path = root.path().canonicalize().unwrap();
     let project_path = project_path.to_string_lossy().to_string();
-    let runtime = ToolRuntime::new_for_tests();
+    let references = tempfile::tempdir().unwrap();
+    let db = std::sync::Arc::new(
+        crate::Database::open(&references.path().join("references.db")).unwrap(),
+    );
+    let runtime = ToolRuntime::new_for_tests().with_project_reference_database(db);
     let client_id = "wop-path";
     register_agent_with_projects(
         &runtime,
@@ -3552,6 +3608,14 @@ async fn path_source_auto_registers_reuses_and_supports_canonical_coding_entry()
         !first.output.to_string().contains(&project_path),
         "compact work_on_project output leaked the absolute input path"
     );
+    assert_eq!(
+        first.output["context_projection"]["materials"][0]["status"],
+        "available"
+    );
+    assert_eq!(
+        first.output["context_projection"]["materials"][0]["projection"]["fingerprint"],
+        first.output["instructions"]["fingerprint"]
+    );
     let session_id = first.output["session_id"].as_str().unwrap().to_string();
 
     let second = dispatch_with_path_runner(
@@ -3579,6 +3643,31 @@ async fn path_source_auto_registers_reuses_and_supports_canonical_coding_entry()
         "reused_existing_registration"
     );
     assert_eq!(instruction_events(&runtime, &session_id).len(), 2);
+
+    for selector in [
+        first.output["resolved_project"].as_str().unwrap(),
+        first.output["project_ref"].as_str().unwrap(),
+    ] {
+        let canonical = dispatch_with_path_runner(
+            &runtime,
+            client_id,
+            work_on_project_call(selector, "canonical context", None),
+            "repo-a1b2c3d4",
+            &project_path,
+            "reused_existing_registration",
+            false,
+        )
+        .await;
+        assert!(canonical.success, "{canonical:?}");
+        assert_eq!(
+            canonical.output["resolved_project"],
+            first.output["resolved_project"]
+        );
+        assert_eq!(
+            canonical.output["context_projection"]["materials"][0]["status"],
+            "available"
+        );
+    }
 
     let listed = runtime.list_projects(Some(&auth_context(None, true))).await;
     assert!(listed.success);
@@ -4044,7 +4133,7 @@ async fn work_on_project_continues_exact_session_and_appends_instruction() {
     let continued = dispatch_coding_call_in_window(
         &runtime,
         "wop-continue",
-        work_on_project_call(&project, "follow-up instruction", Some(&session_id)),
+        work_on_project_call("", "follow-up instruction", Some(&session_id)),
         Some(&auth),
         "wop-continue-window",
     )
@@ -4326,6 +4415,7 @@ fn finish_coding_task_remains_optional_and_advisory() {
         "advisory",
         "does not decide task completion",
         "generate the user-facing final report",
+        "presence does not prove content",
     ] {
         assert!(
             description.contains(phrase),
@@ -6073,15 +6163,15 @@ async fn work_on_project_distinguishes_unavailable_from_inconclusive_lsp_probes(
     use std::time::{Duration, Instant};
 
     for (status, reason) in [
-        ("probe_timeout", "status_probe_timed_out"),
-        ("probe_failed", "status_probe_failed"),
-        ("unavailable", "server_unavailable"),
+        ("not_observed", None),
+        ("probe_failed", Some("status_probe_failed")),
+        ("unavailable", Some("server_unavailable")),
     ] {
         let root = tempfile::tempdir().unwrap();
         init_git_repo(root.path());
         commit_file(root.path(), "README.md", "# fixture\n", "seed");
         let runtime = ToolRuntime::new_for_tests()
-            .with_semantic_navigation_probe_timeout(Duration::from_millis(100));
+            .with_semantic_navigation_probe_timeout(Duration::from_secs(60));
         let project =
             register_runner_project_at_path(&runtime, "wop-probe-state", "demo", root.path()).await;
         let task = tokio::spawn({
@@ -6109,9 +6199,9 @@ async fn work_on_project_distinguishes_unavailable_from_inconclusive_lsp_probes(
                 continue;
             }
             probe_count += 1;
-            if status == "probe_timeout" {
-                // Leave exactly this probe unanswered; the normal timeout path
-                // must cancel it without blocking the rest of coding startup.
+            if status == "not_observed" {
+                // Leave only the optional probe unanswered. Mandatory completion
+                // must cancel it without waiting for the provider timeout.
                 continue;
             }
             let envelope = if status == "unavailable" {
@@ -6148,7 +6238,7 @@ async fn work_on_project_distinguishes_unavailable_from_inconclusive_lsp_probes(
         let semantic = &result.output["semantic_navigation"];
         assert_eq!(semantic["supported"], true);
         assert_eq!(semantic["status"], status);
-        assert_eq!(semantic["reason_code"], reason);
+        assert_eq!(semantic["reason_code"], json!(reason));
         if status == "unavailable" {
             assert_eq!(semantic["available"], false);
             assert_eq!(result.output["readiness"]["status"], "warn");

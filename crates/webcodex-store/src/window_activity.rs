@@ -4,7 +4,7 @@ use crate::models::{
 };
 use crate::Database;
 use rusqlite::{params, Connection};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use webcodex_core::workflow_session_contract::is_safe_job_id;
 
 // Window history is already bounded by ActionAudit retention. Keep the human
@@ -38,7 +38,7 @@ impl Database {
         principal: Option<(&str, &str)>,
         limit: usize,
     ) -> anyhow::Result<Vec<WindowActivitySummaryRecord>> {
-        let conn = self.lock_connection(crate::StoreDomain::WindowActivity);
+        let conn = self.lock_history_connection(crate::StoreDomain::WindowActivity)?;
         let (principal_sql, kind, id) = principal_predicate(principal);
         let sql = format!(
             "SELECT e.client_window_key,
@@ -84,7 +84,7 @@ impl Database {
         &self,
         principal: Option<(&str, &str)>,
     ) -> anyhow::Result<usize> {
-        let conn = self.lock_connection(crate::StoreDomain::WindowActivity);
+        let conn = self.lock_history_connection(crate::StoreDomain::WindowActivity)?;
         let count = match principal {
             Some((kind, id)) => conn.query_row(
                 "SELECT COUNT(DISTINCT client_window_key)
@@ -113,7 +113,7 @@ impl Database {
         window_key: &str,
         principal: Option<(&str, &str)>,
     ) -> anyhow::Result<Option<WindowActivitySummaryRecord>> {
-        let conn = self.lock_connection(crate::StoreDomain::WindowActivity);
+        let conn = self.lock_history_connection(crate::StoreDomain::WindowActivity)?;
         let row = match principal {
             Some((kind, id)) => conn
                 .query_row(
@@ -163,7 +163,11 @@ impl Database {
         principal: Option<(&str, &str)>,
         limit: usize,
     ) -> anyhow::Result<Vec<WindowActivityEventRecord>> {
-        let conn = self.lock_connection(crate::StoreDomain::WindowActivity);
+        #[cfg(any(test, feature = "root-test-support"))]
+        self.window_history_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut reader = self.lock_history_connection(crate::StoreDomain::WindowActivity)?;
+        let conn = reader.transaction()?;
         let (principal_sql, kind, id) = principal_predicate(principal);
         let sql = format!(
             "SELECT e.event_id, e.client_window_key, e.client_window_source,
@@ -196,6 +200,45 @@ impl Database {
             }
         };
         collect_window_event_rows(&conn, &mut rows, None)
+    }
+
+    /// Latest successful action in the exact principal's Window. Filter before
+    /// limiting so unrelated activity cannot hide the selected presentation.
+    /// The caller still owns current Project and Session authorization.
+    pub fn latest_successful_window_action(
+        &self,
+        window_key: &str,
+        principal: (&str, &str),
+        operation: &str,
+    ) -> anyhow::Result<Option<WindowActivityEventRecord>> {
+        let conn = self.lock_connection(crate::StoreDomain::WindowActivity);
+        let mut stmt = conn.prepare(
+            "SELECT e.event_id, e.client_window_key, e.client_window_source,
+                    e.server_trace_id, e.window_started_at_ms, e.window_ended_at_ms,
+                    e.duration_ms, e.action_name, e.operation, e.project, e.status,
+                    e.window_meaningful, e.recorder_gap_session_id,
+                    e.principal_correlation_kind, e.principal_correlation_id,
+                    e.request_observed_at_ms, e.response_handed_at_ms,
+                    e.window_transition_kind, e.response_streaming,
+                    e.window_continuity_eligible, e.http_status, e.ids_json
+             FROM action_events e
+             WHERE e.client_window_key = ?1
+               AND e.principal_correlation_kind = ?2
+               AND e.principal_correlation_id = ?3
+               AND e.operation = ?4 AND e.status = 'success'
+               AND e.project IS NOT NULL
+               AND e.window_started_at_ms IS NOT NULL
+               AND e.window_ended_at_ms IS NOT NULL
+             ORDER BY COALESCE(e.request_observed_at_ms, e.window_started_at_ms) DESC, e.event_id DESC
+             LIMIT 1",
+        )?;
+        Ok(collect_window_events(
+            &conn,
+            &mut stmt,
+            params![window_key, principal.0, principal.1, operation],
+            None,
+        )?
+        .pop())
     }
 
     /// Exact bounded lookup used by App-only lazy Window detail reads.
@@ -262,7 +305,11 @@ impl Database {
         principal: Option<(&str, &str)>,
         limit: usize,
     ) -> anyhow::Result<Vec<WindowActivityEventRecord>> {
-        let conn = self.lock_connection(crate::StoreDomain::WindowActivity);
+        #[cfg(any(test, feature = "root-test-support"))]
+        self.window_history_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut reader = self.lock_history_connection(crate::StoreDomain::WindowActivity)?;
+        let conn = reader.transaction()?;
         let (kind, id) = principal
             .map(|(kind, id)| (Some(kind), Some(id)))
             .unwrap_or((None, None));
@@ -317,7 +364,11 @@ impl Database {
         principal: Option<(&str, &str)>,
         limit: usize,
     ) -> anyhow::Result<Vec<WindowActivityEventRecord>> {
-        let conn = self.lock_connection(crate::StoreDomain::WindowActivity);
+        #[cfg(any(test, feature = "root-test-support"))]
+        self.window_history_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut reader = self.lock_history_connection(crate::StoreDomain::WindowActivity)?;
+        let conn = reader.transaction()?;
         let (principal_sql, kind, id) = principal_predicate(principal);
         let sql = format!(
             "SELECT e.event_id, e.client_window_key, e.client_window_source,
@@ -395,7 +446,10 @@ impl Database {
         principal: Option<(&str, &str)>,
         limit: usize,
     ) -> anyhow::Result<Vec<WindowWorkflowSessionSummaryRecord>> {
-        let conn = self.lock_connection(crate::StoreDomain::WindowActivity);
+        #[cfg(any(test, feature = "root-test-support"))]
+        self.window_history_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let conn = self.lock_history_connection(crate::StoreDomain::WindowActivity)?;
         let (principal_sql, kind, id) = principal_predicate(principal);
         let sql = format!(
             "SELECT l.workflow_session_id, MAX(l.project), MIN(l.linked_at_ms),
@@ -429,7 +483,7 @@ impl Database {
         principal: Option<(&str, &str)>,
         limit: usize,
     ) -> anyhow::Result<Vec<WindowSessionLinkSummaryRecord>> {
-        let conn = self.lock_connection(crate::StoreDomain::WindowActivity);
+        let conn = self.lock_history_connection(crate::StoreDomain::WindowActivity)?;
         let limit = bounded_limit(limit, MAX_WINDOW_LINK_LIMIT);
         match principal {
             Some((kind, id)) => {
@@ -539,12 +593,25 @@ fn collect_window_events<P: rusqlite::Params>(
     collect_window_event_rows(conn, &mut rows, code_mode_summary_column)
 }
 
-fn window_job_correlation_from_ids_json(ids_json: Option<String>) -> (Option<String>, Vec<String>) {
+fn safe_workflow_session_id(value: &str) -> bool {
+    let Some(suffix) = value.strip_prefix("wc_sess_") else {
+        return false;
+    };
+    (suffix.len() == 16
+        && suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')))
+        || (suffix.len() == 32 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit()))
+}
+
+fn window_correlation_from_ids_json(
+    ids_json: Option<String>,
+) -> (Option<String>, Vec<String>, Option<String>) {
     let Some(value) = ids_json
         .as_deref()
         .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
     else {
-        return (None, Vec::new());
+        return (None, Vec::new(), None);
     };
     let async_job_id = value
         .get("async_job_id")
@@ -570,7 +637,13 @@ fn window_job_correlation_from_ids_json(ids_json: Option<String>) -> (Option<Str
             }
         }
     }
-    (async_job_id, observed_job_ids)
+    let business_session_id = value
+        .get("business_session_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|session_id| safe_workflow_session_id(session_id))
+        .map(str::to_string);
+    (async_job_id, observed_job_ids, business_session_id)
 }
 
 fn collect_window_event_rows(
@@ -581,7 +654,8 @@ fn collect_window_event_rows(
     let mut out = Vec::new();
     while let Some(row) = rows.next()? {
         let event_id: String = row.get(0)?;
-        let (async_job_id, observed_job_ids) = window_job_correlation_from_ids_json(row.get(21)?);
+        let (async_job_id, observed_job_ids, business_session_id) =
+            window_correlation_from_ids_json(row.get(21)?);
         out.push(WindowActivityEventRecord {
             event_id: event_id.clone(),
             client_window_key: row.get(1)?,
@@ -597,8 +671,9 @@ fn collect_window_event_rows(
             meaningful: row.get(11)?,
             async_job_id,
             observed_job_ids,
+            business_session_id,
             recorder_gap_session_id: row.get(12)?,
-            workflow_links: workflow_links_for_event(conn, &event_id)?,
+            workflow_links: Vec::new(),
             principal_correlation_kind: row.get(13)?,
             principal_correlation_id: row.get(14)?,
             request_observed_at_ms: row.get(15)?,
@@ -618,28 +693,41 @@ fn collect_window_event_rows(
             },
         });
     }
+    // Fetch links for the exact bounded page in one query. Historical callers
+    // hold an explicit read transaction: a reader mutex alone cannot preserve
+    // this page across concurrent Audit writes. Per-event queries made each refresh perform
+    // thousands of statement preparations before it could return any rows.
+    if !out.is_empty() {
+        let ids = out
+            .iter()
+            .map(|event| event.event_id.as_str())
+            .collect::<Vec<_>>();
+        let encoded_ids = serde_json::to_string(&ids)?;
+        let positions = ids
+            .into_iter()
+            .enumerate()
+            .map(|(index, id)| (id.to_string(), index))
+            .collect::<HashMap<_, _>>();
+        let mut stmt = conn.prepare_cached(
+            "SELECT event_id, workflow_session_id, project, workflow_session_relation, linked_at_ms
+             FROM action_event_workflow_links
+             WHERE event_id IN (SELECT value FROM json_each(?1))
+             ORDER BY event_id ASC, linked_at_ms ASC, workflow_session_relation ASC, workflow_session_id ASC",
+        )?;
+        let mut links = stmt.query(params![encoded_ids])?;
+        while let Some(row) = links.next()? {
+            let event_id: String = row.get(0)?;
+            if let Some(&index) = positions.get(&event_id) {
+                out[index].workflow_links.push(WindowWorkflowLinkRecord {
+                    workflow_session_id: row.get(1)?,
+                    project: row.get(2)?,
+                    relation: row.get(3)?,
+                    linked_at_ms: row.get(4)?,
+                });
+            }
+        }
+    }
     Ok(out)
-}
-
-fn workflow_links_for_event(
-    conn: &Connection,
-    event_id: &str,
-) -> anyhow::Result<Vec<WindowWorkflowLinkRecord>> {
-    let mut stmt = conn.prepare(
-        "SELECT workflow_session_id, project, workflow_session_relation, linked_at_ms
-         FROM action_event_workflow_links
-         WHERE event_id = ?1
-         ORDER BY linked_at_ms ASC, workflow_session_relation ASC, workflow_session_id ASC",
-    )?;
-    let rows = stmt.query_map(params![event_id], |row| {
-        Ok(WindowWorkflowLinkRecord {
-            workflow_session_id: row.get(0)?,
-            project: row.get(1)?,
-            relation: row.get(2)?,
-            linked_at_ms: row.get(3)?,
-        })
-    })?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
 fn relation_set(csv: Option<String>) -> Vec<String> {
@@ -691,6 +779,11 @@ fn collect_session_window_rows(
 
 #[cfg(test)]
 mod tests {
+    mod inventory;
+    mod peer_query;
+    mod queries;
+    mod read_lane;
+
     use super::*;
     use crate::models::{ActionEventRecord, ActionEventWorkflowLinkRecord, ActionSessionRecord};
 
@@ -785,6 +878,7 @@ mod tests {
                 "../unsafe",
                 "wc_job_observed_456"
             ],
+            "business_session_id": "wc_sess_6666666666666666",
             "observation_token": "must-not-project"
         })
         .to_string();
@@ -802,6 +896,12 @@ mod tests {
             rows[0].observed_job_ids,
             vec!["wc_job_observed_456".to_string()]
         );
+        assert_eq!(
+            rows[0].business_session_id.as_deref(),
+            Some("wc_sess_6666666666666666")
+        );
+        let projected = serde_json::to_value(&rows[0]).unwrap();
+        assert!(projected.get("business_session_id").is_none());
     }
 
     #[test]

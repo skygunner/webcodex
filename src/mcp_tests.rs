@@ -129,9 +129,10 @@ fn mcp_job_audit_correlation_keeps_only_stable_job_identity() {
 }
 
 #[test]
-fn work_result_app_internal_tools_do_not_become_window_activity() {
+fn work_result_app_internal_tools_do_not_start_live_window_activity() {
     for tool in [
         "present_work_result",
+        "work_result_thread_panel",
         "work_result_state",
         "work_result_activity_detail",
         "work_result_send_message",
@@ -278,6 +279,8 @@ mod artifact_export;
 mod computer_app;
 #[path = "mcp_tests/conformance.rs"]
 mod conformance;
+#[path = "mcp_tests/execution_feedback.rs"]
+mod execution_feedback;
 #[path = "mcp_tests/file_import.rs"]
 mod file_import;
 #[path = "mcp_tests/goal_plan_app.rs"]
@@ -298,6 +301,10 @@ mod plugin_check;
 mod plugin_tools;
 #[path = "mcp_tests/protocol.rs"]
 mod protocol;
+#[path = "mcp_tests/request_policy.rs"]
+mod request_policy;
+#[path = "mcp_tests/resource_references.rs"]
+mod resource_references;
 #[path = "mcp_tests/response.rs"]
 mod response_tests;
 #[path = "mcp_tests/result_app.rs"]
@@ -434,3 +441,9 @@ fn readiness_audit_correlation_retains_exact_jobs_without_guessing_project() {
     assert!(correlation.resolved_project.is_none());
     assert!(correlation.async_job_id.is_none());
 }
+
+#[path = "mcp_tests/workbench_app.rs"]
+mod workbench_app;
+
+#[path = "mcp_tests/resource_mentions.rs"]
+mod resource_mentions;

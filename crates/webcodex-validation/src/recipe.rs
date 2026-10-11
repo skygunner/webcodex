@@ -5,12 +5,16 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
 use webcodex_core::runner_protocol::{normalize_rust_test_filter, ShellJobValidationStep};
+use webcodex_workspace::project_recipe::{
+    digest_project_recipe_files, project_recipe_provenance_files, read_project_recipe_file,
+    resolve_project_recipe_root, ProjectRecipeResolutionError,
+};
+
+pub use webcodex_workspace::project_recipe::ProjectRecipeId as RecipeId;
 
 const RECIPE_VERSION: u32 = 1;
-const RECIPE_NAMES: [&str; 4] = ["rust", "node", "python", "go"];
-const RECIPE_MARKERS: [&str; 4] = ["Cargo.toml", "package.json", "pyproject.toml", "go.mod"];
 const PYTHON_MANIFESTLESS_DIGEST_SEED: &[u8] = b"webcodex.python.manifestless.recipe.v1";
 const PYTHON_UNITTEST_ARGS: [&str; 5] = ["-B", "-m", "unittest", "discover", "-v"];
 const NODE_LOCKFILES: [(&str, &str); 6] = [
@@ -21,30 +25,6 @@ const NODE_LOCKFILES: [(&str, &str); 6] = [
     ("bun.lock", "bun"),
     ("bun.lockb", "bun"),
 ];
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[repr(usize)]
-pub enum RecipeId {
-    Rust,
-    Node,
-    Python,
-    Go,
-}
-
-impl RecipeId {
-    pub fn as_str(self) -> &'static str {
-        RECIPE_NAMES[self as usize]
-    }
-
-    fn marker(self) -> &'static str {
-        RECIPE_MARKERS[self as usize]
-    }
-
-    fn all() -> [Self; 4] {
-        [Self::Rust, Self::Node, Self::Python, Self::Go]
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -112,6 +92,27 @@ impl RecipeError {
     }
 }
 
+fn map_project_recipe_error(error: ProjectRecipeResolutionError) -> RecipeError {
+    match error {
+        ProjectRecipeResolutionError::ExecutionRootUnavailable
+        | ProjectRecipeResolutionError::NotFound => RecipeError::new("validation_recipe_not_found"),
+        ProjectRecipeResolutionError::CwdMismatch
+        | ProjectRecipeResolutionError::ExplicitNotFound { .. } => {
+            RecipeError::new("validation_recipe_mismatch")
+        }
+        ProjectRecipeResolutionError::ExplicitMismatch {
+            recipe_root,
+            candidates,
+            ..
+        } => RecipeError::new("validation_recipe_mismatch").at(recipe_root, &candidates),
+        ProjectRecipeResolutionError::Ambiguous {
+            recipe_root,
+            candidates,
+        } => RecipeError::new("validation_recipe_ambiguous").at(recipe_root, &candidates),
+        ProjectRecipeResolutionError::SourceFileInvalid => manifest_invalid(),
+    }
+}
+
 pub fn resolve_validation_recipe(
     execution_root: &Path,
     cwd: Option<&str>,
@@ -137,17 +138,36 @@ pub fn resolve_validation_recipe_with_packages(
     test_filter: Option<&str>,
     package_scope: Option<&[String]>,
 ) -> Result<ResolvedValidationRecipe, RecipeError> {
-    let root = execution_root
-        .canonicalize()
-        .map_err(|_| RecipeError::new("validation_recipe_not_found"))?;
-    let cwd = resolve_cwd(&root, cwd)?;
-    let (recipe, recipe_root) = nearest_recipe_root(&root, &cwd, explicit_recipe)?;
+    resolve_validation_recipe_with_project_policy(
+        execution_root,
+        cwd,
+        explicit_recipe,
+        checks,
+        test_filter,
+        package_scope,
+        None,
+    )
+}
+
+pub fn resolve_validation_recipe_with_project_policy(
+    execution_root: &Path,
+    cwd: Option<&str>,
+    explicit_recipe: Option<RecipeId>,
+    checks: &[SemanticCheck],
+    test_filter: Option<&str>,
+    package_scope: Option<&[String]>,
+    dependency_policy: Option<webcodex_core::project_validation::ProjectDependencyPolicy>,
+) -> Result<ResolvedValidationRecipe, RecipeError> {
+    let resolved_root = resolve_project_recipe_root(execution_root, cwd, explicit_recipe)
+        .map_err(map_project_recipe_error)?;
+    let root = &resolved_root.execution_root;
+    let recipe = resolved_root.recipe;
+    let recipe_root = &resolved_root.absolute_root;
     if package_scope.is_some() && !matches!(recipe, RecipeId::Rust | RecipeId::Go) {
         return Err(RecipeError::new("validation_scope_unsupported"));
     }
-    let root_relative = relative_root(&root, &recipe_root);
-    let marker = recipe.marker();
-    let marker_path = recipe_root.join(marker);
+    let root_relative = resolved_root.relative_root.clone();
+    let marker_path = resolved_root.marker_path();
     let manifestless_python = if recipe == RecipeId::Python {
         match fs::symlink_metadata(&marker_path) {
             Ok(_) => false,
@@ -164,22 +184,47 @@ pub fn resolve_validation_recipe_with_packages(
             format!("{:x}", Sha256::digest(PYTHON_MANIFESTLESS_DIGEST_SEED)),
         )
     } else {
-        let manifest = read_manifest(&root, &marker_path)?;
-        let (steps, extra_digest_files) = match recipe {
+        let manifest =
+            read_project_recipe_file(root, &marker_path).map_err(map_project_recipe_error)?;
+        let (steps, provenance_files) = match recipe {
             RecipeId::Rust | RecipeId::Go => {
-                canonical_adapter_steps(recipe, checks, test_filter.as_deref(), package_scope)?
+                let steps = canonical_adapter_steps(
+                    recipe,
+                    checks,
+                    test_filter.as_deref(),
+                    package_scope,
+                    dependency_policy,
+                )?;
+                let provenance_files = project_recipe_provenance_files(&resolved_root)
+                    .map_err(map_project_recipe_error)?
+                    .expect("canonical project validation adapters are Rust/Go");
+                (steps, provenance_files)
             }
-            RecipeId::Node => node_steps(&recipe_root, &manifest, checks)?,
-            RecipeId::Python => python_steps(&manifest, checks)?,
+            RecipeId::Node => {
+                let (steps, extra_digest_files) = node_steps(&recipe_root, &manifest, checks)?;
+                let provenance_files = std::iter::once(marker_path.clone())
+                    .chain(
+                        extra_digest_files
+                            .into_iter()
+                            .map(|file| recipe_root.join(file)),
+                    )
+                    .collect();
+                (steps, provenance_files)
+            }
+            RecipeId::Python => {
+                let (steps, extra_digest_files) = python_steps(&manifest, checks)?;
+                let provenance_files = std::iter::once(marker_path.clone())
+                    .chain(
+                        extra_digest_files
+                            .into_iter()
+                            .map(|file| recipe_root.join(file)),
+                    )
+                    .collect();
+                (steps, provenance_files)
+            }
         };
-        let manifest_digest = digest_files(
-            &root,
-            std::iter::once(marker_path).chain(
-                extra_digest_files
-                    .into_iter()
-                    .map(|file| recipe_root.join(file)),
-            ),
-        )?;
+        let manifest_digest = digest_project_recipe_files(root, provenance_files)
+            .map_err(map_project_recipe_error)?;
         (steps, manifest_digest)
     };
     let invocation_digest = format!(
@@ -200,92 +245,18 @@ pub fn resolve_validation_recipe_with_packages(
     })
 }
 
-fn resolve_cwd(root: &Path, raw: Option<&str>) -> Result<PathBuf, RecipeError> {
-    let raw = raw.unwrap_or(".");
-    let path = Path::new(raw);
-    if raw.is_empty()
-        || raw.contains('\0')
-        || path.is_absolute()
-        || path.components().any(|part| {
-            matches!(
-                part,
-                Component::ParentDir | Component::RootDir | Component::Prefix(_)
-            )
-        })
-    {
-        return Err(RecipeError::new("validation_recipe_mismatch"));
-    }
-    let cwd = root
-        .join(path)
-        .canonicalize()
-        .map_err(|_| RecipeError::new("validation_recipe_mismatch"))?;
-    if !cwd.starts_with(root) || !cwd.is_dir() {
-        return Err(RecipeError::new("validation_recipe_mismatch"));
-    }
-    Ok(cwd)
-}
-
-fn nearest_recipe_root(
-    root: &Path,
-    cwd: &Path,
-    explicit: Option<RecipeId>,
-) -> Result<(RecipeId, PathBuf), RecipeError> {
-    let mut directory = cwd.to_path_buf();
-    loop {
-        let candidates = RecipeId::all()
-            .into_iter()
-            .filter(|recipe| directory.join(recipe.marker()).is_file())
-            .collect::<Vec<_>>();
-        if !candidates.is_empty() {
-            let relative = relative_root(root, &directory);
-            if let Some(explicit) = explicit {
-                if candidates.contains(&explicit) {
-                    return Ok((explicit, directory));
-                }
-                if explicit == RecipeId::Python {
-                    return Ok((RecipeId::Python, cwd.to_path_buf()));
-                }
-                return Err(
-                    RecipeError::new("validation_recipe_mismatch").at(relative, &candidates)
-                );
-            }
-            if candidates.len() == 1 {
-                return Ok((candidates[0], directory));
-            }
-            let mut candidates = candidates;
-            candidates.sort_by_key(|recipe| recipe.as_str());
-            return Err(RecipeError::new("validation_recipe_ambiguous").at(relative, &candidates));
-        }
-        if directory == root {
-            break;
-        }
-        let Some(parent) = directory.parent() else {
-            break;
-        };
-        directory = parent.to_path_buf();
-    }
-    if explicit == Some(RecipeId::Python) {
-        return Ok((RecipeId::Python, cwd.to_path_buf()));
-    }
-    let code = if explicit.is_some() {
-        "validation_recipe_mismatch"
-    } else {
-        "validation_recipe_not_found"
-    };
-    Err(RecipeError::new(code))
-}
-
-/// Recipe resolution owns project/root provenance; canonical adapters own the
-/// executable and argv for production Rust/Go validation steps.
+/// Shared project recipe resolution supplies filesystem/root facts; validation
+/// owns semantic action planning and canonical Rust/Go executable/argv synthesis.
 fn canonical_adapter_steps(
     recipe: RecipeId,
     checks: &[SemanticCheck],
     test_filter: Option<&str>,
     package_scope: Option<&[String]>,
-) -> Result<(Vec<ShellJobValidationStep>, Vec<&'static str>), RecipeError> {
+    dependency_policy: Option<webcodex_core::project_validation::ProjectDependencyPolicy>,
+) -> Result<Vec<ShellJobValidationStep>, RecipeError> {
     let mut steps = Vec::with_capacity(checks.len());
     for check in checks {
-        let mut operation = crate::project_validation_operation(
+        let operation = crate::project_validation_operation(
             recipe.as_str(),
             *check,
             package_scope.map(<[String]>::to_vec),
@@ -297,12 +268,15 @@ fn canonical_adapter_steps(
                 RecipeError::new(code)
             }
         })?;
-        if let crate::ReadOnlyValidationOperation::Cargo(
-            crate::CargoReadOnlyValidationOperation::Test(options),
-        ) = &mut operation
-        {
-            options.filter = test_filter.map(str::to_string);
-        }
+        let operation = operation
+            .with_dependency_policy(dependency_policy)
+            .map_err(RecipeError::new)?
+            .with_test_filter(
+                (*check == SemanticCheck::Test)
+                    .then_some(test_filter)
+                    .flatten(),
+            )
+            .map_err(RecipeError::new)?;
         let plan = operation.build_readonly_plan().map_err(|_| {
             if package_scope.is_some() {
                 RecipeError::new("validation_scope_invalid")
@@ -312,12 +286,7 @@ fn canonical_adapter_steps(
         })?;
         steps.push(plan.structured_step);
     }
-    let extra_digest_files = match recipe {
-        RecipeId::Rust => vec!["Cargo.lock"],
-        RecipeId::Go => vec!["go.sum"],
-        RecipeId::Node | RecipeId::Python => unreachable!("canonical project adapters are Rust/Go"),
-    };
-    Ok((steps, extra_digest_files))
+    Ok(steps)
 }
 
 fn node_steps(
@@ -487,6 +456,11 @@ fn normalize_test_filter(
 ) -> Result<Option<String>, RecipeError> {
     match recipe {
         RecipeId::Rust => safe_rust_filter(filter),
+        RecipeId::Go => filter
+            .map(webcodex_core::runner_protocol::normalize_go_test_filter)
+            .transpose()
+            .map(Option::flatten)
+            .map_err(|_| filter_unsupported()),
         _ => {
             reject_filter(filter)?;
             Ok(None)
@@ -515,47 +489,6 @@ fn reject_filter(filter: Option<&str>) -> Result<(), RecipeError> {
     }
 }
 
-fn read_manifest(execution_root: &Path, path: &Path) -> Result<Vec<u8>, RecipeError> {
-    let canonical = path.canonicalize().map_err(|_| manifest_invalid())?;
-    if !canonical.starts_with(execution_root) || !canonical.is_file() {
-        return Err(manifest_invalid());
-    }
-    fs::read(canonical).map_err(|_| manifest_invalid())
-}
-
-fn digest_files<I>(execution_root: &Path, paths: I) -> Result<String, RecipeError>
-where
-    I: IntoIterator<Item = PathBuf>,
-{
-    let mut hasher = Sha256::new();
-    for path in paths {
-        if !path.exists() {
-            continue;
-        }
-        let canonical = path.canonicalize().map_err(|_| manifest_invalid())?;
-        if !canonical.starts_with(execution_root) || !canonical.is_file() {
-            return Err(manifest_invalid());
-        }
-        let content = fs::read(&canonical).map_err(|_| manifest_invalid())?;
-        let relative = canonical
-            .strip_prefix(execution_root)
-            .map_err(|_| manifest_invalid())?;
-        hasher.update(relative.as_os_str().as_encoded_bytes());
-        hasher.update((content.len() as u64).to_be_bytes());
-        hasher.update(content);
-    }
-    Ok(format!("{:x}", hasher.finalize()))
-}
-
-fn relative_root(root: &Path, recipe_root: &Path) -> String {
-    let relative = recipe_root.strip_prefix(root).unwrap_or(Path::new(""));
-    if relative.as_os_str().is_empty() {
-        ".".to_string()
-    } else {
-        relative.to_string_lossy().replace('\\', "/")
-    }
-}
-
 fn manifest_invalid() -> RecipeError {
     RecipeError::new("validation_manifest_invalid")
 }
@@ -576,9 +509,7 @@ pub fn detect_validation_recipe(
     cwd: Option<&str>,
     hint: Option<RecipeId>,
 ) -> Result<RecipeId, RecipeError> {
-    let root = root
-        .canonicalize()
-        .map_err(|_| RecipeError::new("validation_recipe_not_found"))?;
-    let cwd = resolve_cwd(&root, cwd)?;
-    nearest_recipe_root(&root, &cwd, hint).map(|(recipe, _)| recipe)
+    resolve_project_recipe_root(root, cwd, hint)
+        .map(|resolved| resolved.recipe)
+        .map_err(map_project_recipe_error)
 }

@@ -877,7 +877,7 @@ def _read_release_build(bundle_dir: Path) -> dict:
     return value
 
 
-def verify_bundle(bundle_dir: Path, repo: str) -> dict:
+def verify_bundle(bundle_dir: Path, repo: str, *, require_unified_installers: bool = False) -> dict:
     root = bundle_dir.absolute()
     metadata = _read_release_build(root)
     try:
@@ -897,6 +897,7 @@ def verify_bundle(bundle_dir: Path, repo: str) -> dict:
             expected_source_sha=source,
             expected_tag=tag,
             artifact_name=f"{archive_stem}-bundle",
+            require_unified_installers=require_unified_installers,
         )
     except collector.CollectionError as exc:
         raise PublicationError(str(exc)) from exc
@@ -948,11 +949,12 @@ def stage_npm(
     bundle_dir: Path,
     source_root: Path,
     output_dir: Path,
+    require_unified_installers: bool = False,
 ) -> dict:
     bundle = bundle_dir.absolute()
     source = source_root.absolute()
     destination = output_dir.absolute()
-    summary = verify_bundle(bundle, repo)
+    summary = verify_bundle(bundle, repo, require_unified_installers=require_unified_installers)
     if summary.get("build_kind") != "release":
         raise PublicationError("npm staging requires a real release bundle")
     _require_exact_clean_root(source, str(summary["source_sha"]))
@@ -1007,9 +1009,9 @@ def _github_asset_digest(asset: dict) -> str:
     return digest
 
 
-def verify_draft_assets(*, repo: str, bundle_dir: Path, timeout: float) -> dict:
+def verify_draft_assets(*, repo: str, bundle_dir: Path, timeout: float, require_unified_installers: bool = False) -> dict:
     bundle = bundle_dir.absolute()
-    summary = verify_bundle(bundle, repo)
+    summary = verify_bundle(bundle, repo, require_unified_installers=require_unified_installers)
     if summary.get("build_kind") != "release":
         raise PublicationError("draft verification requires a real release bundle")
     tag = str(summary["tag"])
@@ -1032,7 +1034,7 @@ def verify_draft_assets(*, repo: str, bundle_dir: Path, timeout: float) -> dict:
         expected_files.add("webcodex-release-manifest.json")
     expected_files.update(f"{summary['archive_stem']}-{platform}.tar.gz" for platform in collector.PLATFORMS)
     installer_artifacts = summary.get("installer_artifacts")
-    if installer_artifacts is not None:
+    if "installer_artifacts" in summary:
         if not isinstance(installer_artifacts, dict) or set(installer_artifacts) != set(collector.INSTALLER_TARGETS):
             raise PublicationError("retained bundle unified installer summary is invalid")
         expected_files.add("manifest.json")

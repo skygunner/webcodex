@@ -60,12 +60,18 @@ pub(super) const MCP_RESULT_UI_RESOURCE_LEGACY_URIS: &[&str] = &[
     "ui://webcodex/result/v2",
     "ui://webcodex/result/v3",
 ];
-pub(super) const MCP_WORK_RESULT_UI_RESOURCE_URI: &str = "ui://webcodex/work-result/v12";
+pub(super) const MCP_WORKBENCH_UI_RESOURCE_URI: &str = "ui://webcodex/workbench/v1";
+const MCP_WORKBENCH_APP_HTML: &str = include_str!("../mcp_workbench_app.html");
+
+pub(super) const MCP_WORK_RESULT_UI_RESOURCE_URI: &str = "ui://webcodex/work-result/v15";
 // Hosts can retain previously shipped Work Result / Changes resources across
 // deploys. Keep those URIs readable with the current safe template, but only the
-// canonical v12 descriptor admits a new card. Legacy payloads are never promoted
+// canonical v15 descriptor admits a new card. Legacy payloads are never promoted
 // into authoritative Work Result state.
 pub(super) const MCP_WORK_RESULT_UI_RESOURCE_LEGACY_URIS: &[&str] = &[
+    "ui://webcodex/work-result/v14",
+    "ui://webcodex/work-result/v13",
+    "ui://webcodex/work-result/v12",
     "ui://webcodex/work-result/v11",
     "ui://webcodex/work-result/v10",
     "ui://webcodex/work-result/v9",
@@ -150,6 +156,11 @@ pub(super) fn mcp_result_app_resource_meta(domain: Option<&str>) -> Value {
 
 pub(super) fn mcp_app_resources_list(domain: Option<&str>) -> Value {
     let mut result = mcp_computer_app_resources_list(domain);
+    result["resources"].as_array_mut().expect("App resource list").push(json!({
+        "uri":MCP_WORKBENCH_UI_RESOURCE_URI,"name":"WebCodex Projects & Resources",
+        "description":"Readonly project selection, work overview and authorized resource references.",
+        "mimeType":MCP_UI_RESOURCE_MIME_TYPE,"_meta":mcp_app_resource_meta(domain)
+    }));
     result["resources"]
         .as_array_mut()
         .expect("computer App resource list must be an array")
@@ -328,6 +339,13 @@ pub(super) fn mcp_job_terminal_continuation_app_resource_read(
 }
 
 fn mcp_static_app_resource_read(uri: &str, domain: Option<&str>) -> Option<Value> {
+    if uri == MCP_WORKBENCH_UI_RESOURCE_URI {
+        return Some(json!({"contents":[{
+            "uri":uri,"mimeType":MCP_UI_RESOURCE_MIME_TYPE,"text":MCP_WORKBENCH_APP_HTML,"_meta":{
+                "ui":mcp_app_resource_meta(domain)["ui"],"openai/ui":{"availableDisplayModes":["inline","fullscreen"],"preferredDisplayMode":"inline"}
+            }
+        }]}));
+    }
     mcp_computer_app_resource_read(uri, domain)
         .or_else(|| mcp_work_result_app_resource_read(uri, domain))
         .or_else(|| mcp_result_app_resource_read(uri, domain))
@@ -1589,7 +1607,11 @@ pub(super) fn resource_read_bypasses_runtime_read(params: &Value) -> bool {
     params
         .get("uri")
         .and_then(Value::as_str)
-        .is_some_and(|uri| is_artifact_export_resource_uri(uri) || is_snapshot_resource_uri(uri))
+        .is_some_and(|uri| {
+            is_artifact_export_resource_uri(uri)
+                || is_snapshot_resource_uri(uri)
+                || uri.starts_with(crate::tool_runtime::resource_references::RESOURCE_PREFIX)
+        })
 }
 
 pub(super) fn handle_list(
@@ -1624,6 +1646,21 @@ pub(super) async fn handle_read(
     let Some(uri) = params.get("uri").and_then(Value::as_str) else {
         return McpOutcome::BadRequest(rpc_error(id, -32602, "Invalid params: uri is required"));
     };
+    if uri.starts_with(crate::tool_runtime::resource_references::RESOURCE_PREFIX) {
+        let result = runtime.read_webcodex_resource(uri, auth).await;
+        if !result.success {
+            return resource_not_found(id, uri);
+        }
+        return McpOutcome::Ok(rpc_result(
+            id,
+            mcp_stateless_result(
+                json!({"contents":[{
+                    "uri":uri,"mimeType":"application/json","text":serde_json::to_string(&result.output).expect("resource output serializes")
+                }]}),
+                true,
+            ),
+        ));
+    }
     if is_artifact_export_resource_uri(uri) {
         let response_id = id.clone().unwrap_or(Value::Null);
         let plan = match mcp_artifact_export_stream_plan(runtime, uri, auth).await {

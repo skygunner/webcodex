@@ -120,6 +120,32 @@ The bounded workspace snapshot can include changes from other work; partial file
 lists and missing line counts are labelled. A clean workspace is not task success.
 Linked Session check/review evidence appears when available.
 
+Hosts supporting conversation thread panels can open the public rendering
+`work_result_thread_panel` entrypoint with an empty argument object. It resolves
+the latest successful `present_work_result` in the same authenticated Host Window,
+including that presentation's explicit business Session when supplied. Other
+actions and failed presentations cannot retarget the panel. Presentation records
+this durable binding without starting live Window activity; the thread entrypoint
+and App refresh calls also stay outside live Window activity. The model still
+calls `present_work_result` once near the first successful Project action.
+
+The thread panel opens Review first: Changed files and lazy diffs, Session checks,
+then sealed Final Changes. Activity and Collaboration remain secondary tabs;
+Project, Window and Session identifiers are folded under Diagnostics. The inline
+card retains its Activity-first layout. Opening Review does not eagerly load diffs.
+
+An open panel retains its exact Project and explicit Session selection on refresh.
+Window-linked Session evidence never becomes refresh authority. Reopen the panel
+to select a newer successful presentation; missing Window identity or binding
+fails closed. Current authorization and snapshot fences still apply on every read.
+Full-file/Markdown previews and line/selection-to-chat interactions are deferred.
+
+Rendering entrypoints retain the default model/App visibility. App-only bridge
+helpers return data without `ui.resourceUri`: ChatGPT rejects private tools that
+declare a rendering resource when refreshing the connected App. After updating
+the Server's tool descriptors, refresh tools for the existing App in ChatGPT's
+plugin settings before testing the new entrypoint.
+
 After closeout, Results also shows the sealed final task changes with on-demand
 per-file diffs. Those diffs keep their original snapshot identity even if the live
 workspace changes. Refresh uses the existing App-only observation path; opening
@@ -127,11 +153,12 @@ Results adds no tool calls. Automatic refresh pauses while the App document is
 hidden and uses a bounded visible cadence so background cards do not continuously
 exercise the Host tool bridge. Discuss these changes opens the existing composer
 without sending a message. Window activity calls are compact, collapsed by default,
-and fetch their sanitized trace/timing details only when expanded. The card header
-shows the canonical hashed Window key used by the Window activity ledger, making
+and fetch their sanitized trace/timing details only when expanded. The inline card
+shows the canonical hashed Window key used by the Window activity ledger; the
+thread panel puts the same identity under Diagnostics, making
 support traces attributable without exposing the Host's raw Window identifier.
-New cards use `ui://webcodex/work-result/v12` so Hosts with cached older templates
-load the progressive file-list and lazy-detail contract; v11 remains readable for
+New cards use `ui://webcodex/work-result/v15` so Hosts with cached older templates
+load the current thread-panel and lazy-detail contract; v14 remains readable for
 previously mounted cards.
 
 ## Existing Server
@@ -160,6 +187,61 @@ advanced identity flow.
 
 There is one model-facing MCP runtime contract: **Adaptive Runtime**. Canonical `ToolDefinition` rank decides the direct tools; ordinary model-visible long-tail tools are invoked through `call_runtime_tool`; server-owned protocol capabilities and MCP App admission may add hidden extensions for the relevant protocol request. There is no startup model-surface selector. `tool_manifest(tool_name=...)` is discovery only: it never dynamically registers a new Host tool. Its exact `route.primary` describes the preferred callable, and a normal direct tool also exposes `route.fallback` through `call_runtime_tool` for the case where that direct callable is not present; explicit MCP App presentation tools mark that fallback as blocked while Apps are enabled. Direct versus gateway routing changes presentation only and never bypasses the target tool's authentication, Project authority, permission, Runner capability, Session, or safety checks.
 
+### Request-local client policy
+
+A shared Server can serve ordinary calls and Host-native orchestration without
+changing tools or restarting between clients. Configure these optional HTTP
+headers on the **client connection**, or inject them on a dedicated proxy route:
+
+```http
+X-WebCodex-MCP-Profile: direct
+X-WebCodex-MCP-Budget-Secs: 20
+```
+
+`X-WebCodex-MCP-Profile` accepts exactly `direct` or `host_code_mode`. Omission
+uses `WEBCODEX_MCP_HOST_PROFILE` (whose default is `direct`); it does not detect
+client brands or prove that a particular call was programmatically orchestrated.
+Send the header on each request, not just `initialize` or `work_on_project`.
+There is no sticky Window, Session, credential or transport selection. For a
+Server defaulting to `host_code_mode`, ordinary clients must explicitly select
+`direct`; clients unable to set headers can use a configured proxy route.
+
+The optional positive-integer budget header can only **reduce** the deployment's
+resolved `WEBCODEX_MCP_HOST_BUDGET_SECS` budget. Return waits preserve the existing
+five-second guard (and the existing one-second floor for tiny budgets). A Direct
+request on a Server budget of 55 seconds therefore defaults to a ten-second
+execution handoff, with a 50-second synchronous/observation ceiling; Host Code
+Mode retains its five-second handoff/observation slices. `wait_for_job_readiness`
+uses up to 45 seconds, further capped by the selected budget minus the guard,
+not by the five-second handoff slice. Header omission leaves deployment behavior
+unchanged. Empty, repeated or malformed headers fail before dispatch without
+echoing their values; oversized numeric budgets are capped, not used to enlarge
+Server limits.
+
+This budget limits execution handoff and Job observation/readiness waiting. It
+is **not** a universal RPC timeout or an execution lifetime: `timeout_secs`, Job
+identity, effects, authorization, internal orchestration caps and Runner ownership
+are unchanged. Explicit `work_on_project.guidance_profile` still selects guidance
+only; it does not override transport timing. Subsequent context refreshes use the
+policy of their own request. `/api/tools/call`, result-text compatibility,
+`tools/list`, Apps admission and standard error semantics are unaffected.
+`runtime_status.effective_config.mcp_host` remains the deployment snapshot, not a
+claim about every connected client's policy.
+
+Metadata/full trace records the actual selection as `mcp_request_policy_selected`:
+`selection.effective`, separate profile/budget sources, parsed requested budget
+and deployment cap. This distinguishes omitted headers from explicit defaults
+and a clamped request; raw headers are not retained. Normal results and authority
+are unchanged. See [client contracts and validation](implementation/mcp-client-contract-alignment.md).
+
+Ordinary work stays in the current turn: finish independent work, use one bounded
+`wait_for_job_readiness` join for blocking Jobs, then `observe_jobs` for needed
+results. At deadline reassess work/dependencies instead of mechanically refilling
+waits. Preserve pending identities when work cannot finish; never redispatch or
+assume a new model turn will start. `wait_for_job_terminal` is optional durable
+attention for an explicitly established continuation workflow, not a blocking
+wait or a prerequisite for ordinary MCP.
+
 ### Tool result framing
 
 Machine-readable MCP tool results are returned in `structuredContent`; `content` is a concise human-readable/protocol-native fallback. Clients that need fields should consume `structuredContent` rather than parse text.
@@ -173,6 +255,8 @@ Recovery fields in a result describe the next safe **explicit** call. They never
 ### Built-in local MCP gateway
 
 A hosted Server can expose Runner-owned local stdio MCP providers through the same `/mcp` endpoint. Authorized callers use the single `mcp_tool` entry to list, describe, and call configured providers; provider process/instance identities and schema-revision state stay internal.
+
+Calls sharing a provider connection wait up to two seconds within the original request deadline. If `provider_busy` reports `dispatchState=not_started`, wait briefly and retry serially with the original arguments and any idempotency key, using bounded retries. Reconcile `outcome_unknown` before repeating an effect.
 
 Configure local providers on the Runner under `[mcp]`. Access requires the explicit `mcp:local` permission; hosted OAuth clients opt in with `webcodex connect ... --oauth-local-mcp`. See [Runner](RUNNER.md#provider-side-gateway-v1-compatibility) for provider compatibility details.
 
@@ -295,7 +379,33 @@ work_on_project
 
 `present_work_result` is a one-card presentation layer for substantial coding, not a correctness primitive. Once mounted, its App-only state reads keep current progress, workspace, validation, and review visible without model polling. A non-blocking `finish_coding_task` seals eligible final changes in the presentation cache at closeout; the same card then discovers that immutable snapshot and can lazily expand per-file diffs. Tiny/read-only work should skip the card; repeated presentation of the same Session should be avoided.
 
-For ordinary portable read-only validation, prefer `project_validate`. It accepts only a closed `format_check` / `check` / `test` intent plus an optional `auto` / `rust` / `go` adapter hint; the Runner resolves the nearest unambiguous recipe on its own registered filesystem and then starts the existing structured validation Job. Rust maps to `cargo fmt -- --check`, `cargo check --all-targets`, or `cargo test`; Go maps to `go vet ./...` or `go test -json ./...`. An optional bounded `scope.packages` (1..8 entries) narrows Rust check/test through repeated Cargo `-p` selectors and Go check/test through project-relative package patterns; package-scoped formatting fails closed. Node/Python detection currently returns a bounded unsupported result. The request never carries arbitrary executable, argv, shell grammar, installation, or source mutation. Existing `cargo_*` / `go_test` tools remain available for ecosystem-specific advanced options. `project_validate` requires the additive `project_validation_v1` Runner capability; scoped requests additionally require `project_validation_package_scope_v1`, so mixed-version deployments fail closed before sending the expanded request.
+For ordinary portable read-only validation, prefer `project_validate`. It accepts only a closed `format_check` / `check` / `test` intent plus an optional `auto` / `rust` / `go` adapter hint; the Runner resolves the nearest unambiguous recipe on its own registered filesystem and then starts the existing structured validation Job. Rust maps to `cargo fmt -- --check`, `cargo check --all-targets`, or `cargo test`; Go maps to `go vet ./...` or `go test -json ./...`. Go project validation runs in Runner-owned single-module mode with `GO111MODULE=on` and `GOWORK=off`, so ambient module mode or parent `go.work` selection cannot silently change the gateway's workspace semantics. Its validation target identity is domain-separated from ambient Go specialist evidence, so success under different workspace semantics cannot reconcile a gateway failure. The standalone `go_test` specialist keeps its existing environment behavior. An optional bounded `scope.packages` (1..8 entries) narrows Rust check/test through repeated Cargo `-p` selectors and Go check/test through project-relative package patterns; package-scoped formatting fails closed. Node/Python detection currently returns a bounded unsupported result. The request never carries arbitrary executable, argv, shell grammar, installation, or source mutation. Existing `cargo_*` / `go_test` tools remain available for ecosystem-specific advanced options. `project_validate` requires the additive `project_validation_v1` Runner capability; scoped requests additionally require `project_validation_package_scope_v1`. Go project-validation Job admission additionally requires `project_go_single_module_v1`, so a Server cannot hand a Go gateway plan to an older Runner that may inherit ambient workspace state.
+
+For ordinary portable Rust/Go builds, prefer `project_build`. It accepts only an exact registered `project`, optional project-relative `cwd`, an optional `auto` / `rust` / `go` adapter hint, optional bounded `scope.packages` (1..8 entries), and total `timeout_secs`. The Runner resolves the nearest unambiguous recipe and owns canonical argv: Rust maps to `cargo build` with repeated `-p` selectors when scoped; Go maps to `go build ./...` or the bounded project-relative package patterns supplied by the caller. Go project builds execute with Runner-owned `GO111MODULE=on` and `GOWORK=off`; full `go.work` workspace semantics are outside the v1 gateway rather than inherited implicitly from the Runner host. The request cannot provide an executable, argv, shell, script, release/profile/target/features, workspace/exclude policy, offline/network policy, or artifact-discovery contract. Node/Python recipes fail closed as unsupported in v1.
+
+Both gateways optionally accept `dependency_policy: {"mode":"locked"}`. This is a portable dependency-resolution guarantee, not a literal cross-ecosystem flag contract: Rust build/check/test use Cargo `--locked`, while Go build/vet/test use `-mod=readonly`. The policy tells the adapter not to repair project dependency selection state in order to make the operation succeed; it does **not** disable registry/module/toolchain network access. Offline/network policy remains a separate #599 extension. `project_validate(action="format_check")` rejects the dependency policy instead of silently ignoring it. Policy-bearing planning and typed Job admission both require the additive `project_dependency_policy_v1` Runner capability. Locked validation derives a distinct durable validation target identity, while requests that omit the policy preserve the historical argv and identity.
+
+`project_build` requires the additive `project_build_v1` Runner capability at both planning and typed Job admission. Go project-build Job admission additionally requires `project_go_single_module_v1`. Admission replans the registered project/root, recipe, manifest/lock provenance, package scope, and canonical invocation; the worker rechecks that same plan after any local queue wait, before native process execution. A stale plan fails as `not_started` and releases its Job slot rather than silently rebuilding or executing the outdated intent. Long builds keep the same durable Job and return the ordinary sparse pending continuation; pending never authorizes retry or redispatch. The closed gateway bounds WebCodex's command authority but is not an OS sandbox: Cargo/Go build logic and project build scripts may still have their own filesystem or network effects. Existing lower-level execution tools remain explicit escape hatches for build forms outside this v1 contract.
+
+For `action="test"`, optional `test` selects tests and states the evidence requirement:
+
+```json
+{"project":"agent:runner:repo","action":"test","scope":{"packages":["package-a"]},"test":{"filter":"selected_test","min_tests":3}}
+```
+
+Rust interprets `filter` as one libtest substring; Go interprets it as a native
+`-run` regexp, including Go's slash-separated subtest semantics. Go whitespace is
+preserved; this is not a cross-language query syntax. Empty/omitted filters keep
+the unfiltered default. Filters cannot introduce arbitrary argv. `require_tests`
+defaults to true (at least one proven executed test); explicit false accepts
+proven zero tests when `min_tests` is absent. A requested `min_tests` (1..1,000,000)
+still applies with false, and count uncertainty is not zero. These are evidence
+postconditions, not extra tests to run. The test block is invalid for check or
+format_check. Any supplied test block requires the additive
+`project_validation_test_options_v1` Runner capability; it is checked at both
+planning and Job admission. Old calls without that block retain their old wire
+and execution defaults. See [project-validation test options](implementation/project-validation-test-options.md)
+for exact scope, identity, and remaining #599 work.
 
 Adaptive Runtime may expose common tools directly and long-tail tools through `call_runtime_tool`. Direct versus gateway exposure never changes schema validation, OAuth scope, Project authority, permission policy, Runner capability checks, Session fences, or effects.
 

@@ -25,6 +25,8 @@ impl Database {
         let now = chrono::Utc::now().timestamp();
         db.purge_stale_auth_rows(now)?;
         db.prune_job_receipts(now)?;
+        // All schema/backfill/startup writes complete on the sole writer first.
+        db.open_history_reader()?;
         Ok(db)
     }
 
@@ -414,12 +416,17 @@ impl Database {
         // the current columns above; existing databases receive the same shape
         // through this additive, idempotent migration.
         Self::ensure_action_event_window_schema(&mut conn)?;
+        crate::window_inventory::ensure_schema(&mut conn)?;
         Self::ensure_action_event_observability_views(&mut conn)?;
 
         // Durable Agent identity and Conversation state are an independent
         // communication domain. Workflow Session and project Memory ledgers
         // remain separate authoritative stores.
         Self::ensure_communication_schema(&mut conn)?;
+
+        // Artifact handoff grants bind one exact frozen source snapshot to one
+        // destination principal/project without creating another artifact store.
+        Self::ensure_artifact_handoff_schema(&mut conn)?;
         // AgentTask and AgentTaskAttempt are an independent durable work-ownership
         // domain. They reference durable Agents/Conversations for correlation only
         // and deliberately do not bind any execution backend in A3.
@@ -495,12 +502,20 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_action_events_window_started
                 ON action_events(client_window_key, window_started_at_ms DESC)
                 WHERE client_window_key IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_action_events_window_observed
+                ON action_events(client_window_key, COALESCE(request_observed_at_ms, window_started_at_ms) DESC, event_id DESC)
+                WHERE window_started_at_ms IS NOT NULL AND window_ended_at_ms IS NOT NULL;
             CREATE INDEX IF NOT EXISTS idx_action_events_window_completed
                 ON action_events(client_window_key, window_ended_at_ms DESC, event_id DESC)
                 WHERE window_started_at_ms IS NOT NULL AND window_ended_at_ms IS NOT NULL;
             CREATE INDEX IF NOT EXISTS idx_action_events_window_meaningful_completed
                 ON action_events(client_window_key, window_ended_at_ms DESC, event_id DESC)
                 WHERE window_meaningful = 1 AND window_started_at_ms IS NOT NULL AND window_ended_at_ms IS NOT NULL;
+
+            CREATE INDEX IF NOT EXISTS idx_action_events_recent_peer
+                ON action_events(principal_correlation_kind, principal_correlation_id,
+                    project, window_ended_at_ms DESC, client_window_key, client_window_source)
+                WHERE window_meaningful = 1 AND client_window_key IS NOT NULL;
 
             CREATE TABLE IF NOT EXISTS window_operator_messages (
                 message_id TEXT PRIMARY KEY,
@@ -633,6 +648,9 @@ impl Database {
             "CREATE INDEX IF NOT EXISTS idx_action_events_operation_started
                  ON action_events(operation, started_at DESC)
                  WHERE operation IS NOT NULL;
+             CREATE INDEX IF NOT EXISTS idx_action_events_trace_diagnostic_time
+                 ON action_events(COALESCE(request_observed_at_ms, window_started_at_ms, started_at * 1000) DESC, event_id DESC)
+                 WHERE server_trace_id IS NOT NULL;
              CREATE VIEW IF NOT EXISTS code_mode_action_traces AS
              SELECT
                  event_id,

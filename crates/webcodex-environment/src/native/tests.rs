@@ -1,3 +1,6 @@
+#[path = "tests/project_addition.rs"]
+mod project_addition;
+
 use super::*;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -47,6 +50,8 @@ fn fixture(
                 }
                 Err(error) => panic!("HTTP fixture accept failed: {error}"),
             };
+            // Accepted sockets can inherit the nonblocking listener mode.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(3)))
                 .unwrap();
@@ -125,6 +130,7 @@ fn record(
         schema_version: ENVIRONMENT_SCHEMA,
         environment_id: "fixture-environment".into(),
         request: SetupRequest {
+            service_scope: service::ServiceScope::System,
             mode,
             server_url,
             project,
@@ -141,6 +147,42 @@ fn record(
         projects: Vec::new(),
         configured: false,
     }
+}
+
+#[test]
+fn user_plans_keep_all_components_on_the_same_manager_without_system_entrypoints() {
+    let temp = crate::test_tempdir().unwrap();
+    let store = EnvironmentStore::open(temp.path().join("environment")).unwrap();
+    let mut saved = record(
+        "http://127.0.0.1:18880".into(),
+        None,
+        EnvironmentMode::Create {
+            listen: "127.0.0.1:18880".into(),
+        },
+    );
+    saved.request.runner = Some(true);
+    saved.runner_client_id = Some("user-runner".into());
+    saved.request.service_scope = service::ServiceScope::User;
+    // Pure plans: no platform manager or local credentials are touched.
+    for spec in [
+        service_spec(&store, &saved, Component::Server).unwrap(),
+        service_spec(&store, &saved, Component::Runner).unwrap(),
+        crate::tunnel_service_spec(&store, &saved, "default").unwrap(),
+    ] {
+        assert_eq!(spec.scope, service::ServiceScope::User);
+        assert!(spec.linux_socket.is_none());
+        assert!(matches!(
+            spec.account,
+            ServiceAccount::SystemUser { group: None, .. }
+        ));
+        for arg in ["--windows-service", "--computer-session-dir"] {
+            assert!(!spec.args.iter().any(|value| value == arg));
+        }
+        #[cfg(windows)]
+        assert!(spec.environment.is_empty());
+    }
+    assert!(!store.root().join("runner.toml").exists());
+    assert!(!store.root().join("webcodex-user-token").exists());
 }
 
 #[tokio::test]
@@ -577,7 +619,7 @@ async fn older_server_viewer_works_but_runner_transition_requires_user_identity(
     // this synthetic transition record so the test reaches the older-Server
     // identity contract without changing the already-configured viewer state.
     let mut transition = result.environment;
-    transition.request.project = Some(temp.path().to_path_buf());
+    transition.request.project = Some(temp.path().canonicalize().unwrap());
     transition.request.account.identity = "fixture-user-id".into();
     let secrets = SetupSecrets {
         pairing_code: Some(Secret::new("wc_pair_unused".into())),
@@ -660,6 +702,53 @@ fn service_diagnostic_reports_manager_state_without_runtime_output() {
     assert!(!format!("{diagnostic:?}").contains("private runtime output"));
     #[cfg(target_os = "linux")]
     assert!(diagnostic.recovery.contains("journalctl"));
+}
+
+#[test]
+fn loopback_server_urls_use_the_direct_client() {
+    let native = NativeEnvironment::new().unwrap();
+    for url in [
+        "http://127.0.0.1:8080",
+        "http://127.42.0.7:8080",
+        "http://[::1]:8080",
+        "http://LOCALHOST:8080",
+        "http://localhost.:8080",
+    ] {
+        assert!(server_url_is_loopback(url), "expected loopback: {url}");
+        assert!(std::ptr::eq(
+            native.client_for_server(url),
+            &native.direct_client
+        ));
+    }
+    for url in [
+        "https://example.com",
+        "http://192.168.1.10:8080",
+        "not a server url",
+    ] {
+        assert!(!server_url_is_loopback(url), "expected non-loopback: {url}");
+        assert!(std::ptr::eq(native.client_for_server(url), &native.client));
+    }
+}
+
+#[tokio::test]
+async fn loopback_server_reachability_uses_the_direct_client() {
+    let (url, requests, server) = fixture(1, |request| {
+        assert_eq!(request.method, "GET");
+        assert_eq!(request.path, "/runtime");
+        (
+            200,
+            vec![("x-webcodex-console-assets", "embedded")],
+            json!({"service":"webcodex"}),
+        )
+    });
+    let environment = record(url, None, EnvironmentMode::Join);
+    NativeEnvironment::new()
+        .unwrap()
+        .reachable(&environment)
+        .await
+        .unwrap();
+    server.join().unwrap();
+    assert_eq!(requests.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -853,6 +942,39 @@ async fn pairing_conflict_preserves_viewer_identity_and_saves_recovery_credentia
     );
 }
 
+#[test]
+fn project_authority_check_reuses_parent_root_and_expands_only_outside_it() {
+    let temp = crate::test_tempdir().unwrap();
+    let authorized = temp.path().join("authorized");
+    let covered = authorized.join("covered");
+    let outside = temp.path().join("outside");
+    std::fs::create_dir_all(&covered).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let authorized = authorized.canonicalize().unwrap();
+    let covered = covered.canonicalize().unwrap();
+    let outside = outside.canonicalize().unwrap();
+
+    let config: toml::Value = toml::from_str(&format!(
+        "[policy]\nallowed_roots = [{:?}]\nallow_cwd_anywhere = false\n",
+        authorized.to_string_lossy()
+    ))
+    .unwrap();
+    assert!(!project_requires_authority(&config, &covered).unwrap());
+    assert!(project_requires_authority(&config, &outside).unwrap());
+
+    // On macOS, tempfile canonicalizes beneath /private/var, which is
+    // intentionally blocked by allow_cwd_anywhere as a dangerous system root.
+    // Use the repository cwd as an ordinary local path for this relaxation check.
+    let ordinary = std::env::current_dir().unwrap().canonicalize().unwrap();
+    assert!(!ordinary.starts_with(&authorized));
+    let anywhere: toml::Value = toml::from_str(&format!(
+        "[policy]\nallowed_roots = [{:?}]\nallow_cwd_anywhere = true\n",
+        authorized.to_string_lossy()
+    ))
+    .unwrap();
+    assert!(!project_requires_authority(&anywhere, &ordinary).unwrap());
+}
+
 #[tokio::test]
 async fn uncertain_project_removal_is_not_dispatched_again() {
     let (url, requests, server) = fixture(5, |request| match request.path.as_str() {
@@ -928,16 +1050,8 @@ async fn uncertain_project_removal_is_not_dispatched_again() {
 
 #[tokio::test]
 async fn uncertain_project_addition_is_not_dispatched_again() {
-    let (url, requests, server) = fixture(6, |request| match request.path.as_str() {
+    let (url, requests, server) = fixture(4, |request| match request.path.as_str() {
         "/api/runtime-console/projects" => (200, vec![], json!({"projects":[]})),
-        "/api/tools/call" if request.body["tool"] == "runner_config_check" => (
-            200,
-            vec![],
-            json!({"success":true,"output":{"valid":true,"restart_required":false,"current_generation":7}}),
-        ),
-        "/api/tools/call" if request.body["tool"] == "runner_config_reload" => {
-            (200, vec![], json!({"success":true,"output":{}}))
-        }
         "/api/projects/resolve-or-register" => (503, vec![], json!({"error":"uncertain"})),
         other => panic!("unexpected addition route: {other}"),
     });
@@ -953,8 +1067,11 @@ async fn uncertain_project_addition_is_not_dispatched_again() {
     environment.username = Some("alice".into());
     environment.runner_client_id = Some("alice-client".into());
     store.save_environment(&environment).unwrap();
+    // This fixture exercises registration uncertainty, not default-home policy.
+    // Temporary directories are not inside HOME on every supported platform.
     let config = format!(
-        "server_url = {url:?}\nclient_id = \"alice-client\"\n[policy]\nallowed_roots = []\n"
+        "server_url = {url:?}\nclient_id = \"alice-client\"\n[policy]\nallowed_roots = [{:?}]\n",
+        temp.path().canonicalize().unwrap().to_string_lossy()
     );
     atomic_private_write(&store.root().join("runner.toml"), config.as_bytes()).unwrap();
     let mut backend = NativeEnvironment::new().unwrap();

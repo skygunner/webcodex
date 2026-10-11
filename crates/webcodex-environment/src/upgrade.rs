@@ -12,6 +12,7 @@ use std::path::{Component as PathComponent, Path, PathBuf};
 use webcodex_core::desktop_runtime_contract::{MachineBuildInfo, DESKTOP_RUNTIME_CONTRACT};
 mod desktop_tree;
 mod observation;
+pub mod windows_legacy;
 pub use observation::{upgrade_observation, UpgradeObservation, UpgradeOutcome};
 
 const COMPONENTS: [&str; 4] = [
@@ -22,7 +23,7 @@ const COMPONENTS: [&str; 4] = [
 ];
 const DATA_FORMAT: u16 = 1;
 const SNAPSHOT_LIMIT: u64 = 16 * 1024 * 1024 * 1024;
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UpgradeCandidate {
     pub version: String,
     pub source_sha: String,
@@ -37,7 +38,7 @@ pub struct UpgradeCandidate {
     #[serde(default)]
     pub desktop: Option<CandidateDesktop>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CandidateDesktop {
     pub path: PathBuf,
     pub sha256: String,
@@ -45,7 +46,7 @@ pub struct CandidateDesktop {
     #[serde(default)]
     pub managed_files: BTreeMap<String, String>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CandidateArtifact {
     pub path: PathBuf,
     pub sha256: String,
@@ -711,6 +712,11 @@ fn error(code: &str, message: &str) -> SetupDiagnostic {
 /// Call while holding `EnvironmentStore::lock()` before any non-upgrade
 /// operation can mutate services, projects, credentials, or setup state.
 pub fn ensure_upgrade_idle_under_lock(store: &EnvironmentStore) -> SetupResultValue<()> {
+    windows_legacy::ensure_idle(store)?;
+    ensure_upgrade_idle_environment(store)
+}
+
+fn ensure_upgrade_idle_environment(store: &EnvironmentStore) -> SetupResultValue<()> {
     let journal: Option<UpgradeJournal> = store.read_json("upgrade.json")?;
     if journal.is_some_and(|journal| !matches!(journal.phase, Phase::Committed | Phase::RolledBack))
     {
@@ -2823,6 +2829,7 @@ mod tests {
                 schema_version: 1,
                 environment_id: "env-fixture".into(),
                 request: SetupRequest {
+                    service_scope: service::ServiceScope::System,
                     mode: EnvironmentMode::Join,
                     server_url: "http://127.0.0.1:1".into(),
                     project: None,
@@ -2851,13 +2858,7 @@ mod tests {
     #[test]
     fn final_decision_is_durable_before_gate_can_be_released() {
         let directory = crate::test_tempdir().unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
-                .unwrap();
-        }
-        let store = EnvironmentStore::open(directory.path().to_path_buf()).unwrap();
+        let store = EnvironmentStore::open(directory.path().join("environment")).unwrap();
         let mut journal = fixture(store.root(), Phase::Verifying);
         persist_final_decision(&store, &mut journal, Phase::Committed).unwrap();
         let recovered: UpgradeJournal = store.read_json("upgrade.json").unwrap().unwrap();
@@ -2874,13 +2875,7 @@ mod tests {
     #[tokio::test]
     async fn recovered_final_decisions_never_restore_old_data() {
         let directory = crate::test_tempdir().unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
-                .unwrap();
-        }
-        let store = EnvironmentStore::open(directory.path().to_path_buf()).unwrap();
+        let store = EnvironmentStore::open(directory.path().join("environment")).unwrap();
         let mut journal = fixture(store.root(), Phase::Verifying);
         persist_final_decision(&store, &mut journal, Phase::Committed).unwrap();
         let backend = NativeEnvironment::new().unwrap();
@@ -2896,13 +2891,7 @@ mod tests {
     #[test]
     fn privileged_restore_rejects_wrong_operation_and_request_owner_before_effects() {
         let directory = crate::test_tempdir().unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
-                .unwrap();
-        }
-        let store = EnvironmentStore::open(directory.path().to_path_buf()).unwrap();
+        let store = EnvironmentStore::open(directory.path().join("environment")).unwrap();
         let journal = fixture(store.root(), Phase::Restoring);
         save(&store, &journal).unwrap();
         assert_eq!(
@@ -2951,13 +2940,7 @@ mod tests {
     #[test]
     fn unfinished_upgrade_blocks_other_store_mutations_after_recovery() {
         let directory = crate::test_tempdir().unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
-                .unwrap();
-        }
-        let store = EnvironmentStore::open(directory.path().to_path_buf()).unwrap();
+        let store = EnvironmentStore::open(directory.path().join("environment")).unwrap();
         let _lock = store.lock().unwrap();
         for phase in [
             Phase::Prepared,

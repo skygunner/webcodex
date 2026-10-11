@@ -387,6 +387,7 @@ impl ToolRuntime {
                     features,
                     package: None,
                     packages,
+                    dependency_mode: None,
                 },
             )),
             ValidationRunRequest {
@@ -521,6 +522,7 @@ impl ToolRuntime {
                     package,
                     packages: None,
                     no_run,
+                    dependency_mode: None,
                 },
             )),
             ValidationRunRequest {
@@ -563,6 +565,7 @@ impl ToolRuntime {
         self.run_readonly_validation(
             ReadOnlyValidationOperation::Go(GoReadOnlyValidationOperation::Test(GoTestOptions {
                 packages,
+                ..Default::default()
             })),
             ValidationRunRequest {
                 project,

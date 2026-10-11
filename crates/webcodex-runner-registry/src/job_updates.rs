@@ -25,9 +25,9 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use webcodex_core::runner_operation::{
-    RunnerInvocationMetadata, RunnerJobOperation, RunnerJobProcessOperation,
-    RunnerJobScriptOperation, RunnerJobShellOperation, RunnerJobSkillResourceOperation,
-    RunnerJobValidationOperation, RunnerOperation,
+    RunnerInvocationMetadata, RunnerJobBuildOperation, RunnerJobOperation,
+    RunnerJobProcessOperation, RunnerJobScriptOperation, RunnerJobShellOperation,
+    RunnerJobSkillResourceOperation, RunnerJobValidationOperation, RunnerOperation,
 };
 use webcodex_core::runner_protocol::{
     validate_process_argv, validate_script_request, validation_infrastructure_failure_code,
@@ -638,7 +638,9 @@ pub struct ShellJobStartMetadata {
 
 #[derive(Debug, Clone)]
 pub enum StructuredJobExecution {
+    ProjectBuild(webcodex_core::project_build::ProjectBuildPlan),
     Process(ShellProcessArgv),
+    InteractiveProcess(ShellProcessArgv),
     DetachedProcess(ShellProcessArgv),
     Script(ShellScriptPayload),
     SkillResource(RunnerSkillExecutionRequest),
@@ -827,6 +829,26 @@ impl RunnerRegistry {
             structured_execution.as_ref(),
             Some(StructuredJobExecution::SkillResource(_))
         );
+        let project_build_request = matches!(
+            structured_execution.as_ref(),
+            Some(StructuredJobExecution::ProjectBuild(_))
+        );
+        let project_dependency_policy_request = matches!(
+            structured_execution.as_ref(),
+            Some(StructuredJobExecution::ProjectBuild(plan))
+                if plan.provenance.request.dependency_policy.is_some()
+        ) || validation
+            .as_ref()
+            .and_then(|metadata| metadata.project_validation.as_ref())
+            .is_some_and(|provenance| provenance.request.dependency_policy.is_some());
+        let project_go_single_module_request = matches!(
+            structured_execution.as_ref(),
+            Some(StructuredJobExecution::ProjectBuild(plan))
+                if plan.provenance.backend == "go"
+        ) || validation
+            .as_ref()
+            .and_then(|metadata| metadata.project_validation.as_ref())
+            .is_some_and(|provenance| provenance.backend == "go");
         if explicit_shell.is_some()
             && (structured_execution.is_some()
                 || !validation_steps.is_empty()
@@ -865,6 +887,33 @@ impl RunnerRegistry {
         let (safe_command_preview, structured_metadata, job_kind) = match structured_execution
             .as_ref()
         {
+            Some(StructuredJobExecution::ProjectBuild(plan)) => {
+                if !plan.is_valid() || structured_stdin.is_some() {
+                    return Err("invalid typed project build Job plan".to_string());
+                }
+                validate_process_argv(&plan.process)?;
+                validate_structured_job_common(
+                    normalized_job_cwd.as_deref(),
+                    None,
+                    timeout_secs,
+                    PROCESS_TIMEOUT_MAX_SECS,
+                )?;
+                let preview = process_preview(
+                    &plan.process.executable,
+                    plan.process.args.iter().map(String::as_str),
+                );
+                let safe = ShellJobStructuredExecutionMetadata {
+                    execution_source: "project_build".to_string(),
+                    language: None,
+                    script_bytes: None,
+                    arg_count: plan.process.args.len(),
+                    stdin_present: false,
+                    validation_identity: None,
+                    validation_tool: None,
+                    assertion_name: None,
+                };
+                (preview, Some(safe), "project_build")
+            }
             Some(StructuredJobExecution::Process(process)) => {
                 validate_process_argv(process)?;
                 validate_structured_job_common(
@@ -886,6 +935,37 @@ impl RunnerRegistry {
                     assertion_name: assertion_name.clone(),
                 };
                 (preview, Some(safe), "run_process")
+            }
+            Some(StructuredJobExecution::InteractiveProcess(process)) => {
+                validate_process_argv(process)?;
+                validate_structured_job_common(
+                    normalized_job_cwd.as_deref(),
+                    None,
+                    timeout_secs,
+                    PROCESS_TIMEOUT_MAX_SECS,
+                )?;
+                if structured_stdin.is_some()
+                    || validation_identity.is_some()
+                    || validation_tool.is_some()
+                    || assertion_name.is_some()
+                {
+                    return Err("interactive process requires subsequent keyed input and is not validation evidence".into());
+                }
+                let safe = ShellJobStructuredExecutionMetadata {
+                    execution_source: "run_process_interactive".into(),
+                    language: None,
+                    script_bytes: None,
+                    arg_count: process.args.len(),
+                    stdin_present: false,
+                    validation_identity: None,
+                    validation_tool: None,
+                    assertion_name: None,
+                };
+                (
+                    format!("interactive process ({} args)", process.args.len()),
+                    Some(safe),
+                    "run_process",
+                )
             }
             Some(StructuredJobExecution::DetachedProcess(process)) => {
                 validate_process_argv(process)?;
@@ -1042,13 +1122,37 @@ impl RunnerRegistry {
             validation: validation.clone(),
             structured_execution: structured_metadata.clone(),
         };
+        let interactive_request = matches!(
+            &structured_execution,
+            Some(StructuredJobExecution::InteractiveProcess(_))
+        );
         let job_operation = match structured_execution {
+            Some(StructuredJobExecution::ProjectBuild(plan)) => {
+                RunnerJobOperation::StartBuild(RunnerJobBuildOperation {
+                    job_id: job_id.clone(),
+                    cwd: normalized_job_cwd.clone(),
+                    process: plan.process,
+                    provenance: plan.provenance,
+                    timeout_secs,
+                    context: job_context,
+                })
+            }
             Some(StructuredJobExecution::Process(process)) => {
                 RunnerJobOperation::StartProcess(RunnerJobProcessOperation {
                     job_id: job_id.clone(),
                     cwd: normalized_job_cwd.clone(),
                     process,
                     stdin: structured_stdin.clone(),
+                    timeout_secs,
+                    context: job_context,
+                })
+            }
+            Some(StructuredJobExecution::InteractiveProcess(process)) => {
+                RunnerJobOperation::StartInteractiveProcess(RunnerJobProcessOperation {
+                    job_id: job_id.clone(),
+                    cwd: normalized_job_cwd.clone(),
+                    process,
+                    stdin: None,
                     timeout_secs,
                     context: job_context,
                 })
@@ -1154,6 +1258,31 @@ impl RunnerRegistry {
                 "capability_unavailable: runner {client_id} does not support structured_execution_jobs"
             ));
         }
+        if project_build_request && !runner.runner_features.supports(RunnerFeature::ProjectBuild) {
+            return Err(
+                "capability_unavailable: upgrade target Runner for project_build_v1".to_string(),
+            );
+        }
+        if project_dependency_policy_request
+            && !runner
+                .runner_features
+                .supports(RunnerFeature::ProjectDependencyPolicy)
+        {
+            return Err(
+                "capability_unavailable: upgrade target Runner for project_dependency_policy_v1"
+                    .to_string(),
+            );
+        }
+        if project_go_single_module_request
+            && !runner
+                .runner_features
+                .supports(RunnerFeature::ProjectGoSingleModule)
+        {
+            return Err(
+                "capability_unavailable: upgrade target Runner for project_go_single_module_v1"
+                    .to_string(),
+            );
+        }
         if javascript_script_request
             && !runner
                 .runner_features
@@ -1190,6 +1319,15 @@ impl RunnerRegistry {
                 "capability_unavailable: runner {client_id} does not support skill_resource_execution"
             ));
         }
+        if interactive_request
+            && !runner
+                .runner_features
+                .supports(RunnerFeature::JobProcessInput)
+        {
+            return Err(
+                "capability_unavailable: upgrade target Runner for job_process_input_v1".into(),
+            );
+        }
         if detached_request
             && !runner
                 .runner_features
@@ -1223,6 +1361,22 @@ impl RunnerRegistry {
             return Err(
                 "capability_unavailable: upgrade target Runner for project_validation_v1".into(),
             );
+        }
+        // Recheck at admission, not only during the earlier planning round trip:
+        // a replacement/older Runner must never reinterpret new filters or counts.
+        let project_test_options = validation
+            .as_ref()
+            .and_then(|metadata| metadata.project_validation.as_ref())
+            .is_some_and(|provenance| provenance.request.test.is_some());
+        let go_test_filter = validation_steps.iter().any(|step| {
+            step.is_structured_go_test_json() && step.args.get(2).is_some_and(|arg| arg == "-run")
+        });
+        if (project_test_options || go_test_filter)
+            && !runner
+                .runner_features
+                .supports(RunnerFeature::ProjectValidationTestOptions)
+        {
+            return Err("capability_unavailable: upgrade target Runner for project_validation_test_options_v1".into());
         }
         if !validation_steps.is_empty()
             && !runner
@@ -1414,7 +1568,7 @@ impl RunnerRegistry {
 
     #[cfg(any(test, feature = "root-test-support"))]
     pub async fn hidden_job_ids_for_test(&self) -> Vec<String> {
-        let inner = self.inner.lock().await;
+        let inner = self.inner.read().await;
         let mut ids = inner
             .jobs_by_id
             .values()
@@ -1774,7 +1928,7 @@ impl RunnerRegistry {
         if job_ids.is_empty() {
             return None;
         }
-        let inner = self.inner.lock().await;
+        let inner = self.inner.read().await;
         let mut common: Option<String> = None;
         for job_id in job_ids {
             let job = inner.jobs_by_id.get(*job_id)?;
@@ -1895,69 +2049,157 @@ impl RunnerRegistry {
         active_limit: usize,
         terminal_limit: usize,
     ) -> Vec<JobAttentionSnapshot> {
-        let inner = self.inner.lock().await;
-        let mut active = Vec::new();
-        let mut terminal = Vec::new();
-        for job in inner
-            .jobs_by_id
-            .values()
-            .filter(|job| job.visibility == ShellJobVisibility::Public)
-            .filter(|job| shell_job_visible_to_auth(auth, &inner, job))
-            .filter(|job| job.project_id.as_deref() == Some(project_id))
-            .filter(|job| job.session_id.as_deref() == Some(session_id))
-        {
-            if job.lifecycle.is_terminal() {
-                terminal.push(job);
-            } else {
-                active.push(job);
-            }
-        }
-        // Passive attention needs both sides of a transition. Reserve a bounded
-        // page for active baselines and a separate bounded page for recent
-        // terminals so a long-running Job cannot disappear at the instant it
-        // completes merely because newer terminal history filled the page.
-        active.sort_by_key(|job| std::cmp::Reverse(job.created_at));
-        terminal.sort_by(|a, b| {
-            let observed = |job: &&ShellJobRecord| {
-                job.observation
-                    .terminal_observed_at
-                    .or(job.ended_at)
-                    .unwrap_or(job.created_at)
-            };
-            observed(b)
-                .cmp(&observed(a))
-                .then_with(|| b.created_at.cmp(&a.created_at))
-        });
-        active
-            .into_iter()
-            .take(active_limit.min(webcodex_core::runner_protocol::JOB_INVENTORY_MAX_ACTIVE_JOBS))
-            .chain(terminal.into_iter().take(terminal_limit.min(32)))
-            .map(|job| {
-                let validation_output = (job.lifecycle.is_terminal()
-                    && (job.validation.is_some()
-                        || job
-                            .structured_execution
-                            .as_ref()
-                            .and_then(|metadata| metadata.validation_identity.as_ref())
-                            .is_some()))
-                .then(|| JobValidationOutput {
-                    stdout: job.stdout.tail.clone(),
-                    stderr: job.stderr.tail.clone(),
-                    truncated: job.stdout.truncated
-                        || job.stderr.truncated
-                        || job.stdout.first_retained_line > 1
-                        || job.stderr.first_retained_line > 1,
-                });
-                JobAttentionSnapshot {
-                    job: job_view(job),
-                    validation_output,
-                    recovery: job.recovery.phase.map(|phase| (phase, job.recovery.reason)),
-                }
-            })
-            .collect()
+        let inner = self.inner.read().await;
+        Self::job_attention_snapshot_locked(
+            &inner,
+            auth,
+            project_id,
+            session_id,
+            active_limit,
+            terminal_limit,
+            None,
+        )
+        .expect("unbudgeted snapshot")
     }
 
-    /// Best-effort telemetry must not wait on the registry or refresh lifecycle.
+    /// Optional post-result observation never queues behind the registry. Work
+    /// checks the shared deadline and retains only the two bounded top-K pages.
+    pub fn try_snapshot_jobs_for_auth_filtered(
+        &self,
+        auth: Option<&crate::RunnerAccess>,
+        project_id: &str,
+        session_id: &str,
+        active_limit: usize,
+        terminal_limit: usize,
+        deadline: std::time::Instant,
+    ) -> Option<Vec<JobAttentionSnapshot>> {
+        self.inner
+            .try_read(|inner| {
+                Self::job_attention_snapshot_locked(
+                    inner,
+                    auth,
+                    project_id,
+                    session_id,
+                    active_limit,
+                    terminal_limit,
+                    Some(deadline),
+                )
+            })
+            .flatten()
+    }
+
+    fn job_attention_snapshot_locked(
+        inner: &crate::state::RunnerRegistryInner,
+        auth: Option<&crate::RunnerAccess>,
+        project_id: &str,
+        session_id: &str,
+        active_limit: usize,
+        terminal_limit: usize,
+        deadline: Option<std::time::Instant>,
+    ) -> Option<Vec<JobAttentionSnapshot>> {
+        let expired = || deadline.is_some_and(|d| std::time::Instant::now() >= d);
+        if expired() {
+            return None;
+        }
+        let active_limit =
+            active_limit.min(webcodex_core::runner_protocol::JOB_INVENTORY_MAX_ACTIVE_JOBS);
+        let terminal_limit = terminal_limit.min(32);
+        let mut active = std::collections::BTreeMap::new();
+        let mut terminal = std::collections::BTreeMap::new();
+        for (index, job) in inner.jobs_by_id.values().enumerate() {
+            if index % 64 == 0 && expired() {
+                return None;
+            }
+            if job.visibility != ShellJobVisibility::Public
+                || !shell_job_visible_to_auth(auth, inner, job)
+                || job.project_id.as_deref() != Some(project_id)
+                || job.session_id.as_deref() != Some(session_id)
+            {
+                continue;
+            }
+            if job.lifecycle.is_terminal() {
+                let observed = job
+                    .observation
+                    .terminal_observed_at
+                    .or(job.ended_at)
+                    .unwrap_or(job.created_at);
+                terminal.insert((observed, job.created_at, &job.job_id), job);
+                if terminal.len() > terminal_limit {
+                    terminal.pop_first();
+                }
+            } else {
+                active.insert((job.created_at, &job.job_id), job);
+                if active.len() > active_limit {
+                    active.pop_first();
+                }
+            }
+        }
+        let mut snapshots = Vec::with_capacity(active.len() + terminal.len());
+        for job in active
+            .into_values()
+            .rev()
+            .chain(terminal.into_values().rev())
+        {
+            if expired() {
+                return None;
+            }
+            let validation_output = (job.lifecycle.is_terminal()
+                && (job.validation.is_some()
+                    || job
+                        .structured_execution
+                        .as_ref()
+                        .and_then(|metadata| metadata.validation_identity.as_ref())
+                        .is_some()))
+            .then(|| JobValidationOutput {
+                stdout: job.stdout.tail.clone(),
+                stderr: job.stderr.tail.clone(),
+                truncated: job.stdout.truncated
+                    || job.stderr.truncated
+                    || job.stdout.first_retained_line > 1
+                    || job.stderr.first_retained_line > 1,
+            });
+            snapshots.push(JobAttentionSnapshot {
+                job: job_view(job),
+                validation_output,
+                recovery: job.recovery.phase.map(|phase| (phase, job.recovery.reason)),
+            });
+        }
+        if expired() {
+            None
+        } else {
+            Some(snapshots)
+        }
+    }
+    /// Presentation-only re-observation of exact previously admitted Job handles.
+    /// Never scans history, refreshes lifecycle, or performs post-unlock writes.
+    /// Missing, inaccessible, recovering, lost and outcome-unknown Jobs do not
+    /// prove a writer ended, even when their outer lifecycle is terminal.
+    pub fn observation_jobs_ended_for_project(
+        &self,
+        auth: Option<&crate::RunnerAccess>,
+        project: &str,
+        job_ids: &[String],
+    ) -> bool {
+        if job_ids.len() > 128 {
+            return false;
+        }
+        self.inner
+            .try_read(|inner| {
+                job_ids.iter().all(|id| {
+                    inner.jobs_by_id.get(id).is_some_and(|job| {
+                        job.project_id.as_deref() == Some(project)
+                            && shell_job_visible_to_auth(auth, inner, job)
+                            && job.lifecycle.is_terminal()
+                            && job.lifecycle != JobLifecycleState::Lost
+                            && job.command_execution_state
+                                != Some(ShellCommandExecutionState::OutcomeUnknown)
+                            && !job.recovery_active()
+                    })
+                })
+            })
+            .unwrap_or(false)
+    }
+
     /// Exact ids are selected only from successful canonical result projections.
     pub fn try_job_telemetry_snapshots_for_auth(
         &self,
@@ -1990,6 +2232,9 @@ impl RunnerRegistry {
         &self,
         auth: Option<&crate::RunnerAccess>,
     ) -> Vec<ShellJobRecord> {
+        #[cfg(any(test, feature = "root-test-support"))]
+        self.full_job_history_scan_count
+            .fetch_add(1, Ordering::Relaxed);
         let mut inner = self.inner.lock().await;
         let job_ids = inner.jobs_by_id.keys().cloned().collect::<Vec<_>>();
         for job_id in job_ids {
@@ -2006,10 +2251,10 @@ impl RunnerRegistry {
         jobs
     }
 
-    /// Count caller-visible active Jobs for the requested exact Projects in one
-    /// registry snapshot. Refresh lifecycle once, then aggregate once: O(P + J),
-    /// with output bounded by requested Projects, not the complete Job inventory.
-    /// Private, projectless, terminal and unauthorized Jobs never contribute.
+    /// Count caller-visible active Jobs for exact Projects in O(P + A), where A
+    /// is current active Jobs, independent of retained terminal history. Only
+    /// authorized matching candidates are refreshed. Canonical records, not the
+    /// derived active index, decide lifecycle, Project identity and visibility.
     pub async fn count_active_jobs_for_projects(
         &self,
         auth: Option<&crate::RunnerAccess>,
@@ -2025,17 +2270,79 @@ impl RunnerRegistry {
         let mut inner = self.inner.lock().await;
         #[cfg(any(test, feature = "root-test-support"))]
         self.project_job_scan_count.fetch_add(1, Ordering::Relaxed);
-        let job_ids = inner.jobs_by_id.keys().cloned().collect::<Vec<_>>();
+        let job_ids = inner.jobs_by_id.active_ids();
         for job_id in job_ids {
+            let eligible = inner.jobs_by_id.get(&job_id).is_some_and(|job| {
+                job.visibility == ShellJobVisibility::Public
+                    && job
+                        .project_id
+                        .as_ref()
+                        .is_some_and(|id| counts.contains_key(id))
+                    && shell_job_visible_to_auth(auth, &inner, job)
+            });
+            if !eligible {
+                continue;
+            }
+            #[cfg(any(test, feature = "root-test-support"))]
+            self.project_job_candidate_refresh_count
+                .fetch_add(1, Ordering::Relaxed);
             refresh_job_status_locked(&mut inner, &job_id);
+            if let Some(job) = inner
+                .jobs_by_id
+                .get(&job_id)
+                .filter(|job| job.lifecycle.is_active())
+            {
+                if let Some(count) = job.project_id.as_ref().and_then(|id| counts.get_mut(id)) {
+                    *count += 1;
+                }
+            }
         }
-        for job in inner.jobs_by_id.values().filter(|job| {
-            job.visibility == ShellJobVisibility::Public
-                && job.lifecycle.is_active()
-                && shell_job_visible_to_auth(auth, &inner, job)
-        }) {
-            if let Some(count) = job.project_id.as_deref().and_then(|id| counts.get_mut(id)) {
-                *count += 1;
+        counts
+    }
+
+    /// Lightweight operator aggregate. No historical record/stream projection,
+    /// sorting, or lifecycle refresh of terminal Jobs is performed.
+    pub async fn active_job_counts_by_runner_for_auth(
+        &self,
+        auth: Option<&crate::RunnerAccess>,
+    ) -> HashMap<String, usize> {
+        self.active_job_summary_by_runner_for_auth(auth)
+            .await
+            .into_iter()
+            .map(|(id, counts)| (id, counts.active))
+            .collect()
+    }
+
+    pub async fn active_job_summary_by_runner_for_auth(
+        &self,
+        auth: Option<&crate::RunnerAccess>,
+    ) -> HashMap<String, crate::ActiveJobAggregate> {
+        let mut inner = self.inner.lock().await;
+        let ids = inner.jobs_by_id.active_ids();
+        let mut counts: HashMap<String, crate::ActiveJobAggregate> = HashMap::new();
+        for id in ids {
+            if !inner.jobs_by_id.get(&id).is_some_and(|job| {
+                job.visibility == ShellJobVisibility::Public
+                    && shell_job_visible_to_auth(auth, &inner, job)
+            }) {
+                continue;
+            }
+            refresh_job_status_locked(&mut inner, &id);
+            if let Some(job) = inner
+                .jobs_by_id
+                .get(&id)
+                .filter(|job| job.lifecycle.is_active())
+            {
+                let count = counts.entry(job.client_id.clone()).or_default();
+                count.active += 1;
+                count.running += usize::from(matches!(
+                    job.lifecycle,
+                    JobLifecycleState::Running | JobLifecycleState::StartedLegacy
+                ));
+                count.queued += usize::from(matches!(
+                    job.lifecycle,
+                    JobLifecycleState::Queued | JobLifecycleState::RunnerQueued
+                ));
             }
         }
         counts
@@ -2062,17 +2369,24 @@ impl RunnerRegistry {
         runtime_project_id: &str,
     ) -> Result<usize, String> {
         let mut inner = self.inner.lock().await;
-        let job_ids = inner.jobs_by_id.keys().cloned().collect::<Vec<_>>();
+        let job_ids = inner.jobs_by_id.active_ids();
+        let mut active = 0;
         for job_id in job_ids {
+            let eligible = inner.jobs_by_id.get(&job_id).is_some_and(|job| {
+                job.project_id.as_deref() == Some(runtime_project_id)
+                    && shell_job_visible_to_auth(auth, &inner, job)
+            });
+            if !eligible {
+                continue;
+            }
             refresh_job_status_locked(&mut inner, &job_id);
+            active += usize::from(
+                inner
+                    .jobs_by_id
+                    .get(&job_id)
+                    .is_some_and(|job| job.lifecycle.is_active()),
+            );
         }
-        let active = inner
-            .jobs_by_id
-            .values()
-            .filter(|job| shell_job_visible_to_auth(auth, &inner, job))
-            .filter(|job| job.project_id.as_deref() == Some(runtime_project_id))
-            .filter(|job| job.lifecycle.is_active())
-            .count();
         if active == 0 {
             *inner
                 .unregistering_projects

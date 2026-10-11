@@ -2,6 +2,7 @@ mod discovery;
 mod http_metadata;
 mod presentation;
 mod protocol;
+mod request_policy;
 mod resources;
 mod response;
 mod tools;
@@ -105,7 +106,13 @@ fn work_result_app_internal_tool(tool_name: Option<&str>) -> bool {
     matches!(
         tool_name,
         Some(
-            "present_work_result"
+            "search_mentions"
+                | "open_webcodex_workbench"
+                | "search_webcodex_resources"
+                | "read_webcodex_resource"
+                | "list_sessions"
+                | "present_work_result"
+                | "work_result_thread_panel"
                 | "work_result_state"
                 | "work_result_activity_detail"
                 | "work_result_send_message"
@@ -652,6 +659,35 @@ pub async fn mcp_post(req: &mut Request, depot: &mut Depot, res: &mut Response) 
             return;
         }
     };
+    let policy_selection = match request_policy::resolve(req.headers(), runtime.mcp_host_policy) {
+        Ok(policy) => policy,
+        Err(message) => {
+            // Reject ambiguous transport preferences before any tool/Job effect.
+            // Do not echo potentially sensitive header values into diagnostics.
+            guard.parsed("request_policy_error");
+            let body = rpc_error(request.id.clone(), -32600, message);
+            let estimated = estimate_json_bytes(&body);
+            guard.response_serialized(400, estimated, Some(false), None, "request_policy_error");
+            res.status_code(StatusCode::BAD_REQUEST);
+            res.render(Json(body));
+            guard.handler_returned(400, estimated, Some(false), None, "request_policy_error");
+            return;
+        }
+    };
+    let policy = policy_selection.effective;
+    // Clone only the lightweight runtime view when a preference actually differs.
+    // Stores, execution ownership and fences stay shared; policy never mutates
+    // the deployment snapshot or leaks between concurrent requests.
+    let runtime = if policy == runtime.mcp_host_policy {
+        runtime
+    } else {
+        Arc::new(
+            runtime
+                .as_ref()
+                .clone()
+                .with_request_mcp_host_policy(policy),
+        )
+    };
     let window = match protocol_era {
         McpProtocolEra::Legacy => {
             crate::client_window::mcp_window(req, request.method == "initialize")
@@ -661,6 +697,7 @@ pub async fn mcp_post(req: &mut Request, depot: &mut Depot, res: &mut Response) 
         }
     };
     guard.set_client_window(window.identity.as_ref());
+    guard.capture_mcp_host_policy(&policy_selection);
     guard.parsed("ok");
     let server_trace_id = guard.correlation_trace_id();
     let auth = depot.obtain::<crate::auth::AuthContext>().ok().cloned();
@@ -694,11 +731,14 @@ pub async fn mcp_post(req: &mut Request, depot: &mut Depot, res: &mut Response) 
     // represented as executed actions.
     let audit = if request.method == "tools/call" && request.id.is_some() {
         let audit = ActionAudit::start(req, depot, "/mcp", "toolsCall");
-        let audit = if window_activity_visible {
-            audit.with_window(window.identity.as_ref(), Some(&server_trace_id))
-        } else {
-            audit
-        };
+        // Presentation stays out of live activity, but its durable Window binding
+        // is required when the Host later opens the empty-argument thread panel.
+        let audit =
+            if window_activity_visible || tool_name.as_deref() == Some("present_work_result") {
+                audit.with_window(window.identity.as_ref(), Some(&server_trace_id))
+            } else {
+                audit
+            };
         Some((
             audit,
             tool_name.clone().unwrap_or_else(|| "unknown".to_string()),
@@ -795,7 +835,10 @@ pub async fn mcp_post(req: &mut Request, depot: &mut Depot, res: &mut Response) 
     // one outer emergency timer only so the MCP hard-timeout path does not erase
     // an otherwise established runtime invocation from ergonomics telemetry.
     let mut hard_timeout_model_ergonomics = tool_name.as_deref().and_then(|name| {
-        ModelErgonomicsTimer::start_with_arguments(name, &request.params["arguments"])
+        let mut timer =
+            ModelErgonomicsTimer::start_with_arguments(name, &request.params["arguments"])?;
+        timer.resolve_work_on_project_guidance_profile(policy, true);
+        Some(timer)
     });
     let mut tool_correlation = crate::tool_runtime::ToolCallCorrelation::default();
     let mut model_ergonomics = None;
@@ -1196,8 +1239,7 @@ async fn handle_mcp_request_with_lifecycle(
     correlation_out: Option<&mut crate::tool_runtime::ToolCallCorrelation>,
 ) -> McpOutcome {
     let stateless_2026 = protocol_era == McpProtocolEra::Stateless2026;
-    let resource_read_bypasses_runtime_read = stateless_2026
-        && request.method == "resources/read"
+    let resource_read_bypasses_runtime_read = request.method == "resources/read"
         && resources::resource_read_bypasses_runtime_read(&request.params);
     let mcp_app_enabled =
         resources::mcp_app_enabled(server_mcp_apps_enabled, stateless_2026, &request.params);
@@ -1228,6 +1270,8 @@ async fn handle_mcp_request_with_lifecycle(
                 | "tools/list"
                 | "tools/call"
                 | "notifications/initialized"
+                | "resources/list"
+                | "resources/read"
         )
     {
         return scope_forbidden(
@@ -1275,10 +1319,10 @@ async fn handle_mcp_request_with_lifecycle(
             return tools::handle_list(id, auth, stateless_2026, compact_schemas, mcp_app_enabled)
                 .await;
         }
-        "resources/list" if stateless_2026 && runtime_resource_method => {
+        "resources/list" if runtime_resource_method => {
             return resources::handle_list(runtime, id, mcp_app_enabled);
         }
-        "resources/read" if stateless_2026 && runtime_resource_method => {
+        "resources/read" if runtime_resource_method => {
             return resources::handle_read(
                 runtime,
                 request.params,

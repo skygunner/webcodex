@@ -35,6 +35,23 @@ A release without the unified installer manifest is a supported legacy fallback:
 manual unified installation of the first updater-capable release; the new code
 cannot retroactively add an updater to an already published older executable.
 
+Cache admission or invalid persisted update state can require recovery before a
+pending transaction is known. These recovery errors remain visible in About and
+the banner even without a newer release or after **Later**; they do not create a
+pending transaction or authorize another installer. A failed automatic-download
+preference save is also shown when no update is available.
+
+The current unified release workflow uses an explicit shared Cargo target directory
+before compiling the independent Desktop workspace; native binaries and macOS app
+bundles are collected from that same directory. Before upload, the retained bundle
+is verified with `require_unified_installers=True`. New durable release plans
+record this requirement and carry it through collection, npm staging and draft
+verification. Low-level metadata/collection/public-verification commands expose
+`--require-unified-installers` for current unified deliveries. Entirely absent
+installer/source sets fail this requirement; historical read-only verification
+without it and Desktop's **View release** fallback remain supported. Present but
+null installer declarations are invalid, rather than legacy absence.
+
 ## Canonical manifests and trust chain
 
 `webcodex-release-manifest.json` remains the release/Runtime compatibility

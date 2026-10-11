@@ -114,11 +114,11 @@ impl ToolRuntime {
                 "oauth2_shared_key_bridge_enabled": self.runtime_info.oauth2_shared_key_bridge_enabled,
             },
             "mcp_host": {
-                "profile": self.mcp_host_policy.profile.as_str(),
-                "host_budget_secs": self.mcp_host_policy.host_budget_secs,
-                "initial_job_handoff_secs": self.mcp_host_policy.initial_job_handoff_secs,
-                "max_sync_wait_secs": self.mcp_host_policy.max_sync_wait_secs,
-                "continuation_wait_secs": self.mcp_host_policy.continuation_wait_secs,
+                "profile": self.deployment_mcp_host_policy.profile.as_str(),
+                "host_budget_secs": self.deployment_mcp_host_policy.host_budget_secs,
+                "initial_job_handoff_secs": self.deployment_mcp_host_policy.initial_job_handoff_secs,
+                "max_sync_wait_secs": self.deployment_mcp_host_policy.max_sync_wait_secs,
+                "continuation_wait_secs": self.deployment_mcp_host_policy.continuation_wait_secs,
             },
             "tool_request_trace_mode": crate::config::tool_request_trace_mode().as_str(),
         })
@@ -542,7 +542,7 @@ impl ToolRuntime {
             "service": "webcodex",
             "version": env!("CARGO_PKG_VERSION"),
             "build": {"git_commit": build.git_commit, "git_dirty": build.git_dirty},
-            "mcp_host": {"profile": self.mcp_host_policy.profile.as_str()},
+            "mcp_host": {"profile": self.deployment_mcp_host_policy.profile.as_str()},
             "projects": {"count": projects, "online_count": online_projects, "status": if projects > 0 { "ok" } else { "no_projects" }},
             "jobs": sparse_job_counts(&runtime_job_counts(jobs)),
             "connection": connection
@@ -1199,6 +1199,14 @@ fn connection_layers(
 /// Mixed-version diagnostics: a connected runner is not automatically
 /// capability-compatible. Reports facts about which side to upgrade without
 /// exposing paths or environment.
+impl ToolRuntime {
+    /// Reuse build/protocol truth without dispatching full runtime diagnostics
+    /// or materializing Project/Job histories for the Console navigation bar.
+    pub(crate) fn console_runner_alignment(&self, clients: &[RunnerView]) -> Value {
+        version_compatibility(clients)
+    }
+}
+
 fn version_compatibility(clients: &[RunnerView]) -> Value {
     let build = crate::build_info::runtime_build_info();
     version_compatibility_against(

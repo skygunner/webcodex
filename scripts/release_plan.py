@@ -30,7 +30,7 @@ else:
 
 
 LEGACY_STATE_SCHEMA_VERSION = 1
-STATE_SCHEMA_VERSION = 2
+STATE_SCHEMA_VERSION = 3
 MAX_STATE_BYTES = 64 * 1024
 KIND = "release-plan"
 
@@ -137,8 +137,10 @@ def _load_state(path: Path) -> dict:
     schema_version = value.get("schema_version")
     if schema_version == LEGACY_STATE_SCHEMA_VERSION:
         required = legacy_required
-    elif schema_version == STATE_SCHEMA_VERSION:
+    elif schema_version == 2:
         required = legacy_required | {"source_ref"}
+    elif schema_version == STATE_SCHEMA_VERSION:
+        required = legacy_required | {"source_ref", "require_unified_installers"}
     else:
         raise ReleasePlanError("unsupported release plan state schema")
     if set(value) != required:
@@ -168,6 +170,10 @@ def _load_state(path: Path) -> dict:
             raise ReleasePlanError(f"release plan {field} is invalid")
     if not isinstance(value.get("last_action"), str):
         raise ReleasePlanError("release plan last_action is invalid")
+    if schema_version < STATE_SCHEMA_VERSION:
+        value["require_unified_installers"] = False
+    if not isinstance(value["require_unified_installers"], bool):
+        raise ReleasePlanError("release plan unified installer requirement must be boolean")
     value["source_sha"] = source
     value["version"] = version
     value["source_ref"] = source_ref
@@ -203,6 +209,7 @@ def _summary(
         "bundle_dir": state["bundle_dir"],
         "stage_dir": str(Path(state["stage_dir"]) / "npm-package"),
         "last_action": state["last_action"],
+        "require_unified_installers": state["require_unified_installers"],
     }
     if next_action is not None:
         result["next_action"] = next_action
@@ -242,6 +249,7 @@ def init_plan(
     now = int(time.time())
     state = {
         "schema_version": STATE_SCHEMA_VERSION,
+        "require_unified_installers": True,
         "kind": KIND,
         "repo": repo,
         "version": release_version,
@@ -279,7 +287,7 @@ def _existing_bundle_is_valid(state: dict) -> bool:
     bundle = Path(state["bundle_dir"])
     if not bundle.is_dir():
         return False
-    summary = publication.verify_bundle(bundle, state["repo"])
+    summary = publication.verify_bundle(bundle, state["repo"], require_unified_installers=state["require_unified_installers"])
     return summary.get("source_sha") == state["source_sha"] and summary.get("tag") == state["tag"]
 
 
@@ -399,6 +407,7 @@ def resume_plan(*, state_file: Path, timeout: float, wait_secs: int) -> tuple[di
             else:
                 collector.collect_bundle(
                     repo=state["repo"],
+                    require_unified_installers=state["require_unified_installers"],
                     run_id=state["build_run_id"],
                     expected_source_sha=state["source_sha"],
                     expected_tag=state["tag"],
@@ -420,6 +429,7 @@ def resume_plan(*, state_file: Path, timeout: float, wait_secs: int) -> tuple[di
                 ), 4
             publication.stage_npm(
                 repo=state["repo"],
+                require_unified_installers=state["require_unified_installers"],
                 bundle_dir=Path(state["bundle_dir"]),
                 source_root=Path(state["root"]),
                 output_dir=stage,
@@ -435,6 +445,7 @@ def resume_plan(*, state_file: Path, timeout: float, wait_secs: int) -> tuple[di
             try:
                 publication.verify_draft_assets(
                     repo=state["repo"],
+                    require_unified_installers=state["require_unified_installers"],
                     bundle_dir=Path(state["bundle_dir"]),
                     timeout=timeout,
                 )
@@ -460,7 +471,9 @@ def resume_plan(*, state_file: Path, timeout: float, wait_secs: int) -> tuple[di
                 state,
                 status="needs_authorization",
                 state_file=state_path,
-                next_action="publish the verified GitHub draft and staged npm package only after explicit approval; public verification remains a separate final gate",
+                next_action="publish the verified GitHub draft and staged npm package only after explicit approval; "
+                "run public verification as a separate final gate"
+                + (" with --require-unified-installers" if state["require_unified_installers"] else ""),
             ), 3
 
         raise AssertionError(f"unhandled release plan phase: {phase}")

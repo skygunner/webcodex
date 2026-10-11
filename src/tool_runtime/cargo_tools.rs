@@ -20,6 +20,8 @@ impl ToolRuntime {
                 action,
                 adapter,
                 scope,
+                dependency_policy,
+                test,
                 timeout_secs,
             } => {
                 self.project_validate(
@@ -29,6 +31,8 @@ impl ToolRuntime {
                     action,
                     adapter,
                     scope,
+                    dependency_policy,
+                    test,
                     timeout_secs,
                     ssh_resource,
                     auth,

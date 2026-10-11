@@ -55,7 +55,7 @@ class PrepareReleaseMetadataInstallerTests(unittest.TestCase):
             }[package_format]
             (self.artifacts / metadata.installer_filename("0.3.0", target)).write_bytes(signature + b"fixture")
 
-    def prepare(self):
+    def prepare(self, *extra):
         import subprocess, sys
         return subprocess.run([
             sys.executable, str(metadata.ROOT / "scripts" / "prepare_release_metadata.py"),
@@ -63,6 +63,7 @@ class PrepareReleaseMetadataInstallerTests(unittest.TestCase):
             "--output-dir", str(self.output), "--package-json", str(self.package),
             "--source-sha", "a" * 40, "--workflow-run-id", "123",
             "--workflow-ref", "repo/.github/workflows/release-build.yml@refs/tags/v0.3.0",
+            *extra,
         ], capture_output=True, text=True)
 
     def test_generates_canonical_installer_manifest_and_checksums(self):
@@ -78,6 +79,14 @@ class PrepareReleaseMetadataInstallerTests(unittest.TestCase):
         self.assertEqual(manifest["installers"]["linux-x64-deb"]["source_manifest_sha256"], manifest["installers"]["linux-x64-rpm"]["source_manifest_sha256"])
         self.assertEqual(len(manifest["installers"]), 8)
         self.assertEqual(len(manifest["artifacts"]), 6)
+
+    def test_strict_requirement_rejects_total_absence_but_legacy_remains_valid(self):
+        for platform in metadata.PLATFORMS:
+            (self.artifacts / metadata.source_manifest_filename("0.3.0", platform)).unlink()
+        result = self.prepare("--require-unified-installers")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("required unified installer set", result.stderr)
+        self.assertEqual(self.prepare().returncode, 0)
 
     def test_rejects_partial_unified_installer_set(self):
         path = self.artifacts / metadata.installer_filename("0.3.0", next(iter(metadata.INSTALLER_TARGETS)))

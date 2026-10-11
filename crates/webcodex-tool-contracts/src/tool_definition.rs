@@ -28,6 +28,7 @@ mod lsp;
 mod memory;
 mod patches;
 mod plugins;
+mod resource_references;
 mod runner_config;
 mod sessions;
 mod skills;
@@ -42,8 +43,8 @@ use super::metadata::{
 #[cfg(any(test, feature = "root-test-support"))]
 pub use super::tool_catalog::TOOL_MANIFEST_INTENTS;
 pub use super::tool_catalog::{
-    available_tool_manifest_intent_names, resolve_tool_manifest_intent, CODING_INTENT_TOOL_NAMES,
-    TOOL_RECOMMENDED_FLOWS,
+    available_tool_manifest_intent_names, model_visible_recommended_flows,
+    resolve_tool_manifest_intent, CODING_INTENT_TOOL_NAMES, TOOL_RECOMMENDED_FLOWS,
 };
 #[cfg(any(test, feature = "root-test-support"))]
 pub use super::tool_policy::is_known_tool_name;
@@ -79,10 +80,10 @@ use webcodex_core::runner_protocol::{
     RUNNER_CAPABILITY_DETACHED_PROCESS_JOBS, RUNNER_CAPABILITY_FILE_READ,
     RUNNER_CAPABILITY_FILE_WRITE, RUNNER_CAPABILITY_GIT, RUNNER_CAPABILITY_INTERNAL_POSIX_SCRIPT,
     RUNNER_CAPABILITY_LSP_CALL_HIERARCHY, RUNNER_CAPABILITY_LSP_READ_ONLY_NAVIGATION,
-    RUNNER_CAPABILITY_PERSISTENT_SHELL, RUNNER_CAPABILITY_RUNNER_CONFIG_CONTROL,
-    RUNNER_CAPABILITY_SHELL, RUNNER_CAPABILITY_SKILL_MANAGEMENT,
-    RUNNER_CAPABILITY_SKILL_RESOURCE_EXECUTION, RUNNER_CAPABILITY_STRUCTURED_PROCESS_ARGV,
-    RUNNER_CAPABILITY_STRUCTURED_SCRIPT_PAYLOAD,
+    RUNNER_CAPABILITY_PERSISTENT_SHELL, RUNNER_CAPABILITY_PROJECT_BUILD,
+    RUNNER_CAPABILITY_RUNNER_CONFIG_CONTROL, RUNNER_CAPABILITY_SHELL,
+    RUNNER_CAPABILITY_SKILL_MANAGEMENT, RUNNER_CAPABILITY_SKILL_RESOURCE_EXECUTION,
+    RUNNER_CAPABILITY_STRUCTURED_PROCESS_ARGV, RUNNER_CAPABILITY_STRUCTURED_SCRIPT_PAYLOAD,
 };
 
 /// Runner capability or owner-boundary requirement that must hold before a
@@ -97,6 +98,9 @@ pub enum RunnerCapabilityRequirement {
     /// General native process + argv execution. This must never be inferred
     /// from shell or structured-validation support.
     StructuredProcess,
+    /// Runner-owned portable Rust/Go project build planning + typed StartBuild.
+    /// Never inferred from generic process or validation support.
+    ProjectBuild,
     /// Runner-owned trusted Skill resource execution with package identity.
     /// Never infer this from generic structured process or Skill read support.
     SkillResourceExecution,
@@ -172,6 +176,7 @@ impl RunnerCapabilityRequirement {
             Self::OwnerOnly => "owner boundary",
             Self::Shell => RUNNER_CAPABILITY_SHELL,
             Self::StructuredProcess => RUNNER_CAPABILITY_STRUCTURED_PROCESS_ARGV,
+            Self::ProjectBuild => RUNNER_CAPABILITY_PROJECT_BUILD,
             Self::SkillResourceExecution => RUNNER_CAPABILITY_SKILL_RESOURCE_EXECUTION,
             Self::DetachedProcess => RUNNER_CAPABILITY_DETACHED_PROCESS_JOBS,
             Self::StructuredScript => RUNNER_CAPABILITY_STRUCTURED_SCRIPT_PAYLOAD,
@@ -209,6 +214,7 @@ impl RunnerCapabilityRequirement {
             Self::OwnerOnly => &[],
             Self::Shell => &[RUNNER_CAPABILITY_SHELL],
             Self::StructuredProcess => &[RUNNER_CAPABILITY_STRUCTURED_PROCESS_ARGV],
+            Self::ProjectBuild => &[RUNNER_CAPABILITY_PROJECT_BUILD],
             Self::SkillResourceExecution => &[RUNNER_CAPABILITY_SKILL_RESOURCE_EXECUTION],
             Self::DetachedProcess => &[RUNNER_CAPABILITY_DETACHED_PROCESS_JOBS],
             Self::StructuredScript => &[RUNNER_CAPABILITY_STRUCTURED_SCRIPT_PAYLOAD],
@@ -339,6 +345,9 @@ pub enum ToolAuditContextPolicy {
     Fields(&'static [ToolAuditResultField]),
     /// Preserve the historical bounded porcelain-derived working-tree summary.
     WorkingTreeStatus,
+    /// Closed observed task-output metadata; preserves full bounded paths and
+    /// hashes without retaining arbitrary result bodies or log text.
+    TaskOutputs,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -381,6 +390,10 @@ impl ToolAuditExecutionPolicy {
     pub const TEST_ASSERTIONS: Self = Self {
         detail: ToolAuditExecutionDetail::TestAssertions,
         shell: ToolAuditExecutionShell::Output,
+    };
+    pub const DIRECT_ARGV_TEXT: Self = Self {
+        detail: ToolAuditExecutionDetail::Text,
+        shell: ToolAuditExecutionShell::DirectArgv,
     };
     pub const DIRECT_ARGV_TEST_COUNTS: Self = Self {
         detail: ToolAuditExecutionDetail::TestCounts,
@@ -724,6 +737,7 @@ pub enum ToolExecutionForm {
     NativeArgv,
     TypedScript,
     ShellCommand,
+    ProjectBuild,
     StructuredValidation,
     PersistentShellCommand,
 }
@@ -734,6 +748,7 @@ impl ToolExecutionForm {
             Self::NativeArgv => "native_argv",
             Self::TypedScript => "typed_script",
             Self::ShellCommand => "shell_command",
+            Self::ProjectBuild => "project_build",
             Self::StructuredValidation => "structured_validation",
             Self::PersistentShellCommand => "persistent_shell_command",
         }
@@ -983,18 +998,35 @@ impl ToolHostOrchestrationHint {
     }
 }
 
+/// Why a dedicated Adaptive Runtime descriptor is needed. This is static
+/// exposure policy, not a category, authority, effect, or model-facing field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolDirectReason {
+    CoreWorkflow,
+    HostIntegration,
+    Presentation,
+    Continuation,
+}
+
+/// One canonical Direct policy: ordering and its reason cannot drift apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolAdaptiveDirectPolicy {
+    pub rank: u16,
+    pub reason: ToolDirectReason,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ToolDefinition {
     pub name: &'static str,
     pub audit: ToolAuditPolicy,
     pub model_spec: Option<ToolModelSpecDeclaration>,
-    /// Stable direct-call ordering for the one canonical Adaptive Runtime.
-    /// `None` means a model-visible tool belongs to the long tail behind
-    /// `call_runtime_tool`.
-    pub adaptive_runtime_direct_rank: Option<u16>,
-    /// GPT Actions follows canonical Adaptive routing unless this definition
-    /// declares a concrete protocol incompatibility or a gateway-only surface
-    /// budget exception.
+    /// Static dedicated-descriptor policy for Adaptive Runtime. `None` grants
+    /// no admission: ordinary model-visible tools use the gateway, while hidden
+    /// tools and operator extensions retain their independent admission rules.
+    pub adaptive_runtime_direct: Option<ToolAdaptiveDirectPolicy>,
+    /// Eligibility/exclusion metadata for the frozen GPT Actions adapter.
+    /// Its admitted names and Direct/Gateway placement come from legacy
+    /// snapshots, not from Adaptive rank or reason.
     pub gpt_action_exposure: ToolGptActionExposure,
     pub operator_extension_family: Option<ToolOperatorExtensionFamily>,
     /// Optional canonical selection semantics for ordinary execution tools.
@@ -1183,7 +1215,7 @@ const fn def(
         name,
         audit,
         model_spec: None,
-        adaptive_runtime_direct_rank: None,
+        adaptive_runtime_direct: None,
         gpt_action_exposure: ToolGptActionExposure::Inherit,
         operator_extension_family: None,
         execution: None,
@@ -1218,9 +1250,17 @@ const fn model_spec(definition: ToolDefinition, description: &'static str) -> To
     }
 }
 
-const fn adaptive_runtime_direct(definition: ToolDefinition, rank: u16) -> ToolDefinition {
+const fn adaptive_runtime_direct(
+    definition: ToolDefinition,
+    rank: u16,
+    reason: ToolDirectReason,
+) -> ToolDefinition {
+    assert!(matches!(
+        definition.visibility,
+        ToolVisibility::ModelVisible
+    ));
     ToolDefinition {
-        adaptive_runtime_direct_rank: Some(rank),
+        adaptive_runtime_direct: Some(ToolAdaptiveDirectPolicy { rank, reason }),
         ..definition
     }
 }
@@ -1323,6 +1363,7 @@ const TOOL_DEFINITION_GROUPS: &[&[ToolDefinition]] = &[
     computer::DEFINITIONS,
     diagnostics::DEFINITIONS,
     discovery::DEFINITIONS,
+    resource_references::DEFINITIONS,
     runner_config::DEFINITIONS,
     ssh_resources::DEFINITIONS,
     plugins::DEFINITIONS,

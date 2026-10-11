@@ -1882,7 +1882,7 @@ fn lsp_command_resolution_uses_explicit_env_then_path_without_shell() {
         )
         .is_none());
 
-    let spaced = tempfile::tempdir().unwrap();
+    let spaced = super::super::test_support::executable_tempdir();
     let program = spaced.path().join("fake server with spaces");
     fs::hard_link(fake, &program).unwrap();
     let project = tempfile::tempdir().unwrap();
@@ -1955,4 +1955,37 @@ fn process_exists(pid: u32) -> bool {
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn process_exists(_pid: u32) -> bool {
     false
+}
+
+/// The fake LSP server is a compiled binary that test processes must execute.
+/// Hardened hosts mount the system temp directory `noexec`, so the fixture is
+/// built under the Cargo target directory — the same filesystem that already
+/// holds every compiled test binary. This contract keeps the fixture working
+/// wherever `cargo test` itself can run, without environment overrides.
+#[test]
+fn fake_server_fixture_is_built_under_the_executable_target_root() {
+    let path = fake_server_path();
+    let meta = std::fs::metadata(path).expect("fake LSP server binary exists");
+    assert!(meta.is_file());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert!(
+            meta.permissions().mode() & 0o111 != 0,
+            "fake LSP server binary must be executable: {path:?}"
+        );
+    }
+    let target_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target")
+        .canonicalize()
+        .expect("workspace Cargo target directory");
+    let fixture = path.canonicalize().expect("fake LSP server path resolves");
+    assert!(
+        fixture.starts_with(&target_root),
+        "fake LSP server must be built under {target_root:?}, got {fixture:?}"
+    );
+    assert!(
+        !fixture.starts_with(std::env::temp_dir()),
+        "fake LSP server must not depend on TMPDIR exec policy, got {fixture:?}"
+    );
 }

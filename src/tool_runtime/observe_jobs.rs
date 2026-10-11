@@ -476,6 +476,7 @@ fn output_budget_failure_item(index: usize, job_id: String) -> Value {
 fn batch_output(
     requested_count: usize,
     items: Vec<Value>,
+    wake_detail: &'static str,
     wake_reason: WakeReason,
     waited_ms: u64,
     wake_on: ObserveJobsWakeOn,
@@ -502,7 +503,6 @@ fn batch_output(
                 && item["output"]["terminal"].as_bool() == Some(true)
         })
         .count();
-    let wake_detail = detailed_wake_reason(&items, wake_reason);
     let mut output = json!({
         "requested_count": requested_count,
         "returned_count": returned_count,
@@ -586,6 +586,10 @@ fn apply_output_budget(
     wake_on: ObserveJobsWakeOn,
     requested_wait_secs: Option<u64>,
 ) -> Result<Value, String> {
+    // The detailed wake reason is a fact about the FULL observation set that
+    // satisfied the shared wait; compute it once before any budget truncation
+    // so page composition can never rewrite the reported wake event.
+    let wake_detail = detailed_wake_reason(&completed, wake_reason);
     let mut returned = Vec::with_capacity(completed.len());
     let mut next_index = None;
 
@@ -596,6 +600,7 @@ fn apply_output_budget(
         let candidate = batch_output(
             requested_count,
             candidate_items,
+            wake_detail,
             wake_reason,
             waited_ms,
             wake_on,
@@ -611,6 +616,7 @@ fn apply_output_budget(
         let single = batch_output(
             requested_count,
             vec![item.clone()],
+            wake_detail,
             wake_reason,
             waited_ms,
             wake_on,
@@ -630,6 +636,7 @@ fn apply_output_budget(
         let candidate = batch_output(
             requested_count,
             candidate_items,
+            wake_detail,
             wake_reason,
             waited_ms,
             wake_on,
@@ -652,6 +659,7 @@ fn apply_output_budget(
     Ok(batch_output(
         requested_count,
         returned,
+        wake_detail,
         wake_reason,
         waited_ms,
         wake_on,
@@ -1824,5 +1832,140 @@ mod tests {
             webcodex_core::runner_protocol::JOB_SNAPSHOT_STREAM_MAX_BYTES,
             64 * 1024
         );
+    }
+
+    /// `wait.reason` describes the real wake event over the FULL observation
+    /// set, not the returned page. A meaningful change that triggered the
+    /// shared wait must still be reported as `meaningful_change` even when
+    /// output budget truncation omits that Job from the returned items.
+    #[test]
+    fn wake_reason_survives_output_budget_truncation() {
+        let big_change_item = |index| {
+            json!({
+                "index": index,
+                "job_id": format!("job-{index}"),
+                "success": true,
+                "output": {
+                    "changed": true,
+                    "terminal": false,
+                    "stdout_tail": "x".repeat(300_000),
+                },
+                "error_kind": null,
+                "error": null,
+            })
+        };
+        let big_heartbeat_item = |index| {
+            json!({
+                "index": index,
+                "job_id": format!("job-{index}"),
+                "success": true,
+                "output": {
+                    "changed": true,
+                    "heartbeat_changed": true,
+                    "terminal": false,
+                    "stdout_tail": "x".repeat(300_000),
+                },
+                "error_kind": null,
+                "error": null,
+            })
+        };
+        let meaningful_item = |index| {
+            json!({
+                "index": index,
+                "job_id": format!("job-{index}"),
+                "success": true,
+                "output": {
+                    "changed": true,
+                    "meaningful_changed": true,
+                    "terminal": false,
+                },
+                "error_kind": null,
+                "error": null,
+            })
+        };
+
+        // Two large change-only observations exhaust the aggregate budget;
+        // the meaningful Job behind them is pushed off the returned page.
+        let output = apply_output_budget(
+            3,
+            vec![big_change_item(0), big_change_item(1), meaningful_item(2)],
+            WakeReason::Updated,
+            15_000,
+            ObserveJobsWakeOn::MeaningfulChange,
+            Some(55),
+        )
+        .unwrap();
+        assert_eq!(output["output_truncated"], true, "budget must truncate");
+        assert_eq!(output["returned_count"], 1);
+        assert_eq!(output["items"][0]["job_id"], "job-0");
+        assert_eq!(
+            output["next_index"], 1,
+            "the omitted observations must remain reachable via continuation"
+        );
+        assert_eq!(
+            output["wait"]["reason"], "meaningful_change",
+            "wait.reason must describe the full-observation wake event, not the truncated page"
+        );
+        assert_eq!(output["wait"]["outcome"], "updated");
+        assert_eq!(output["wait"]["wake_on"], "meaningful_change");
+        assert_eq!(output["wait"]["requested_secs"], 55);
+        assert_eq!(output["wait"]["waited_ms"], 15_000);
+        assert!(
+            serde_json::to_vec(&ToolResult::ok(output.clone()))
+                .unwrap()
+                .len()
+                <= MAX_OBSERVE_JOBS_AGGREGATE_RESULT_BYTES
+        );
+
+        // A heartbeat-only large observation must not mask the meaningful
+        // wake event either.
+        let output = apply_output_budget(
+            3,
+            vec![
+                big_heartbeat_item(0),
+                big_change_item(1),
+                meaningful_item(2),
+            ],
+            WakeReason::Updated,
+            0,
+            ObserveJobsWakeOn::MeaningfulChange,
+            None,
+        )
+        .unwrap();
+        assert_eq!(output["output_truncated"], true);
+        assert_eq!(output["wait"]["reason"], "meaningful_change");
+    }
+
+    /// The detailed wake reason also stays truthful when every observation is
+    /// replaced by a budget-failure item (single oversized item path).
+    #[test]
+    fn wake_reason_survives_oversized_item_replacement() {
+        let item = json!({
+            "index": 0,
+            "job_id": "job-0",
+            "success": true,
+            "output": {
+                "changed": false,
+                "terminal": false,
+                "stdout_tail": "x".repeat(MAX_OBSERVE_JOBS_AGGREGATE_RESULT_BYTES),
+            },
+            "error_kind": null,
+            "error": null,
+        });
+        let output = apply_output_budget(
+            1,
+            vec![item],
+            WakeReason::Updated,
+            0,
+            ObserveJobsWakeOn::MeaningfulChange,
+            None,
+        )
+        .unwrap();
+        assert_eq!(output["items"][0]["error_kind"], "output_budget_exceeded");
+        assert_eq!(
+            output["wait"]["reason"], "change",
+            "no meaningful/heartbeat observation survived; plain change is the truth"
+        );
+        assert_eq!(output["wait"]["outcome"], "updated");
     }
 }

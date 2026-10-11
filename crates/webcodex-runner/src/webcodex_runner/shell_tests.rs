@@ -1875,8 +1875,35 @@ fn typescript_temp_file_uses_mts_and_exact_script_bytes() {
 
 #[test]
 #[cfg(feature = "runner-real-process-tests")]
-#[ignore = "manual real-process smoke: requires compatible Node.js on PATH"]
+#[ignore = "manual real-process smoke: requires Node.js >= 22.7 on PATH (the TypeScript leg passes --experimental-transform-types); a missing runtime fails as an explicit precondition error, not as a shell-dispatch failure"]
 fn runner_real_process_node_script_runtime_preserves_argv_stdin_and_cwd() {
+    // This is real-process evidence for the script runtime, not a
+    // shell-dispatch regression: without a compatible Node.js the script
+    // cannot start at all. Probe the runtime first and fail loudly as a
+    // precondition error, so a missing toolchain is never misread as
+    // NotStarted evidence against the shell feature.
+    let node_version = match Command::new("node").arg("--version").output() {
+        Ok(output) if output.status.success() => parse_node_version(&output.stdout),
+        Ok(output) => panic!(
+            "precondition failed: `node --version` on PATH exited with {:?}; install Node.js >= 22.7 to run this real-process smoke",
+            output.status
+        ),
+        Err(error) => panic!(
+            "precondition failed: no Node.js on PATH ({error}); install Node.js >= 22.7 to run this real-process smoke"
+        ),
+    };
+    let Some(node_version) = node_version else {
+        panic!(
+            "precondition failed: `node --version` printed an unrecognized version; Node.js >= 22.7 is required"
+        );
+    };
+    assert!(
+        node_version.major > 22 || (node_version.major == 22 && node_version.minor >= 7),
+        "precondition failed: Node.js v{}.{}.{} found; the TypeScript leg needs >= 22.7 for --experimental-transform-types",
+        node_version.major,
+        node_version.minor,
+        node_version.patch
+    );
     let cwd = tempfile::tempdir().unwrap();
     let args = vec![
         "two words".to_string(),

@@ -145,7 +145,13 @@ api_get() {
 
 api_post() {
     local path="$1"
-    local body="${2:-{}}"
+    # Avoid `${2:-{}}` here: bash parses the `}` ambiguously and appends a
+    # stray `}` to non-empty bodies, which breaks strict JSON parsing on the
+    # server (same trap documented in e2e_zero_config_ws.sh). Default explicitly.
+    local body="${2:-}"
+    if [ -z "$body" ]; then
+        body="{}"
+    fi
     curl -sS --max-time "$TIMEOUT" \
         -H @"$AUTH_HEADER_FILE" \
         -H "Content-Type: application/json" \
@@ -196,7 +202,11 @@ PY
 
 tool_call_body() {
     local tool="$1"
-    local params_json="${2:-{}}"
+    # Explicit default: `${2:-{}}` would append a stray `}` to provided values.
+    local params_json="${2:-}"
+    if [ -z "$params_json" ]; then
+        params_json="{}"
+    fi
     python3 - "$tool" "$params_json" <<'PY'
 import json
 import sys
@@ -209,7 +219,11 @@ PY
 
 call_tool() {
     local tool="$1"
-    local params_json="${2:-{}}"
+    # Explicit default: `${2:-{}}` would append a stray `}` to provided values.
+    local params_json="${2:-}"
+    if [ -z "$params_json" ]; then
+        params_json="{}"
+    fi
     local body
     body="$(tool_call_body "$tool" "$params_json")"
     api_post /api/tools/call "$body"
@@ -365,9 +379,12 @@ check_clean_git_status() {
         return 1
     fi
 
-    if [ "$(json_get "$body" output.git_available)" = "True" ] && \
+    # Current sparse workspace-state contract: git_available is emitted only
+    # when Git inspection is explicitly unavailable; omission means available.
+    # Legacy responses always emitted git_available=true.
+    if [ "$(json_get "$body" output.git_available)" != "False" ] && \
        [ "$(json_get "$body" output.clean)" = "True" ]; then
-        pass "$label show_changes reports git_available=true and clean=true"
+        pass "$label show_changes reports clean git-backed worktree"
     else
         fail "$label show_changes is not clean/git-backed (git_available=$(json_get "$body" output.git_available), clean=$(json_get "$body" output.clean))"
         return 1

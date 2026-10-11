@@ -272,18 +272,6 @@ pub async fn run_server_with_shutdown(
         );
     }
     let config = Config::from_env();
-    if crate::auth::shared_key_enabled() {
-        let remote_boundary = crate::auth::shared_key_requires_remote_opt_in(&config);
-        if remote_boundary && crate::auth::shared_key_remote_enabled() {
-            tracing::warn!(
-                "Direct shared-key fallback is remotely exposed by explicit WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true; any unknown non-wc_* Bearer becomes a shared-key principal. Prefer managed PAT/OAuth/Runner credentials for Internet-facing deployments."
-            );
-        } else if remote_boundary {
-            tracing::warn!(
-                "Direct shared-key fallback is configured but disabled because the Server is not local-only. Use managed PAT/OAuth/Runner credentials, or explicitly set WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true to acknowledge remote shared-key exposure."
-            );
-        }
-    }
     let mcp_host_policy = mcp_host::McpHostConfig::from_env().runtime_policy();
     let model_workflow_policy =
         model_workflow::ModelWorkflowPolicy::from_env().map_err(std::io::Error::other)?;
@@ -306,14 +294,16 @@ only for local/trusted-network demos."
             tracing::warn!(
                 "Direct shared-key auth is exposed to remote callers: the server bind or \
 WEBCODEX_PUBLIC_URL crosses a remote boundary and WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true is set. \
-Anyone holding the shared key gets full shared-key access from the network."
+Anyone holding the shared key gets full shared-key access from the network; any unknown non-wc_* \
+Bearer becomes a shared-key principal. Prefer managed PAT/OAuth/Runner credentials for \
+Internet-facing deployments."
             );
         } else {
             tracing::warn!(
                 "Direct shared-key auth is configured (WEBCODEX_SHARED_KEY_ENABLED=true) but \
 DISABLED: the server bind or WEBCODEX_PUBLIC_URL crosses a remote boundary and \
 WEBCODEX_SHARED_KEY_REMOTE_ENABLED is not set. Set WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true to \
-explicitly allow remote shared-key auth."
+explicitly allow remote shared-key auth, or use managed PAT/OAuth/Runner credentials."
             );
         }
     }

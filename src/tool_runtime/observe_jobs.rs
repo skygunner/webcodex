@@ -1853,14 +1853,16 @@ mod tests {
 
     #[test]
     fn wake_reason_describes_full_batch_even_when_budget_omits_triggering_job() {
-        let large = |index| json!({
-            "index": index,
-            "job_id": format!("job-{index}"),
-            "success": true,
-            "output": {"changed": true, "terminal": false, "stdout_tail": "x".repeat(300_000)},
-            "error_kind": null,
-            "error": null,
-        });
+        let large = |index| {
+            json!({
+                "index": index,
+                "job_id": format!("job-{index}"),
+                "success": true,
+                "output": {"changed": true, "terminal": false, "stdout_tail": "x".repeat(300_000)},
+                "error_kind": null,
+                "error": null,
+            })
+        };
         let triggering = json!({
             "index": 2,
             "job_id": "job-2",

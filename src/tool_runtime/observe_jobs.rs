@@ -1421,6 +1421,58 @@ impl ToolRuntime {
             }
         }
 
+        // Instrument the full canonical batch before the output budget truncates
+        // model-facing results. This is low-cardinality telemetry, not Job output.
+        let successful = completed
+            .iter()
+            .filter(|item| item["success"].as_bool() == Some(true))
+            .collect::<Vec<_>>();
+        let wake_on_label = match wake_on {
+            ObserveJobsWakeOn::Change => "change",
+            ObserveJobsWakeOn::MeaningfulChange => "meaningful_change",
+            ObserveJobsWakeOn::Terminal => "terminal",
+            ObserveJobsWakeOn::AllTerminal => "all_terminal",
+        };
+        super::runtime_metrics::observe_job_observation(
+            self.metrics.as_ref(),
+            super::runtime_metrics::JobObservationMetricObservation {
+                elapsed_ms: waited_ms,
+                requested_wait_secs: wait_secs,
+                wake_on: wake_on_label,
+                wake_reason: wake_reason.as_str(),
+                item_count: completed.len() as u64,
+                changed_count: successful
+                    .iter()
+                    .filter(|item| item["output"]["changed"].as_bool() == Some(true))
+                    .count() as u64,
+                meaningful_changed_count: successful
+                    .iter()
+                    .filter(|item| item["output"]["meaningful_changed"].as_bool() == Some(true))
+                    .count() as u64,
+                heartbeat_changed_count: successful
+                    .iter()
+                    .filter(|item| item["output"]["heartbeat_changed"].as_bool() == Some(true))
+                    .count() as u64,
+                terminal_count: successful
+                    .iter()
+                    .filter(|item| item["output"]["terminal"].as_bool() == Some(true))
+                    .count() as u64,
+                returned_bytes: successful
+                    .iter()
+                    .map(|item| {
+                        item["output"]["stdout_returned_bytes"]
+                            .as_u64()
+                            .unwrap_or(0)
+                            .saturating_add(
+                                item["output"]["stderr_returned_bytes"]
+                                    .as_u64()
+                                    .unwrap_or(0),
+                            )
+                    })
+                    .sum(),
+            },
+        );
+
         match apply_output_budget(requested_count, completed, wake_reason, waited_ms) {
             Ok(mut output) => {
                 add_actionable_batch_continuation(&mut output, &original_items, tail_lines);

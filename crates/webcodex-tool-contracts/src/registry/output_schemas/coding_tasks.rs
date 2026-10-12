@@ -26,7 +26,7 @@ fn finish_changes_schema() -> Value {
         "type": "object",
         "description": "read_workspace_changes output and hunk truncation metadata. The nested read_workspace_changes contract is formalized so structured recovery calls remain model-surface projectable; other closeout metadata stays additive.",
         "properties": {
-            "show_changes": super::git::show_changes_output_value_schema(),
+            "read_workspace_changes": super::git::show_changes_output_value_schema(),
             "hunks_truncated": schema_type("boolean", "Whether the nested read_workspace_changes diff hunks were truncated by limits.")
         },
         "additionalProperties": true

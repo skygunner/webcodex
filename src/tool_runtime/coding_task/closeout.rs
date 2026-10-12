@@ -403,7 +403,7 @@ impl ToolRuntime {
             "session_id": session_id,
             "workspace": workspace,
             "changes": {
-                "show_changes": changes_result.output,
+                "read_workspace_changes": changes_result.output,
                 "review_snapshot_reuse": review_snapshot_reuse,
                 "hunks_truncated": changes_result.output
                     .get("hunks_truncated")

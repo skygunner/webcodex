@@ -44,7 +44,7 @@ fn finish_actions_prefer_review_changes_when_nested_show_changes_hands_off() {
     let output = json!({
         "workspace": {"clean": false},
         "changes": {
-            "show_changes": {
+            "read_workspace_changes": {
                 "diff_review_handoff": {
                     "next_call": {"follow_up_kind": "mechanically_followable", "tool": "read_git_diff_hunks", "arguments": {}}
                 }
@@ -58,7 +58,7 @@ fn finish_actions_prefer_review_changes_when_nested_show_changes_hands_off() {
     let actions = finish_suggested_next_actions(
         &facts,
         output
-            .pointer("/changes/show_changes/diff_review_handoff/next_call/tool")
+            .pointer("/changes/read_workspace_changes/diff_review_handoff/next_call/tool")
             .and_then(Value::as_str)
             == Some("read_git_diff_hunks"),
     );
@@ -66,7 +66,7 @@ fn finish_actions_prefer_review_changes_when_nested_show_changes_hands_off() {
         action == "continue the review with review_changes when its continuation is available"
     }));
     assert_eq!(
-        output["changes"]["show_changes"]["diff_review_handoff"]["next_call"]["tool"],
+        output["changes"]["read_workspace_changes"]["diff_review_handoff"]["next_call"]["tool"],
         "read_git_diff_hunks"
     );
     assert!(!actions

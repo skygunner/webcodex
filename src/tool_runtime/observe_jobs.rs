@@ -131,6 +131,42 @@ fn observed_has_meaningful_change(observed: &[ObservedJob]) -> bool {
         .any(|item| item.result.output["meaningful_changed"].as_bool() == Some(true))
 }
 
+/// A policy label drawn only from the closed set of advertised wait modes.
+fn wake_policy_name(wake_on: ObserveJobsWakeOn) -> &'static str {
+    match wake_on {
+        ObserveJobsWakeOn::Change => "change",
+        ObserveJobsWakeOn::MeaningfulChange => "meaningful_change",
+        ObserveJobsWakeOn::Terminal => "terminal",
+        ObserveJobsWakeOn::AllTerminal => "all_terminal",
+    }
+}
+
+/// Explain which kind of update satisfied the wait. Compute this over the
+/// complete observation set, not a possibly truncated model-facing page.
+fn detailed_wake_reason(items: &[Value], wake_reason: WakeReason) -> &'static str {
+    match wake_reason {
+        WakeReason::Immediate => "immediate",
+        WakeReason::Terminal => "terminal",
+        WakeReason::ItemError => "item_error",
+        WakeReason::Timeout => "timeout",
+        WakeReason::Updated => {
+            if items.iter().any(|item| {
+                item["success"].as_bool() == Some(true)
+                    && item["output"]["meaningful_changed"].as_bool() == Some(true)
+            }) {
+                "meaningful_change"
+            } else if items.iter().any(|item| {
+                item["success"].as_bool() == Some(true)
+                    && item["output"]["heartbeat_changed"].as_bool() == Some(true)
+            }) {
+                "heartbeat"
+            } else {
+                "change"
+            }
+        }
+    }
+}
+
 fn bounded_error(error: Option<&str>) -> String {
     let error = error.unwrap_or("Job observation failed");
     let mut chars = error.chars();
@@ -661,6 +697,27 @@ fn apply_output_budget(
     output["output_truncated"] = json!(next_index.is_some());
     if let Some(index) = next_index {
         output["next_index"] = json!(index);
+    }
+    Ok(output)
+}
+
+/// Add user-facing wait context after the canonical budget pass. The
+/// reserved envelope headroom covers these bounded fields, so the canonical
+/// item-packing algorithm remains the single source of budget decisions.
+fn apply_output_budget_with_wait_context(
+    requested_count: usize,
+    completed: Vec<Value>,
+    wake_reason: WakeReason,
+    waited_ms: u64,
+    wake_on: ObserveJobsWakeOn,
+    requested_wait_secs: Option<u64>,
+) -> Result<Value, String> {
+    let detail = detailed_wake_reason(&completed, wake_reason);
+    let mut output = apply_output_budget(requested_count, completed, wake_reason, waited_ms)?;
+    if let Some(wait) = output["wait"].as_object_mut() {
+        wait.insert("reason".to_string(), json!(detail));
+        wait.insert("wake_on".to_string(), json!(wake_policy_name(wake_on)));
+        wait.insert("requested_secs".to_string(), json!(requested_wait_secs));
     }
     Ok(output)
 }
@@ -1421,7 +1478,14 @@ impl ToolRuntime {
             }
         }
 
-        match apply_output_budget(requested_count, completed, wake_reason, waited_ms) {
+        match apply_output_budget_with_wait_context(
+            requested_count,
+            completed,
+            wake_reason,
+            waited_ms,
+            wake_on,
+            wait_secs,
+        ) {
             Ok(mut output) => {
                 add_actionable_batch_continuation(&mut output, &original_items, tail_lines);
                 ToolResult::ok(output)
@@ -1746,6 +1810,108 @@ mod tests {
             serde_json::to_vec(&ToolResult::ok(output)).unwrap().len()
                 <= MAX_OBSERVE_JOBS_AGGREGATE_RESULT_BYTES
         );
+    }
+
+    #[test]
+    fn wait_context_explains_updated_wakes_without_exposing_job_content() {
+        let make = |meaningful: bool, heartbeat: bool| {
+            vec![json!({
+                "index": 0,
+                "job_id": "job-0",
+                "success": true,
+                "output": {
+                    "changed": true,
+                    "meaningful_changed": meaningful,
+                    "heartbeat_changed": heartbeat,
+                    "terminal": false,
+                },
+                "error_kind": null,
+                "error": null,
+            })]
+        };
+        for (meaningful, heartbeat, expected) in [
+            (true, true, "meaningful_change"),
+            (false, true, "heartbeat"),
+            (false, false, "change"),
+        ] {
+            let output = apply_output_budget_with_wait_context(
+                1,
+                make(meaningful, heartbeat),
+                WakeReason::Updated,
+                750,
+                ObserveJobsWakeOn::MeaningfulChange,
+                Some(45),
+            )
+            .unwrap();
+            assert_eq!(output["wait"]["outcome"], "updated");
+            assert_eq!(output["wait"]["reason"], expected);
+            assert_eq!(output["wait"]["wake_on"], "meaningful_change");
+            assert_eq!(output["wait"]["requested_secs"], 45);
+            assert_eq!(output["wait"]["waited_ms"], 750);
+        }
+    }
+
+    #[test]
+    fn wake_reason_describes_full_batch_even_when_budget_omits_triggering_job() {
+        let large = |index| json!({
+            "index": index,
+            "job_id": format!("job-{index}"),
+            "success": true,
+            "output": {"changed": true, "terminal": false, "stdout_tail": "x".repeat(300_000)},
+            "error_kind": null,
+            "error": null,
+        });
+        let triggering = json!({
+            "index": 2,
+            "job_id": "job-2",
+            "success": true,
+            "output": {"changed": true, "meaningful_changed": true, "terminal": false},
+            "error_kind": null,
+            "error": null,
+        });
+        let output = apply_output_budget_with_wait_context(
+            3,
+            vec![large(0), large(1), triggering],
+            WakeReason::Updated,
+            10_000,
+            ObserveJobsWakeOn::MeaningfulChange,
+            Some(50),
+        )
+        .unwrap();
+        assert_eq!(output["output_truncated"], true);
+        assert_eq!(output["returned_count"], 1);
+        assert_eq!(output["next_index"], 1);
+        assert_eq!(output["wait"]["reason"], "meaningful_change");
+        assert_eq!(output["wait"]["outcome"], "updated");
+        assert_eq!(output["wait"]["wake_on"], "meaningful_change");
+        assert_eq!(output["wait"]["requested_secs"], 50);
+        assert!(
+            serde_json::to_vec(&ToolResult::ok(output)).unwrap().len()
+                <= MAX_OBSERVE_JOBS_AGGREGATE_RESULT_BYTES
+        );
+    }
+
+    #[test]
+    fn immediate_and_timeout_wait_context_echoes_null_or_requested_seconds() {
+        for (reason, seconds, label) in [
+            (WakeReason::Immediate, None, "immediate"),
+            (WakeReason::Timeout, Some(12), "timeout"),
+            (WakeReason::Terminal, Some(5), "terminal"),
+            (WakeReason::ItemError, Some(1), "item_error"),
+        ] {
+            let output = apply_output_budget_with_wait_context(
+                0,
+                vec![],
+                reason,
+                17,
+                ObserveJobsWakeOn::AllTerminal,
+                seconds,
+            )
+            .unwrap();
+            assert_eq!(output["wait"]["reason"], label);
+            assert_eq!(output["wait"]["wake_on"], "all_terminal");
+            assert_eq!(output["wait"]["requested_secs"], json!(seconds));
+        }
     }
 
     #[test]

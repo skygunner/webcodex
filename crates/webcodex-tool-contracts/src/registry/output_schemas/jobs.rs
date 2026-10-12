@@ -813,7 +813,21 @@ fn observe_jobs_output_schema() -> Value {
                         "type": "string",
                         "enum": ["immediate", "updated", "terminal", "item_error", "timeout"]
                     },
-                    "waited_ms": {"type": "integer", "minimum": 0}
+                    "waited_ms": {"type": "integer", "minimum": 0},
+                    "reason": {
+                        "type": "string",
+                        "enum": ["immediate", "terminal", "item_error", "timeout", "meaningful_change", "heartbeat", "change"],
+                        "description": "Detailed wake event observed over the complete batch before result truncation."
+                    },
+                    "wake_on": {
+                        "type": "string",
+                        "enum": ["change", "meaningful_change", "terminal", "all_terminal"],
+                        "description": "Wait policy requested by the caller."
+                    },
+                    "requested_secs": {
+                        "anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}],
+                        "description": "Requested wait duration in seconds, or null when no wait was requested."
+                    }
                 },
                 "required": ["outcome", "waited_ms"],
                 "description": "The single shared-wait fact for this batch. terminal policy never wakes updated: timeout means the deadline elapsed and may coexist with changed=true and cumulative log deltas. Item errors take precedence over terminal, then timeout. Final item outputs are snapshots and do not expose a second wait outcome."

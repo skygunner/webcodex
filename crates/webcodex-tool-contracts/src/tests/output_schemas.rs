@@ -1153,7 +1153,10 @@ fn observe_jobs_failure_item_schema_closes_recovery_metadata() {
             }],
             "wait": {
                 "outcome": "item_error",
-                "waited_ms": 0
+                "waited_ms": 0,
+                "reason": "item_error",
+                "wake_on": "change",
+                "requested_secs": null
             },
             "changed_count": 0,
             "terminal_count": 0,
@@ -1162,6 +1165,16 @@ fn observe_jobs_failure_item_schema_closes_recovery_metadata() {
         "error": null
     });
     validate(&result).unwrap();
+
+    let mut invalid_wait_reason = result.clone();
+    invalid_wait_reason["output"]["wait"]["reason"] = json!("not_a_wake_reason");
+    assert!(validate(&invalid_wait_reason).is_err());
+    let mut invalid_wait_policy = result.clone();
+    invalid_wait_policy["output"]["wait"]["wake_on"] = json!("not_a_policy");
+    assert!(validate(&invalid_wait_policy).is_err());
+    let mut invalid_wait_seconds = result.clone();
+    invalid_wait_seconds["output"]["wait"]["requested_secs"] = json!(-1);
+    assert!(validate(&invalid_wait_seconds).is_err());
 
     let mut duplicate_kind = result.clone();
     duplicate_kind["output"]["items"][0]["recovery_kind"] = json!("reobserve");

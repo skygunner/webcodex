@@ -57,13 +57,34 @@ struct FakeServerBinary {
     path: PathBuf,
 }
 
+/// Temp directory on the same filesystem as the compiled test binaries.
+/// Hardened hosts commonly mount the system temp directory with `noexec`;
+/// fixtures that must execute generated binaries build them here instead,
+/// because `cargo test` already requires this filesystem to stay executable.
+/// Unique per call, cleaned up on drop, safe under concurrent tests.
+pub(super) fn executable_tempdir() -> tempfile::TempDir {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target")
+        .join("test-executables");
+    std::fs::create_dir_all(&root).expect("create LSP executable test root");
+    tempfile::Builder::new()
+        .prefix("webcodex-lsp-exec-")
+        .tempdir_in(root)
+        .expect("create LSP executable test temp dir")
+}
+
 pub(super) fn fake_server_path() -> &'static Path {
     static BINARY: OnceLock<FakeServerBinary> = OnceLock::new();
     &BINARY
         .get_or_init(|| {
             let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
             let source = manifest.join("src/fake_server.rs");
-            let temp = tempfile::tempdir().unwrap();
+            // The fake server is a compiled binary that test processes must
+            // execute, so it is built through `executable_tempdir` rather
+            // than the system temp directory. The OnceLock keeps one binary
+            // per test process; the unique tempdir keeps concurrent runs
+            // isolated and cleans up automatically.
+            let temp = executable_tempdir();
             let path = temp
                 .path()
                 .join(format!("webcodex-lsp-fake{}", env::consts::EXE_SUFFIX));

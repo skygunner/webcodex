@@ -275,3 +275,93 @@ fn in_place_job_budget_matches_frozen_packer_and_recovery_continuation() {
         "fixtures must exercise oversized-job recovery item"
     );
 }
+
+
+#[test]
+fn model_envelope_budget_counts_unicode_json_escapes_and_long_job_ids() {
+    // Character length is not the serialized byte count: multibyte UTF-8
+    // and escaped control characters make this a stricter envelope check.
+    let long_id = format!("wc_job_{}", "x".repeat(180));
+    let tail = "中文🦀\\\"quoted\\\"\n\t".repeat(6_500);
+    let items = (0..8)
+        .map(|index| {
+            json!({
+                "index": index,
+                "job_id": if index == 0 {
+                    long_id.clone()
+                } else {
+                    format!("wc_job_{index}")
+                },
+                "success": true,
+                "output": {
+                    "changed": index == 1,
+                    "terminal": false,
+                    "stdout_tail": tail,
+                },
+                "error_kind": null,
+                "error": null,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let output = apply_output_budget(8, items, WakeReason::Updated, 0).unwrap();
+    let count = output["returned_count"].as_u64().unwrap();
+    assert!(count > 0 && count < 8, "test must exercise truncation");
+    assert_eq!(output["output_truncated"], true);
+    assert_eq!(output["next_index"], count);
+    assert_eq!(output["items"][0]["job_id"], long_id);
+    assert!(
+        serde_json::to_vec(&ToolResult::ok(output)).unwrap().len()
+            <= MAX_OBSERVE_JOBS_AGGREGATE_RESULT_BYTES
+    );
+}
+
+#[test]
+fn model_envelope_stays_bounded_after_actionable_continuation() {
+    // Pack an almost-full prefix and verify the handler's later continuation
+    // rewrite also fits. No consumer should need to parse partial JSON.
+    let ids = (0..3)
+        .map(|index| format!("wc_job_{index}_{}", "i".repeat(180)))
+        .collect::<Vec<_>>();
+    let items = ids
+        .iter()
+        .enumerate()
+        .map(|(index, job_id)| {
+            json!({
+                "index": index,
+                "job_id": job_id,
+                "success": true,
+                "output": {
+                    "changed": false,
+                    "terminal": false,
+                    "stdout_tail": "x".repeat(230_000),
+                },
+                "error_kind": null,
+                "error": null,
+            })
+        })
+        .collect::<Vec<_>>();
+    let originals = ids
+        .iter()
+        .map(|job_id| ObserveJobsItem {
+            job_id: job_id.clone(),
+            after_observation_token: None,
+            observation_ref: None,
+        })
+        .collect::<Vec<_>>();
+
+    let mut output = apply_output_budget(3, items, WakeReason::Immediate, 0).unwrap();
+    assert_eq!(output["returned_count"], 2);
+    assert_eq!(output["next_index"], 2);
+    add_actionable_batch_continuation(&mut output, &originals, 40);
+    assert!(output.get("next_index").is_none());
+    assert_eq!(output["suggested_call"]["tool"], "observe_jobs");
+    assert_eq!(
+        output["suggested_call"]["arguments"]["items"][0]["job_id"],
+        ids[2]
+    );
+    assert!(
+        serde_json::to_vec(&ToolResult::ok(output)).unwrap().len()
+            <= MAX_OBSERVE_JOBS_AGGREGATE_RESULT_BYTES
+    );
+}

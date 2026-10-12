@@ -276,7 +276,6 @@ fn in_place_job_budget_matches_frozen_packer_and_recovery_continuation() {
     );
 }
 
-
 #[test]
 fn model_envelope_budget_counts_unicode_json_escapes_and_long_job_ids() {
     // Character length is not the serialized byte count: multibyte UTF-8

@@ -65,7 +65,7 @@ def stage(args: argparse.Namespace) -> dict:
         raise StageError("built_at must be a positive Unix timestamp")
     if args.platform not in PLATFORM_ARCH:
         raise StageError(f"unsupported macOS Desktop platform: {args.platform!r}")
-    if args.signing_mode not in {"adhoc", "developer-id"}:
+    if args.signing_mode not in {"adhoc", "self-signed", "developer-id"}:
         raise StageError(f"unsupported macOS signing mode: {args.signing_mode!r}")
 
     expected_host, expected_binary_arch = PLATFORM_ARCH[args.platform]
@@ -84,7 +84,7 @@ def stage(args: argparse.Namespace) -> dict:
 
     runtime_dir = output_dir / "resources" / "webcodex-runtime"
     runtime_dir.mkdir(parents=True)
-    short_source = args.source_sha[:12].lower()
+    source_identity = args.source_sha.lower()
     resources: dict[str, str] = {}
     files: dict[str, dict[str, object]] = {}
     try:
@@ -101,7 +101,7 @@ def stage(args: argparse.Namespace) -> dict:
 
             actual_version = run_line([str(source), "--version"])
             expected_version = (
-                f"{name} {args.version} (commit {short_source}, dirty=false, built_at={args.built_at})"
+                f"{name} {args.version} (commit {source_identity}, dirty=false, built_at={args.built_at})"
             )
             if actual_version != expected_version:
                 raise StageError(
@@ -131,11 +131,12 @@ def stage(args: argparse.Namespace) -> dict:
                 "filename": name,
                 "size": destination_stat.st_size,
                 "source_sha256": source_digest,
-                "staged_unsigned_sha256": destination_digest,
+                "staged_input_sha256": destination_digest,
             }
 
         macos: dict[str, object] = {}
-        if args.signing_mode == "adhoc":
+        if args.signing_mode in {"adhoc", "self-signed"}:
+            # Self-signed finalization restores pinned requirements after Tauri.
             macos["signingIdentity"] = "-"
         overlay = {
             "version": args.version,
@@ -150,14 +151,14 @@ def stage(args: argparse.Namespace) -> dict:
         overlay_path.write_text(json.dumps(overlay, indent=2) + "\n", encoding="utf-8")
 
         metadata = {
-            "schema_version": 2,
+            "schema_version": 3,
             "platform": args.platform,
             "version": args.version,
             "source_sha": args.source_sha.lower(),
             "built_at": args.built_at,
             "signing_mode": args.signing_mode,
             "resource_dir": "resources/webcodex-runtime",
-            "provenance": "same_unsigned_runtime_input_before_platform_signing",
+            "provenance": "same_runtime_input_before_bundle_signing",
             "files": files,
         }
         metadata_path = output_dir / "desktop-bundle.json"
@@ -179,7 +180,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--source-sha", required=True)
     result.add_argument("--built-at", type=int, required=True)
     result.add_argument("--platform", choices=tuple(PLATFORM_ARCH), required=True)
-    result.add_argument("--signing-mode", choices=("adhoc", "developer-id"), required=True)
+    result.add_argument("--signing-mode", choices=("adhoc", "self-signed", "developer-id"), required=True)
     result.add_argument("--output-dir", type=Path, required=True)
     return result
 

@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 fn process_call(project: String, session_id: Option<String>) -> ToolCall {
     ToolCall::RunProcess {
+        interactive: false,
         project,
         executable: "argv-helper".to_string(),
         args: vec![
@@ -326,6 +327,14 @@ async fn model_argv_alias_executes_canonical_process_and_returns_success_hint() 
     )
     .await;
     let outcome = task.await.unwrap();
+    let completion = outcome.model_ergonomics.as_ref().unwrap();
+    let record = completion
+        .record_for_tool_result(outcome.result.as_ref().unwrap())
+        .unwrap();
+    assert_eq!(
+        record.input_normalization_code,
+        Some(webcodex_tool_contracts::ToolInputNormalizationCode::ArgvToArgs)
+    );
     let result = outcome.result.unwrap();
     assert!(result.success, "{result:?}");
     assert_eq!(
@@ -1263,13 +1272,18 @@ async fn run_process_terminal_success_is_sparse_after_full_session_effect_record
     let session_id = session.session_id.clone();
     let auth = auth_context(None, true);
 
-    let (task, request) = dispatch_process_until_request(
-        &runtime,
-        "process-sparse-ledger",
-        process_call(project.clone(), Some(session_id.clone())),
-        auth.clone(),
-    )
-    .await;
+    let call = process_call(project.clone(), Some(session_id.clone()));
+    let task = tokio::spawn({
+        let runtime = runtime.clone();
+        async move {
+            runtime.dispatch_with_auth_transport_options_and_metadata_with_recording_mode_and_context_with_result_projection(
+                call, Some(&auth), sessions::SessionTransport::Api,
+                Default::default(), None, true, Vec::new(), Default::default(),
+                Default::default(), super::super::return_timing::ToolReturnTimingPolicy::unconstrained(),
+            ).await
+        }
+    });
+    let request = wait_for_patch_agent_request(&runtime, "process-sparse-ledger").await;
     update_process_job(
         &runtime,
         "process-sparse-ledger",
@@ -1295,7 +1309,27 @@ async fn run_process_terminal_success_is_sparse_after_full_session_effect_record
     )
     .await;
 
-    let result = task.await.unwrap();
+    let (mut result, projection, _) = task.await.unwrap();
+    assert_eq!(result.output["execution_state"], "completed");
+    assert_eq!(result.output["command_started"], true);
+    assert_eq!(result.output["command_completed"], true);
+    assert_eq!(result.output["command_ok"], true);
+    let audit = super::super::tool_audit::canonical_execution_audit_result_for_tool(
+        "run_process",
+        &result.output,
+    );
+    assert_eq!(audit["command_ok"], true);
+    assert_eq!(audit["execution_state"], "completed");
+    let mut timer =
+        super::super::model_ergonomics_telemetry::ModelErgonomicsTimer::start_with_arguments(
+            "run_process",
+            &json!({}),
+        )
+        .unwrap();
+    timer.capture_canonical_result(&result);
+    projection.project(&mut result);
+    let metrics = timer.finish().record_for_tool_result(&result).unwrap();
+    assert_eq!(metrics.execution_state.as_deref(), Some("completed"));
     assert!(result.success, "{:?}", result.error);
     for omitted in [
         "execution_state",
@@ -1490,6 +1524,7 @@ async fn run_process_six_hour_handoff_is_queryable_once_and_keeps_the_original_b
         &runtime,
         "process-slow-job",
         ToolCall::RunProcess {
+            interactive: false,
             project: project.clone(),
             executable: "argv-helper".to_string(),
             args: vec![
@@ -1611,6 +1646,7 @@ async fn run_process_zero_sync_wait_fails_before_execution_start() {
         let result = runtime
             .dispatch_with_auth(
                 ToolCall::RunProcess {
+                    interactive: false,
                     project: project.clone(),
                     executable: "argv-helper".to_string(),
                     args: Vec::new(),
@@ -1650,6 +1686,7 @@ async fn run_process_short_timeout_stays_direct_without_job_headroom() {
             runtime
                 .dispatch_with_auth(
                     ToolCall::RunProcess {
+                        interactive: false,
                         project,
                         executable: "argv-helper".to_string(),
                         args: Vec::new(),
@@ -1835,6 +1872,7 @@ async fn run_process_preserves_large_typed_argv_without_shell_parsing() {
             runtime
                 .dispatch_with_auth(
                     ToolCall::RunProcess {
+                        interactive: false,
                         project,
                         executable: "argv-helper".to_string(),
                         args: large_args,
@@ -2134,6 +2172,7 @@ async fn run_process_named_ssh_resource_fails_before_enqueue() {
         .is_none());
 
     let shell_form = ToolCall::RunProcess {
+        interactive: false,
         project: runner_project_runtime_id("process-ssh", "demo"),
         executable: "bash".to_string(),
         args: vec!["-c".to_string(), "printf unsafe".to_string()],
@@ -2164,6 +2203,7 @@ async fn run_process_validation_and_inspect_permission_boundaries_fail_closed() 
 
     for invalid in [
         ToolCall::RunProcess {
+            interactive: false,
             project: project.clone(),
             executable: String::new(),
             args: Vec::new(),
@@ -2175,6 +2215,7 @@ async fn run_process_validation_and_inspect_permission_boundaries_fail_closed() 
             purpose: None,
         },
         ToolCall::RunProcess {
+            interactive: false,
             project: project.clone(),
             executable: "sh".to_string(),
             args: vec!["-c".to_string(), "touch marker".to_string()],
@@ -2186,6 +2227,7 @@ async fn run_process_validation_and_inspect_permission_boundaries_fail_closed() 
             purpose: None,
         },
         ToolCall::RunProcess {
+            interactive: false,
             project: project.clone(),
             executable: "argv-helper".to_string(),
             args: vec!["bad\0arg".to_string()],
@@ -2197,6 +2239,7 @@ async fn run_process_validation_and_inspect_permission_boundaries_fail_closed() 
             purpose: None,
         },
         ToolCall::RunProcess {
+            interactive: false,
             project: project.clone(),
             executable: "argv-helper".to_string(),
             args: vec![String::new(); 257],
@@ -2208,6 +2251,7 @@ async fn run_process_validation_and_inspect_permission_boundaries_fail_closed() 
             purpose: None,
         },
         ToolCall::RunProcess {
+            interactive: false,
             project: project.clone(),
             executable: "argv-helper".to_string(),
             args: vec!["x".repeat(8_193)],
@@ -2219,6 +2263,7 @@ async fn run_process_validation_and_inspect_permission_boundaries_fail_closed() 
             purpose: None,
         },
         ToolCall::RunProcess {
+            interactive: false,
             project: project.clone(),
             executable: "argv-helper".to_string(),
             args: Vec::new(),
@@ -2230,6 +2275,7 @@ async fn run_process_validation_and_inspect_permission_boundaries_fail_closed() 
             purpose: None,
         },
         ToolCall::RunProcess {
+            interactive: false,
             project: project.clone(),
             executable: "argv-helper".to_string(),
             args: Vec::new(),
@@ -2241,6 +2287,7 @@ async fn run_process_validation_and_inspect_permission_boundaries_fail_closed() 
             purpose: None,
         },
         ToolCall::RunProcess {
+            interactive: false,
             project: project.clone(),
             executable: "argv-helper".to_string(),
             args: Vec::new(),
@@ -2533,6 +2580,14 @@ async fn run_process_shell_command_mode_recovery_is_lossless_parser_ready_and_pr
                 if args[0] == "-lc" {
                     assert_eq!(result.output["shell"], "bash_login");
                 }
+                let expected_code = if args[0] == "-lc" {
+                    "run_process_bash_lc_to_login_run_shell"
+                } else if shell == "sh" {
+                    "run_process_sh_c_to_run_shell"
+                } else {
+                    "run_process_bash_c_to_run_shell"
+                };
+                assert_eq!(result.output["input_normalization"]["code"], expected_code);
                 assert!(result.output["input_normalization"]["hint"]
                     .as_str()
                     .unwrap()
@@ -2622,6 +2677,7 @@ async fn shell_recovery_requires_raw_shell_policy_and_explicit_selection_capabil
         )
         .await;
         let call = ToolCall::RunProcess {
+            interactive: false,
             project: runner_project_runtime_id(client, "demo"),
             executable: "bash".to_string(),
             args: vec!["-c".to_string(), "printf unsafe".to_string()],

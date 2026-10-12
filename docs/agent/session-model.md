@@ -77,13 +77,30 @@ Workflow Session lifecycle is independent from the durable `wc_goal_*` Goal doma
 
 ### Storage and ownership
 
-A `session_ref` is only a short model selector. The Server owns a durable mapping scoped to the authenticated principal and pins the ref to one exact canonical Workflow Session incarnation. Resolving it produces the canonical `wc_sess_*` before business authorization/dispatch; the ordinary Project visibility, Session authority, lifecycle, and guard checks then run unchanged. The ref is not a credential, bearer capability, recorder identity, or "current/recent Session" inference. If the pinned Session disappears or its exact incarnation cannot be proven, the old ref fails closed and is never recycled or silently retargeted. Canonical Session ids remain authoritative for persistence, audit, diagnostics, internal joins, and explicit API/CLI consumers.
+A `session_ref` is only a short model selector. The Server owns a durable mapping scoped to the authenticated principal and pins the ref to one exact canonical Workflow Session incarnation. Resolving it produces the canonical `wc_sess_*` before business authorization/dispatch; the ordinary Project visibility, Session authority, lifecycle, and guard checks then run unchanged. The ref is not a credential, bearer capability, recorder identity, or "current/recent Session" inference. If the pinned Session disappears or its exact incarnation cannot be proven, the old ref fails closed and is never recycled or silently retargeted. When the caller's own ref still pins that exact incarnation and a retention tombstone for that canonical id is still present, resolution returns `session_retention_expired` for that canonical id and does not continue the call. A foreign, malformed, missing, incarnation-mismatched, or already-aged-out ref remains `unknown_session_ref` and is never rewritten. Canonical Session ids remain authoritative for persistence, audit, diagnostics, internal joins, and explicit API/CLI consumers.
+
+For exact `work_on_project` checkout resume, `session_id + instruction` is sufficient: the shared startup engine authorizes the selected Session, obtains its bound canonical Project, and runs ordinary current Project resolution/authorization and the same Session/Project, lifecycle, capability and recorder fences. An explicit Project must still match. Fresh work and managed-worktree mode require an explicit Project source. An unscoped Session cannot supply one. Neither missing/Closed/inaccessible Session state nor recorder/Window identity selects a replacement. Session refs continue to pin Session incarnation; Project refs separately pin canonical Project/root identity. This convenience does not add a historical filesystem snapshot or change either identity contract.
+
+The original Window's `workflow.resume` discovery emits an optional `project_ref` only after the candidate Session and current Project are authorized and a current root fingerprint is available. Canonical identity remains present; refs are convenience selectors, not new authority or automatic resume.
+
+Model-facing `session_id` input schemas must admit `~sN` wherever the kernel accepts a Session selector, including exact resume and card presentation. Canonical-id-only input regexes would let a strict Host reject the ref before resolution. This does not widen output `session_id`, persisted IDs, or other identity domains: outputs retain canonical identity, and the separate `session_ref` field carries the selector. Unknown, malformed, foreign, or stale refs still fail in the existing resolver and authorization path. A retained Closed Session follows the same lifecycle rules as its canonical id: historical reads may succeed, but a selector never reopens it or permits a mutation denied to the canonical id.
 
 Canonical Session identity/retention is separate from in-memory residency. `Active` and `Closed` are business lifecycle states; hot/cold residency and LRU ordering are implementation details and never lifecycle transitions. Active canonical Sessions currently remain materialized hot. The configured `hot_session_capacity_target` is therefore an observability target rather than destructive authority: when Active Session count exceeds it, the store retains those Active identities instead of deleting them or turning later exact resume into `unknown_session_id`. Restart restore follows the same rule and never trims Active rows merely to satisfy that target.
 
-Closed historical rows use an independent bounded retention policy. Closed Sessions are coldified to compact durable JSON and remain queryable while retained; mutation remains denied and retention never reopens them. `historical_session_retention_limit` bounds retained Closed history only. When that explicit historical policy expires an old Closed row, the current v2 ledger has no tombstone shape, so a later lookup can no longer distinguish retention expiry from an identity that was never present. Adding explicit retention-expired tombstones is a separate follow-up and must not be approximated by deleting Active identities. The compatibility `max_sessions` status field now aliases the hot capacity target and must not be interpreted as permission to delete durable Active Sessions.
+Closed historical rows use an independent bounded retention policy. Closed Sessions are coldified to compact durable JSON and remain queryable while retained; mutation remains denied and retention never reopens them. `historical_session_retention_limit` bounds retained Closed history only. When that explicit historical policy removes an old Closed row, the v2 ledger keeps a row-local `retention_tombstone` for that exact canonical id, owning principal, and incarnation fingerprint, together with an `expiry_ordinal` that stores only relative expiration order. A restored ordinal with no greater successor is compacted, before the next allocation, into a dense increasing range over the retained tombstones; canonical id, owner, and incarnation stay the same, and the oldest tombstone remains the eviction victim. Tombstones share `historical_session_retention_limit` as a separate ceiling and do not count as retained, closed, hot, or cold Sessions. A later lookup by the owning principal returns `session_retention_expired` and does not reopen the Session. Any other principal receives `unknown_session_id`, the same result as an id that was never present. After a tombstone ages out, that id is no longer distinguishable from one that was never present. Active Sessions are never removed or tombstoned to satisfy hot capacity. An older v2 reader ignores tombstone rows and keeps Session rows. The compatibility `max_sessions` status field now aliases the hot capacity target and must not be interpreted as permission to delete durable Active Sessions.
 
-Per-Session event and message tails remain independently bounded (`DEFAULT_MAX_EVENTS_PER_SESSION` and `DEFAULT_MAX_MESSAGES_PER_SESSION`); preserving a canonical Active identity does not turn its event/message history into an unbounded archive. The persistence wire shape remains ledger version 2 because this change alters retention/restore policy, not the serialized Session row schema. Existing Session rows already deleted by an older Server cannot be reconstructed by upgrading: the fix prevents future destructive capacity loss from the first upgraded snapshot onward.
+Access recency is maintained by a store-owned ordered index with separate Closed
+eligibility; it is not business lifecycle or activity. Exact reads update that
+index without appending ledger events or scheduling a write. The background
+whole-ledger writer coalesces ordinary asynchronous dirty marks for at most a
+fixed 20 ms scheduling window from the first pending mark. Progress never resets
+that deadline. Explicit generation flushes and shutdown bypass coalescing, while
+preserving existing write ordering and persistence-error reporting. I/O can take
+longer; this is neither a fsync nor a power-loss guarantee. Ledger version 2 and
+its per-cycle full snapshot format are unchanged. Implementation evidence and
+tradeoffs: [SessionStore access and writes](../implementation/session-store-access-and-write-scheduling.md).
+
+Per-Session event and message tails remain independently bounded (`DEFAULT_MAX_EVENTS_PER_SESSION` and `DEFAULT_MAX_MESSAGES_PER_SESSION`); preserving a canonical Active identity does not turn its event/message history into an unbounded archive. The persistence wire shape remains ledger version 2. A retention tombstone is an additional row-local object in the same `sessions` array, not a Session row and not a new ledger version. Existing Session rows already deleted by an older Server cannot be reconstructed by upgrading: tombstones apply only to Closed rows removed after this behavior is present.
 
 `recording_session_id` remains a separate provenance contract. It may explicitly carry the same principal-scoped `session_ref` returned for that exact Session; Runtime canonicalizes the ref before recorder authorization and durable provenance recording. This does not make recorder provenance a business Session target, and omission never selects a recorder implicitly or creates sticky recorder context.
 
@@ -136,7 +153,7 @@ Workflow Session targeting is explicit in 0.4. Canonical external `work_on_proje
 
 Project scope is fail-closed. An explicit project-scoped business Session or recorder must match the canonical resolved request project before business execution or Session mutation. There is no cross-project warning/escape mode. `complete_session_message` records an answer author only from an explicitly authorized recorder; without one, author Session provenance is absent rather than inferred.
 
-The JSON ledger restores only the current version-2 top-level shape and canonical current Session rows. Pre-current ledger versions are rejected rather than migrated. Within v2, fields explicitly declared optional/default may be absent and restore conservatively. The retired `context_revision` members are accepted only through explicit read-only compatibility sinks and are never restored into live Session state or re-emitted; other unknown row members still fail that row closed. General `ClientWindow` support remains available to explicitly designed non-Workflow observations; Workflow Sessions do not use it for selection or authority.
+The JSON ledger restores only the current version-2 top-level shape and canonical current Session rows. Pre-current ledger versions are rejected rather than migrated. Within v2, fields explicitly declared optional/default may be absent and restore conservatively. The retired `context_revision` members are accepted only through explicit read-only compatibility sinks and are never restored into live Session state or re-emitted. A `retention_tombstone` object is a recognized non-Session row in the v2 `sessions` array. A malformed tombstone drops that row only. Unknown members on a Session row still fail that row closed. A live Session row wins over a tombstone with the same canonical id. General `ClientWindow` support remains available to explicitly designed non-Workflow observations; Workflow Sessions do not use it for selection or authority.
 Optional explicit control mutations may also use the Stateless MCP 2026
 [`_wc.control` sidecar contract](control-sidecars.md). Each phase admits one mutation
 with its canonical authority and replay fences; standalone tools remain valid.
@@ -422,6 +439,14 @@ variant remains for that retired name; `work_on_project` calls the shared coding
 workflow engine directly, with diagnostic projection controls available only to
 tests rather than as a Session-selection or compatibility surface.
 
+Requested `project.instructions` context on `work_on_project` reuses that call's
+resolved Project and instruction observation. Material scopes remain independently
+checked; incomplete observations are not re-read or promoted to complete. The
+semantic-navigation status probe runs concurrently with required bootstrap
+observations. Startup does not wait solely for LSP: `not_observed` with null
+availability means required observations finished first. Explicit LSP tools still
+obtain current provider truth.
+
 `work_on_project` also owns the optional managed-worktree bootstrap without
 creating a new authority or Session concept. The canonical model-facing form is
 a fresh `project + mode=worktree` call. The Server first resolves and
@@ -470,8 +495,10 @@ retention state. `include_extension_catalog` remains a separate caller-explicit
 selection-metadata preference.
 
 `guidance_profile` is a request-local presentation enum. Explicit selection wins;
-when omitted on MCP, `McpHostRuntimePolicy.profile` (configured by
-`WEBCODEX_MCP_HOST_PROFILE`) supplies the default, while non-MCP/internal omission
+when omitted on MCP, the current request's `McpHostRuntimePolicy.profile` supplies
+the default (`X-WebCodex-MCP-Profile`, otherwise deployment `WEBCODEX_MCP_HOST_PROFILE`).
+The MCP adapter creates an immutable runtime view; it never stores this preference
+in the Session or changes shared execution ownership. Non-MCP/internal omission
 falls back to `direct`. Available explicit values are `direct`, `host_code_mode` for
 Host-supplied native orchestration in every build, or `code_mode` for WebCodex nested
 orchestration only in Experimental Code Mode builds. Host-native guidance favors canonical batches and `search_and_read`,
@@ -540,7 +567,7 @@ This durable binding remains Workflow Session state and is separate from ActionA
 ### Current lifecycle contract
 
 This is **not** the same state machine as Action Audit Sessions. Lifecycle
-tools and error kinds (`unknown_session_id`, `session_closed`, mode denials,
+tools and error kinds (`unknown_session_id`, `session_retention_expired`, `session_closed`, mode denials,
 guard failures) apply only to Workflow Sessions.
 
 ### Continuation feedback (`continuation_feedback`)
@@ -667,6 +694,28 @@ from the surrounding handoff output and `handoff_brief.session.session_id`.
 
 ### Task handoff brief (`handoff_brief`)
 
+`list_sessions(project, lifecycle?, offset?, limit?)` discovers retained Active
+and Closed identities when the caller has no exact Session selector, including
+a new Host Window/account without `workflow.resume` links. The kernel requires
+`runtime:read` and `project:read`; Runtime reauthorizes the exact Project and
+creation-time Session owner. Filtering occurs before totals and pagination, so
+foreign owners cannot affect the count or hide rows. Default limit is 10,
+normalized to 1–20; titles are redacted and capped at 240 Unicode characters and
+the JSON output at 32 KiB. Offset pagination is not a frozen snapshot. Short refs
+remain principal-scoped selectors. The caller must explicitly choose a returned
+identity; discovery never starts, resumes, or selects recent work. Closed history
+can be read, while mutation still requires an Active Session. A retention
+tombstone is not a retained Session: `list_sessions` omits it from rows and
+totals, does not mint a `session_ref` for it, and has no expired lifecycle
+filter. Exact expired identity is visible only to a later lookup that already
+holds that canonical id or the matching principal-scoped ref.
+
+Built-in workflow guidance instructs models to save agreed decisions and current
+progress/remaining work through explicit `post_session_message` calls at recovery
+boundaries. These retained reports supplement native tool/validation evidence.
+They do not capture unsent Host conversation or private model reasoning. See the
+[continuity guide](../SESSION_CONTINUITY.md) for the user and operator flow.
+
 `session_handoff_summary` and `finish_coding_task` return the same version-1
 `handoff_brief`, built by one shared pure projection. It is the compact,
 model-friendly view for a new window, a new Agent, or a human receiver;
@@ -675,7 +724,7 @@ explicit diagnostic handoff view and closeout tools. The
 brief is not Session replay, does not reconstruct chat or hidden model
 context, and does not decide that implementation work is complete.
 
-The builder consumes only the bounded Session summary, continuation feedback,
+The builder consumes only the bounded Session summary, discussion, continuation feedback,
 workspace, validation, Job, guidance, exploration, external-report, and suggested-action
 snapshots that its caller already obtained. It performs no shell, Git, file,
 search, LSP, Agent, or Runner request; does not refresh activity, consume
@@ -708,6 +757,15 @@ The projection has these stable bounds and semantics:
   are capped at 5. Each bounded evidence list preserves
   `total`/`returned`/`truncated`. Recent files are only continuity hints, not
   complete history.
+- `task.decisions` and `task.recent_progress` return at most five newest retained
+  notes per kind, including message identity, status, supersession and excerpt.
+  The discussion snapshot already caps message bodies at 240 characters plus
+  its truncation suffix; the brief additionally applies credential redaction and
+  a 600-character ceiling. Source truncation, redaction and byte-budget removal
+  are explicit. `total` counts retained notes, not unlimited history; unavailable
+  discussion produces null totals and `discussion_unavailable` in the basis.
+  These notes remain reports, never instructions, new authority, execution proof
+  or completion judgments. The shared 8 KiB budget may omit older notes.
 - external reports are an independent read-only claim section capped at five
   identities. A byte-budget reduction updates `returned` and `truncated` as it
   removes reports; `unknown_count` still counts all retained reports. Store
@@ -771,7 +829,12 @@ durable/queryable sink for low-cardinality ergonomics telemetry. No second
 telemetry table or recorder is created. The shared ToolRuntime kernel owns the
 normal timer for a registered model-visible tool; the transport that already owns
 the outer Action Audit row then finalizes one `summary.model_ergonomics` object
-from the final model-facing ToolResult projection. A transport may use a bounded
+from the final model-facing ToolResult projection, retaining the canonical
+closed execution state captured before late model compaction. Execution
+ActionAudit receipts retain definition-authorized bounded lifecycle, validation
+counts/assertion verdicts, and source classifications, never raw command/script/stdout/stderr,
+diagnostic bodies, or source fence identity.
+Workflow Session evidence is consumed before projection. A transport may use a bounded
 fallback timer only after a runtime tool identity is established when MCP-only
 validation rejects the call before kernel entry or the MCP hard dispatch timeout
 prevents kernel completion. Batch items do not create generic invocation records,
@@ -1041,7 +1104,7 @@ renamed without an explicit compatibility migration:
   values `normal` / `read_only`. A pre-0.4 persisted v2 row containing
   `mode = "inspect"` is malformed under the current enum and is discarded
   row-closed without reinterpreting it as `normal`.
-- Error kinds such as `unknown_session_id`
+- Error kinds such as `unknown_session_id` and `session_retention_expired`
 
 ### OpenAPI / MCP / runtime tool surface
 

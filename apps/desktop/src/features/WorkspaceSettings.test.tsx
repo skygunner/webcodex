@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { MantineProvider } from "@mantine/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,9 +11,9 @@ import { RunnerFileAccess } from "./settings/RunnerFileAccess";
 import { TunnelConfigDiagnostics } from "./connection/TunnelConfigDiagnostics";
 
 const native = vi.hoisted(() => ({ invoke: vi.fn() }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke, isTauri: () => false }));
 
-const api = vi.hoisted(() => ({ runnerCapabilityAuthorization: vi.fn(), authorizeRunnerCapabilities: vi.fn(), sshResources: vi.fn(), runnerSettings: vi.fn(), updateRunnerSettings: vi.fn(), updateRunnerAllowedRoots: vi.fn(), restartOwnedRunner: vi.fn(), addRunnerPlugin: vi.fn(), computerPermissions: vi.fn(), requestComputerPermission: vi.fn(), updateTunnelConfig: vi.fn(), getState: vi.fn() }));
+const api = vi.hoisted(() => ({ managedInstructionsRead: vi.fn(), managedInstructionsSave: vi.fn(), managedInstructionsEnable: vi.fn(), runnerCapabilityAuthorization: vi.fn(), authorizeRunnerCapabilities: vi.fn(), sshResources: vi.fn(), runnerSettings: vi.fn(), updateRunnerSettings: vi.fn(), updateRunnerAllowedRoots: vi.fn(), restartOwnedRunner: vi.fn(), addRunnerPlugin: vi.fn(), computerPermissions: vi.fn(), requestComputerPermission: vi.fn(), updateTunnelConfig: vi.fn(), getState: vi.fn() }));
 const dialog = vi.hoisted(() => ({ open: vi.fn() }));
 vi.mock("@tauri-apps/plugin-dialog", () => dialog);
 vi.mock("../lib/desktop-api", () => ({ desktopApi: api }));
@@ -41,13 +41,14 @@ beforeEach(() => {
     if (args.request.kind === "windows") return { windows: [] };
     return { instructions: { files: [], scan_complete: true }, skills: { available: true, catalog: { skills: [] } }, plugins: { available: true, catalog: { plugins: [] } }, can_reload_plugins: true };
   });
-  settings = { target, paths: { instruction_files: ["/fixture/global.md"], skill_roots: ["/fixture/skills"] }, file_access: { configured_roots: [], effective_roots: ["/Users/fixture"], using_default_roots: true, allow_cwd_anywhere: false }, plugin_ids: ["existing"], can_restart: true };
+  settings = { target, paths: { instruction_files: ["/fixture/global.md"], skill_roots: ["/fixture/skills"] }, file_access: { configured_roots: [], default_roots: ["/Users/fixture"], effective_roots: ["/Users/fixture"], using_default_roots: true, allow_cwd_anywhere: false }, plugin_ids: ["existing"], can_restart: true };
   api.runnerSettings.mockImplementation(async () => structuredClone(settings));
+  api.managedInstructionsRead.mockResolvedValue({ path:"/fixture/desktop/instructions/AGENTS.md", exists:false, content:"", revision:"missing" });
   api.runnerCapabilityAuthorization.mockResolvedValue({ target, can_authorize: true, coding_agents: true, ssh_resources: true });
   api.authorizeRunnerCapabilities.mockResolvedValue({ target, can_authorize: true, coding_agents: true, ssh_resources: true });
   api.sshResources.mockResolvedValue({ runner: target.client_id, available: true, observation_id: "observed", resources: [], error_kind: null });
   api.updateRunnerSettings.mockImplementation(async (_target, _expected, paths) => { settings.paths = paths; return state; });
-  api.updateRunnerAllowedRoots.mockImplementation(async (_target, expected, roots) => { expect(expected).toEqual(settings.file_access.configured_roots); settings.file_access = { configured_roots: roots, effective_roots: roots.length ? roots : ["/Users/fixture"], using_default_roots: roots.length === 0, allow_cwd_anywhere: false }; return state; });
+  api.updateRunnerAllowedRoots.mockImplementation(async (_target, expected, roots) => { expect(expected).toEqual(settings.file_access.configured_roots); settings.file_access = { configured_roots: roots, default_roots: ["/Users/fixture"], effective_roots: roots.length ? roots : ["/Users/fixture"], using_default_roots: roots.length === 0, allow_cwd_anywhere: false }; return state; });
   api.addRunnerPlugin.mockImplementation(async (_target, provider) => { settings.plugin_ids.push(provider.id); return state; });
   api.restartOwnedRunner.mockResolvedValue(state); api.getState.mockResolvedValue(state); api.updateTunnelConfig.mockResolvedValue(state);
   api.computerPermissions.mockResolvedValue({ supported: true, foreground: false, execution_process: "WebCodex Runner", execution_path: "/Applications/WebCodex.app/Contents/Resources/webcodex-runner", runner_accessibility: "unknown", runner_screen_recording: "unknown", desktop_accessibility: false, desktop_screen_recording: false });
@@ -82,18 +83,35 @@ describe("workspace configuration boundaries", () => {
     render(wrap(<FileAccessHarness />));
     expect(screen.getByText("No custom folders configured.")).toBeInTheDocument();
     expect(screen.getByText("/Users/fixture")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Add folder" }));
+    fireEvent.click(screen.getByRole("button", { name: "Authorize folder" }));
     await waitFor(() => expect(api.updateRunnerAllowedRoots).toHaveBeenCalledWith(target, [], ["/Users/fixture", "/Volumes/Work"]));
     await waitFor(() => expect(screen.getAllByText("/Volumes/Work").length).toBeGreaterThanOrEqual(1));
-    fireEvent.click(screen.getByRole("button", { name: "Remove folder: /Volumes/Work" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove access: /Volumes/Work" }));
     await waitFor(() => expect(api.updateRunnerAllowedRoots).toHaveBeenLastCalledWith(target, ["/Users/fixture", "/Volumes/Work"], ["/Users/fixture"]));
-    expect(screen.queryByRole("button", { name: "Remove folder: /Users/fixture" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Remove access: /Users/fixture" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Restore default access" }));
     await waitFor(() => expect(api.updateRunnerAllowedRoots).toHaveBeenLastCalledWith(target, ["/Users/fixture"], []));
   });
 
+  it("separates retained default access from extra folders and hides Windows device prefixes", () => {
+    settings.file_access = {
+      configured_roots: ["C:\\Users\\fixture", "\\\\?\\E:\\"],
+      default_roots: ["C:\\Users\\fixture"],
+      effective_roots: ["C:\\Users\\fixture", "\\\\?\\E:\\"],
+      using_default_roots: false,
+      allow_cwd_anywhere: false,
+    };
+    render(wrap(<FileAccessHarness />));
+    expect(screen.getByText("Current default access")).toBeInTheDocument();
+    expect(screen.getByText("Additional authorized folders")).toBeInTheDocument();
+    expect(screen.getAllByText("E:\\")).toHaveLength(2);
+    expect(screen.queryByText("\\\\?\\E:\\")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove access: E:\\" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Remove access: C:\\Users\\fixture" })).not.toBeInTheDocument();
+  });
+
   it("keeps Runner file-access failures visible and refreshes the canonical settings view", async () => {
-    settings.file_access = { configured_roots: ["/fixture/work"], effective_roots: ["/fixture/work"], using_default_roots: false, allow_cwd_anywhere: false };
+    settings.file_access = { configured_roots: ["/fixture/work"], default_roots: ["/Users/fixture"], effective_roots: ["/fixture/work"], using_default_roots: false, allow_cwd_anywhere: false };
     api.updateRunnerAllowedRoots.mockRejectedValueOnce({ code: "runner_config_reload_failed", message: "Runner rejected the file access reload", next_action: "The previous on-disk file access configuration was restored." });
     render(wrap(<FileAccessHarness />));
     fireEvent.click(screen.getByRole("button", { name: "Restore default access" }));
@@ -102,24 +120,54 @@ describe("workspace configuration boundaries", () => {
     await waitFor(() => expect(api.runnerSettings).toHaveBeenCalled());
   });
 
-  it("saves exact-target instruction and Skill paths and fences Runner restart", async () => {
+  it("applies exact-target instruction and Skill paths without Runner restart", async () => {
     render(wrap(<ExtensionsPanel state={state} onState={onState} />));
     fireEvent.click(screen.getByRole("tab", { name: "Instructions" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Manage" }));
     const input = await screen.findByLabelText("Global instruction files");
     fireEvent.change(input, { target: { value: "/fixture/new.md" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(api.updateRunnerSettings).toHaveBeenCalledWith(target, { instruction_files: ["/fixture/global.md"], skill_roots: ["/fixture/skills"] }, { instruction_files: ["/fixture/new.md"], skill_roots: ["/fixture/skills"] }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Restart Runner" })).not.toBeDisabled());
-    fireEvent.click(screen.getByRole("button", { name: "Restart Runner" }));
-    await waitFor(() => expect(api.restartOwnedRunner).toHaveBeenCalledWith(target));
+    await screen.findByText("Instruction and Skill paths applied without restarting Runner.");
+    expect(screen.queryByRole("button", { name: "Restart Runner" })).not.toBeInTheDocument();
+    expect(api.restartOwnedRunner).not.toHaveBeenCalled();
+  });
+
+  it("stages picked Skill folders before an explicit exact-target save", async () => {
+    const observed = structuredClone(settings.paths);
+    dialog.open.mockResolvedValueOnce("/fixture/picked-skills");
+    render(wrap(<ExtensionsPanel state={state} onState={onState} />));
+    fireEvent.click(screen.getByRole("tab", { name: "Skills" }));
+    await screen.findByLabelText("Configured Skill roots");
+    fireEvent.click(screen.getByRole("button", { name: "Add Skill Folder" }));
+    await waitFor(() => expect(screen.getByLabelText("Configured Skill roots 2")).toHaveValue("/fixture/picked-skills"));
+    expect(dialog.open).toHaveBeenCalledWith(expect.objectContaining({ directory: true, multiple: false }));
+    expect(api.updateRunnerSettings).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(api.updateRunnerSettings).toHaveBeenCalledExactlyOnceWith(target, observed, { ...observed, skill_roots: [...observed.skill_roots, "/fixture/picked-skills"] }));
+    expect(api.restartOwnedRunner).not.toHaveBeenCalled();
+  });
+
+  it("keeps path drafts visible through a failed settings refresh and permits recovery", async () => {
+    render(wrap(<ExtensionsPanel state={state} onState={onState} />));
+    fireEvent.click(screen.getByRole("tab", { name: "Skills" }));
+    const input = await screen.findByLabelText("Configured Skill roots");
+    fireEvent.change(input, { target: { value: "/fixture/unsaved-skills" } });
+    api.runnerSettings.mockRejectedValueOnce(new Error("fixture settings unavailable"));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Runner settings could not be read");
+    expect(input).toHaveValue("/fixture/unsaved-skills");
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    fireEvent.click(within(alert).getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+    expect(input).toHaveValue("/fixture/unsaved-skills");
+    expect(api.updateRunnerSettings).not.toHaveBeenCalled();
   });
 
   it("validates native Plugin arguments and writes only a new explicit registration", async () => {
     render(wrap(<ExtensionsPanel state={state} onState={onState} />));
-    fireEvent.click(screen.getByRole("tab", { name: "MCP Providers" }));
-    fireEvent.click(screen.getByText("Advanced: Native Tool Plugins", { selector: "summary" }));
-    fireEvent.click(await screen.findByText("Add a native Tool Plugin"));
+    fireEvent.click(screen.getByRole("tab", { name: "Native Plugins" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Add a native Tool Plugin" }));
     fireEvent.change(screen.getByLabelText("Plugin ID"), { target: { value: "new-plugin" } });
     fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "New plugin" } });
     fireEvent.change(screen.getByLabelText("Executable"), { target: { value: "node" } });
@@ -132,6 +180,23 @@ describe("workspace configuration boundaries", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save registration" }));
     await waitFor(() => expect(api.addRunnerPlugin).toHaveBeenCalledWith(target, { id: "new-plugin", name: "New plugin", command: "node", args: ["/fixture/plugin.js"], cwd: null }));
     expect(args).toHaveValue("[]");
+  });
+
+  it("keeps registration failure feedback inside the Plugin editor and clears write-only arguments", async () => {
+    api.addRunnerPlugin.mockRejectedValueOnce({ code: "runner_settings_changed", message: "Settings changed", next_action: "Refresh" });
+    render(wrap(<ExtensionsPanel state={state} onState={onState} />));
+    fireEvent.click(screen.getByRole("tab", { name: "Native Plugins" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Add a native Tool Plugin" }));
+    const editor = await screen.findByRole("dialog", { name: "Add a native Tool Plugin" });
+    fireEvent.change(within(editor).getByLabelText("Plugin ID"), { target: { value: "new-plugin" } });
+    fireEvent.change(within(editor).getByLabelText("Display name"), { target: { value: "New plugin" } });
+    fireEvent.change(within(editor).getByLabelText("Executable"), { target: { value: "node" } });
+    fireEvent.change(within(editor).getByLabelText("Arguments (JSON array)"), { target: { value: '["fixture-argument"]' } });
+    fireEvent.click(within(editor).getByRole("button", { name: "Save registration" }));
+    expect(await within(editor).findByRole("alert")).toHaveTextContent("Refresh");
+    expect(within(editor).getByLabelText("Arguments (JSON array)")).toHaveValue("[]");
+    expect(api.addRunnerPlugin).toHaveBeenCalledTimes(1);
+    expect(api.restartOwnedRunner).not.toHaveBeenCalled();
   });
 
   it("identifies WebCodex Runner as the Computer Use execution owner and keeps Runner TCC status tri-state", async () => {
@@ -153,6 +218,10 @@ describe("workspace configuration boundaries", () => {
     await waitFor(() => expect(api.computerPermissions).toHaveBeenCalled());
     await waitFor(() => expect(screen.queryByText("WebCodex Runner")).not.toBeInTheDocument());
     expect(screen.queryByRole("button", { name: "Show Runner in Finder" })).not.toBeInTheDocument();
+    expect(await screen.findByText("Desktop cannot check system permissions on this platform. This does not establish whether desktop tools are available.")).toBeInTheDocument();
+    expect(screen.getByText(/confirm that this device is signed in to a desktop/)).toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    expect(api.requestComputerPermission).not.toHaveBeenCalled();
   });
 
   it("opens the permission explanation only after foreground observation, never auto-grants", async () => {
@@ -185,7 +254,7 @@ describe("workspace configuration boundaries", () => {
 it("preserves capability-first tabs and Coding-only authorization after the shared UI merge", async () => {
   api.runnerCapabilityAuthorization.mockResolvedValue({ target, can_authorize: true, coding_agents: false, ssh_resources: false });
   render(wrap(<ExtensionsPanel state={state} onState={onState} />));
-  expect(screen.getAllByRole("tab").map(tab => tab.textContent)).toEqual(["Coding Agents", "SSH Resources", "MCP Providers", "Skills", "Instructions"]);
+  expect(screen.getAllByRole("tab").map(tab => tab.textContent)).toEqual(["Coding Agents", "SSH Resources", "MCP servers", "Native Plugins", "Skills", "Instructions"]);
   expect(screen.getByRole("tab", { name: "Coding Agents" })).toHaveAttribute("aria-selected", "true");
   expect(screen.queryByRole("button", { name: /^Projects:/ })).not.toBeInTheDocument();
   fireEvent.click(await screen.findByRole("button", { name: "Authorize Runner Capabilities" }));

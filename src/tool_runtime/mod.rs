@@ -38,6 +38,8 @@ mod git;
 mod runner_authorization;
 mod runner_config;
 mod runner_instructions;
+mod task_outputs;
+mod trace_diagnostics;
 #[cfg(test)]
 pub(crate) use git::{framed_clean_show_changes_test_stdout, framed_show_changes_test_block};
 mod git_committed;
@@ -52,6 +54,8 @@ mod helpers;
 mod hygiene;
 mod hygiene_tools;
 mod job_attention;
+mod job_input;
+mod job_query;
 mod job_terminal_wait;
 mod job_tools;
 mod jobs;
@@ -70,6 +74,7 @@ mod patch_tools;
 pub(crate) mod peer_collaboration;
 pub(crate) mod permissions;
 mod process;
+mod project_build;
 mod project_resolution;
 pub(crate) mod window_collaboration;
 pub(crate) use project_resolution::ResolvedProject;
@@ -80,6 +85,9 @@ mod read_files;
 mod read_revisions;
 #[cfg(test)]
 pub(crate) use read_revisions::ReadRevisionTarget;
+mod optional_enrichment;
+pub(crate) mod resource_references;
+mod result_projection;
 mod return_timing;
 mod runtime;
 mod runtime_info;
@@ -122,6 +130,7 @@ pub(crate) use webcodex_tool_contracts::{
 pub(crate) use webcodex_tool_runtime_contracts::recorder_metadata::parse_tool_call_with_recorder_metadata;
 pub(crate) use webcodex_tool_runtime_contracts::{tool_audit, tool_result};
 mod work_result;
+mod work_result_workspace;
 pub(crate) use window_activity::{ActiveWindowRequest, MAX_ACTIVE_REQUESTS_PER_WINDOW};
 
 #[cfg(test)]
@@ -177,6 +186,7 @@ pub(crate) use webcodex_tool_runtime_contracts::tool_result::{
     RECOVERY_KIND_VALUES,
 };
 
+pub(crate) use model_references::SessionSelectorError;
 #[cfg(test)]
 pub(crate) use project_resolution::ProjectResolverErrorKind;
 pub(crate) use project_resolution::{runner_project_runtime_id, ProjectResolverError};

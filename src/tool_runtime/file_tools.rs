@@ -40,6 +40,7 @@ impl ToolRuntime {
                 offset,
             } => self.list_project_files(project, path, limit, offset).await,
             ToolCall::ListProjectTrackedFiles {
+                query,
                 project,
                 session_id: _,
                 path,
@@ -48,7 +49,7 @@ impl ToolRuntime {
                 limit,
                 offset,
             } => {
-                self.list_project_tracked_files(project, path, globs, depth, limit, offset)
+                self.list_project_tracked_files(project, path, globs, query, depth, limit, offset)
                     .await
             }
             ToolCall::ProjectOverview {
@@ -151,6 +152,24 @@ impl ToolRuntime {
                     destination_project,
                     destination_path,
                     overwrite,
+                    auth,
+                    transport,
+                )
+                .await
+            }
+            ToolCall::AcceptArtifactHandoff {
+                grant_id,
+                destination_project,
+                destination_path,
+                overwrite,
+                idempotency_key,
+            } => {
+                self.accept_artifact_handoff(
+                    grant_id,
+                    destination_project,
+                    destination_path,
+                    overwrite,
+                    idempotency_key,
                     auth,
                     transport,
                 )

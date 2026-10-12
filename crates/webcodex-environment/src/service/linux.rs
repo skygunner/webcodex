@@ -7,6 +7,49 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::process::Command;
 
 const UNIT_DIR: &str = "/etc/systemd/system";
+mod runner_policy;
+
+fn check_runner_configuration(spec: &ServiceSpec) -> Result<(), ServiceError> {
+    if spec.component != Component::Runner {
+        return Ok(());
+    }
+    let ServiceAccount::SystemUser {
+        expected_identity,
+        home,
+        ..
+    } = &spec.account
+    else {
+        return Ok(());
+    };
+    // Do not execute a user-owned candidate as root. Cross-account installations
+    // retain their normal account checks and native startup validation instead.
+    if *expected_identity != unsafe { libc::geteuid() }.to_string() {
+        return Ok(());
+    }
+    let configs: Vec<_> = spec
+        .args
+        .windows(2)
+        .filter(|args| args[0] == "--config")
+        .collect();
+    if configs.len() != 1 {
+        return Err(ServiceError::new(
+            ServiceErrorCode::InvalidSpec,
+            "Runner preflight requires one exact --config path",
+        ));
+    }
+    let mut command = Command::new(&spec.program);
+    command
+        .arg("--check-config")
+        .arg("--config")
+        .arg(&configs[0][1])
+        .current_dir(&spec.working_directory);
+    if let Some(home) = home {
+        command.env("HOME", home);
+    }
+    command.envs(&spec.environment);
+    crate::runner_preflight::check_command(&mut command)
+        .map_err(|message| ServiceError::new(ServiceErrorCode::InvalidSpec, message))
+}
 
 pub(super) fn current_account() -> Result<CurrentAccount, ServiceError> {
     current_unix_account()
@@ -43,8 +86,13 @@ pub(super) fn grant_service_directory(spec: &ServiceSpec, path: &Path) -> Result
 fn unit_name(spec: &ServiceSpec) -> String {
     format!("{}.service", spec.id)
 }
-fn unit_path(spec: &ServiceSpec) -> PathBuf {
-    Path::new(UNIT_DIR).join(unit_name(spec))
+fn unit_path(spec: &ServiceSpec) -> Result<PathBuf, ServiceError> {
+    let directory = if spec.scope == ServiceScope::User {
+        scope::user_account(spec)?.1.join(".config/systemd/user")
+    } else {
+        PathBuf::from(UNIT_DIR)
+    };
+    Ok(directory.join(unit_name(spec)))
 }
 fn socket_name(spec: &ServiceSpec) -> String {
     format!("{}.socket", spec.id)
@@ -53,7 +101,10 @@ fn socket_path(spec: &ServiceSpec) -> PathBuf {
     Path::new(UNIT_DIR).join(socket_name(spec))
 }
 
-fn systemctl(args: &[&str]) -> Result<String, ServiceError> {
+fn systemctl(spec: &ServiceSpec, args: &[&str]) -> Result<String, ServiceError> {
+    if spec.scope == ServiceScope::User {
+        scope::verify_current_user(spec)?;
+    }
     let binary = ["/usr/bin/systemctl", "/bin/systemctl"]
         .iter()
         .find(|path| Path::new(path).is_file())
@@ -63,15 +114,16 @@ fn systemctl(args: &[&str]) -> Result<String, ServiceError> {
                 "systemctl is unavailable",
             )
         })?;
-    let output = Command::new(binary)
-        .args(args)
-        .bounded_output()
-        .map_err(|_| {
-            ServiceError::new(
-                ServiceErrorCode::OutcomeUnknown,
-                "systemctl could not be executed",
-            )
-        })?;
+    let mut command = Command::new(binary);
+    if spec.scope == ServiceScope::User {
+        command.arg("--user");
+    }
+    let output = command.args(args).bounded_output().map_err(|_| {
+        ServiceError::new(
+            ServiceErrorCode::OutcomeUnknown,
+            "systemctl could not be executed",
+        )
+    })?;
     if !output.status.success() {
         return Err(ServiceError::new(
             ServiceErrorCode::OperationFailed,
@@ -85,13 +137,16 @@ fn systemctl(args: &[&str]) -> Result<String, ServiceError> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-fn show(unit: &str) -> Result<BTreeMap<String, String>, ServiceError> {
-    let raw = systemctl(&[
-        "show",
-        "--no-pager",
-        "--property=LoadState,FragmentPath,ActiveState,UnitFileState",
-        unit,
-    ])?;
+fn show(spec: &ServiceSpec, unit: &str) -> Result<BTreeMap<String, String>, ServiceError> {
+    let raw = systemctl(
+        spec,
+        &[
+            "show",
+            "--no-pager",
+            "--property=LoadState,FragmentPath,ActiveState,UnitFileState",
+            unit,
+        ],
+    )?;
     Ok(raw
         .lines()
         .filter_map(|line| line.split_once('='))
@@ -108,8 +163,13 @@ fn field<'a>(show: &'a BTreeMap<String, String>, key: &str) -> Result<&'a str, S
     })
 }
 
-fn unit_status(path: &Path, name: &str, expected: &str) -> Result<ServiceStatus, ServiceError> {
-    let observed = show(name)?;
+fn unit_status(
+    spec: &ServiceSpec,
+    path: &Path,
+    name: &str,
+    expected: &str,
+) -> Result<ServiceStatus, ServiceError> {
+    let observed = show(spec, name)?;
     let load = field(&observed, "LoadState")?;
     let fragment = field(&observed, "FragmentPath")?;
     let active = field(&observed, "ActiveState")?;
@@ -118,7 +178,12 @@ fn unit_status(path: &Path, name: &str, expected: &str) -> Result<ServiceStatus,
         Ok(meta)
             if meta.is_file()
                 && !meta.file_type().is_symlink()
-                && meta.uid() == 0
+                && meta.uid()
+                    == if spec.scope == ServiceScope::User {
+                        unsafe { libc::geteuid() }
+                    } else {
+                        0
+                    }
                 && meta.permissions().mode() & 0o022 == 0 =>
         {
             Some(fs::read_to_string(path).map_err(|_| {
@@ -150,7 +215,9 @@ fn unit_status(path: &Path, name: &str, expected: &str) -> Result<ServiceStatus,
     if absent {
         return Ok(ServiceStatus::absent(name));
     }
-    let ownership = if disk.as_deref() == Some(expected)
+    let ownership = if disk
+        .as_deref()
+        .is_some_and(|current| runner_policy::matches(current, expected))
         && (fragment == path.to_string_lossy() || (load == "not-found" && fragment.is_empty()))
     {
         Ownership::Owned
@@ -169,10 +236,11 @@ fn unit_status(path: &Path, name: &str, expected: &str) -> Result<ServiceStatus,
 
 pub(super) fn inspect(spec: &ServiceSpec) -> Result<ServiceStatus, ServiceError> {
     let rendered = render_unit(spec)?;
-    let mut status = unit_status(&unit_path(spec), &unit_name(spec), &rendered)?;
+    let mut status = unit_status(spec, &unit_path(spec)?, &unit_name(spec), &rendered)?;
     status.id = spec.id.clone();
     if spec.linux_socket.is_some() {
         let socket = unit_status(
+            spec,
             &socket_path(spec),
             &socket_name(spec),
             &render_socket(spec)?,
@@ -199,6 +267,9 @@ pub(super) fn inspect(spec: &ServiceSpec) -> Result<ServiceStatus, ServiceError>
 }
 
 pub(super) fn preflight_replacing(spec: &ServiceSpec) -> Result<(), ServiceError> {
+    if spec.scope == ServiceScope::User {
+        scope::verify_current_user(spec)?;
+    }
     check_files(spec)?;
     if spec
         .program
@@ -321,7 +392,7 @@ pub(super) fn install(
     spec: &ServiceSpec,
     credential: Option<&ServiceCredential>,
 ) -> Result<ServiceStatus, ServiceError> {
-    if unsafe { libc::geteuid() } != 0 {
+    if spec.scope == ServiceScope::System && unsafe { libc::geteuid() } != 0 {
         return Err(ServiceError::new(
             ServiceErrorCode::PermissionDenied,
             "system service installation requires root authorization",
@@ -334,19 +405,38 @@ pub(super) fn install(
         ));
     }
     let current = preflight(spec)?;
+    check_runner_configuration(spec)?;
+    if current.ownership == Ownership::Owned && spec.component == Component::Runner {
+        let owner = if spec.scope == ServiceScope::User {
+            unsafe { libc::geteuid() }
+        } else {
+            0
+        };
+        if runner_policy::upgrade(&unit_path(spec)?, &render_unit(spec)?, owner)? {
+            systemctl(spec, &["daemon-reload"])?;
+        }
+    }
     if current.ownership == Ownership::Owned {
         if current.enabled != Some(true) {
             check_install_files(spec)?;
             if spec.linux_socket.is_some() {
-                systemctl(&["enable", &socket_name(spec)])?;
+                systemctl(spec, &["enable", &socket_name(spec)])?;
             }
-            systemctl(&["enable", &unit_name(spec)])?;
+            systemctl(spec, &["enable", &unit_name(spec)])?;
             return inspect(spec);
         }
         return Ok(current);
     }
     check_install_files(spec)?;
-    let service_path = unit_path(spec);
+    let service_path = unit_path(spec)?;
+    if spec.scope == ServiceScope::User {
+        scope::ensure_user_service_directory(
+            service_path.parent().ok_or_else(|| {
+                ServiceError::new(ServiceErrorCode::InvalidSpec, "User unit parent missing")
+            })?,
+            unsafe { libc::geteuid() },
+        )?;
+    }
     let socket_path = spec.linux_socket.as_ref().map(|_| socket_path(spec));
     let service = render_unit(spec)?;
     let socket = if socket_path.is_some() {
@@ -362,23 +452,23 @@ pub(super) fn install(
         }
     }
     let result = (|| {
-        systemctl(&["daemon-reload"])?;
+        systemctl(spec, &["daemon-reload"])?;
         if socket_path.is_some() {
-            systemctl(&["enable", &socket_name(spec)])?;
+            systemctl(spec, &["enable", &socket_name(spec)])?;
         }
-        systemctl(&["enable", &unit_name(spec)])?;
+        systemctl(spec, &["enable", &unit_name(spec)])?;
         Ok::<(), ServiceError>(())
     })();
     if let Err(error) = result {
-        let _ = systemctl(&["disable", &unit_name(spec)]);
+        let _ = systemctl(spec, &["disable", &unit_name(spec)]);
         if socket_path.is_some() {
-            let _ = systemctl(&["disable", &socket_name(spec)]);
+            let _ = systemctl(spec, &["disable", &socket_name(spec)]);
         }
         if let Some(path) = socket_path {
             let _ = fs::remove_file(path);
         }
         let _ = fs::remove_file(service_path);
-        let _ = systemctl(&["daemon-reload"]);
+        let _ = systemctl(spec, &["daemon-reload"]);
         return Err(ServiceError::new(
             ServiceErrorCode::OutcomeUnknown,
             format!("install failed ({error}); rollback attempted; inspect before retrying"),
@@ -393,11 +483,12 @@ pub(super) fn start(spec: &ServiceSpec) -> Result<ServiceStatus, ServiceError> {
     if status.running == Some(true) && spec.linux_socket.is_none() {
         return Ok(status);
     }
+    check_runner_configuration(spec)?;
     let result = if spec.linux_socket.is_some() {
-        systemctl(&["start", &socket_name(spec)])
-            .and_then(|_| systemctl(&["start", &unit_name(spec)]))
+        systemctl(spec, &["start", &socket_name(spec)])
+            .and_then(|_| systemctl(spec, &["start", &unit_name(spec)]))
     } else {
-        systemctl(&["start", &unit_name(spec)])
+        systemctl(spec, &["start", &unit_name(spec)])
     };
     if let Err(error) = result {
         return Err(ServiceError::new(
@@ -415,10 +506,10 @@ pub(super) fn stop(spec: &ServiceSpec) -> Result<ServiceStatus, ServiceError> {
         return Ok(status);
     }
     let result = if spec.linux_socket.is_some() {
-        systemctl(&["stop", &socket_name(spec)])
-            .and_then(|_| systemctl(&["stop", &unit_name(spec)]))
+        systemctl(spec, &["stop", &socket_name(spec)])
+            .and_then(|_| systemctl(spec, &["stop", &unit_name(spec)]))
     } else {
-        systemctl(&["stop", &unit_name(spec)])
+        systemctl(spec, &["stop", &unit_name(spec)])
     };
     if let Err(error) = result {
         return Err(ServiceError::new(
@@ -432,11 +523,12 @@ pub(super) fn stop(spec: &ServiceSpec) -> Result<ServiceStatus, ServiceError> {
 pub(super) fn restart(spec: &ServiceSpec) -> Result<ServiceStatus, ServiceError> {
     let status = inspect(spec)?;
     check_owned(&status)?;
+    check_runner_configuration(spec)?;
     if spec.linux_socket.is_some() {
         stop(spec)?;
         return start(spec);
     }
-    systemctl(&["restart", &unit_name(spec)]).map_err(|error| {
+    systemctl(spec, &["restart", &unit_name(spec)]).map_err(|error| {
         ServiceError::new(
             ServiceErrorCode::OutcomeUnknown,
             format!("restart failed ({error}); inspect before retrying"),
@@ -457,13 +549,13 @@ pub(super) fn uninstall(spec: &ServiceSpec) -> Result<ServiceStatus, ServiceErro
             "stop service explicitly before uninstall",
         ));
     }
-    let mut units = vec![(unit_name(spec), unit_path(spec), render_unit(spec)?)];
+    let mut units = vec![(unit_name(spec), unit_path(spec)?, render_unit(spec)?)];
     if spec.linux_socket.is_some() {
         units.push((socket_name(spec), socket_path(spec), render_socket(spec)?));
     }
     let mut prior_enabled = Vec::new();
     for (name, path, body) in &units {
-        let observed = unit_status(path, name, body)?;
+        let observed = unit_status(spec, path, name, body)?;
         check_owned(&observed)?;
         if observed.running != Some(false) {
             return Err(ServiceError::new(
@@ -475,14 +567,14 @@ pub(super) fn uninstall(spec: &ServiceSpec) -> Result<ServiceStatus, ServiceErro
     }
     let result = (|| {
         for (name, _, _) in &units {
-            systemctl(&["disable", name])?;
+            systemctl(spec, &["disable", name])?;
         }
         for (_, path, _) in &units {
             fs::remove_file(path).map_err(|_| {
                 ServiceError::new(ServiceErrorCode::OutcomeUnknown, "unit removal failed")
             })?;
         }
-        systemctl(&["daemon-reload"])?;
+        systemctl(spec, &["daemon-reload"])?;
         Ok::<(), ServiceError>(())
     })();
     if let Err(error) = result {
@@ -493,10 +585,10 @@ pub(super) fn uninstall(spec: &ServiceSpec) -> Result<ServiceStatus, ServiceErro
                 let _ = write_new(path, body);
             }
         }
-        let _ = systemctl(&["daemon-reload"]);
+        let _ = systemctl(spec, &["daemon-reload"]);
         for ((name, _, _), enabled) in units.iter().zip(&prior_enabled) {
             if *enabled {
-                let _ = systemctl(&["enable", name]);
+                let _ = systemctl(spec, &["enable", name]);
             }
         }
         return Err(ServiceError::new(
@@ -602,10 +694,13 @@ pub(super) fn render_unit(spec: &ServiceSpec) -> Result<String, ServiceError> {
             socket_name(spec),
             socket_name(spec)
         ));
-    } else {
+    } else if spec.scope == ServiceScope::System {
         out.push_str("After=network-online.target\n");
     }
-    out.push_str("Wants=network-online.target\n\n[Service]\nType=simple\n");
+    if spec.scope == ServiceScope::System {
+        out.push_str("Wants=network-online.target\n");
+    }
+    out.push_str("\n[Service]\nType=simple\n");
     if let Some(path) = &spec.env_file {
         out.push_str(&format!("EnvironmentFile={}\n", encode_path(path)?));
     }
@@ -632,15 +727,24 @@ pub(super) fn render_unit(spec: &ServiceSpec) -> Result<String, ServiceError> {
     out.push_str(
         "\nRestart=on-failure\nRestartSec=5s\nStandardOutput=journal\nStandardError=journal\n",
     );
-    out.push_str(&format!(
-        "WorkingDirectory={}\nUser={}\n",
-        encode_path(&spec.working_directory)?,
-        name
-    ));
-    if let Some(group) = group {
-        out.push_str(&format!("Group={group}\n"));
+    if spec.component == Component::Runner {
+        out.push_str(runner_policy::GUARD);
     }
-    out.push_str("\n[Install]\nWantedBy=multi-user.target\n");
+    out.push_str(&format!(
+        "WorkingDirectory={}\n",
+        encode_path(&spec.working_directory)?
+    ));
+    if spec.scope == ServiceScope::System {
+        out.push_str(&format!("User={name}\n"));
+        if let Some(group) = group {
+            out.push_str(&format!("Group={group}\n"));
+        }
+    }
+    out.push_str(if spec.scope == ServiceScope::User {
+        "\n[Install]\nWantedBy=default.target\n"
+    } else {
+        "\n[Install]\nWantedBy=multi-user.target\n"
+    });
     Ok(out)
 }
 
@@ -662,6 +766,36 @@ pub(super) fn render_socket(spec: &ServiceSpec) -> Result<String, ServiceError> 
 mod tests {
     use super::*;
     #[test]
+    fn user_unit_is_a_distinct_unprivileged_manager_namespace() {
+        let mut spec = crate::service::tests::sample_spec();
+        let system_path = unit_path(&spec).unwrap();
+        spec.scope = ServiceScope::User;
+        if let ServiceAccount::SystemUser { group, .. } = &mut spec.account {
+            *group = None;
+        }
+        validate_spec(&spec).unwrap();
+        let text = render_unit(&spec).unwrap();
+        assert_eq!(
+            system_path,
+            Path::new("/etc/systemd/system/webcodex-runner.service")
+        );
+        assert_eq!(
+            unit_path(&spec).unwrap(),
+            Path::new("/home/alice/.config/systemd/user/webcodex-runner.service")
+        );
+        assert!(text.contains("WantedBy=default.target"));
+        for forbidden in [
+            "User=",
+            "Group=",
+            "multi-user.target",
+            "network-online.target",
+        ] {
+            assert!(!text.contains(forbidden));
+        }
+        assert!(text.contains("--config"));
+        assert!(text.contains("WebCodex managed v1"));
+    }
+    #[test]
     fn runner_unit_preserves_owner_and_escapes_arguments() {
         let mut spec = crate::service::tests::sample_spec();
         spec.args.push("a%b c".into());
@@ -669,6 +803,12 @@ mod tests {
         assert!(body.contains("User=alice\n"));
         assert!(body.contains("\"a%%b c\""));
         assert!(body.contains("WebCodex managed v1 component=runner"));
+        assert!(body.contains("RestartPreventExitStatus=2\n"));
+        assert!(body.contains("Restart=on-failure\nRestartSec=5s\n"));
+        spec.component = Component::Server;
+        assert!(!render_unit(&spec)
+            .unwrap()
+            .contains("RestartPreventExitStatus"));
     }
     #[test]
     fn server_socket_matches_existing_unit_name() {

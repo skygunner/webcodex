@@ -2,6 +2,8 @@
 
 [English](desktop-install.md) | [简体中文](desktop-install.zh-CN.md)
 
+Desktop supports Simplified Chinese, Traditional Chinese (`zh-TW`), English, Japanese, Korean, German, and French. Change language in Settings; the selection persists and controls activity time formatting. Traditional Chinese uses dedicated catalogs. Tray menus follow the selected language, including background startup. Raw backend diagnostics remain English; file dialogs follow the operating system language.
+
 For normal Windows or macOS personal use, **WebCodex Desktop + the official
 OpenAI Secure Tunnel is the recommended path**. WebCodex Desktop runs the local
 Server and Runner; you send coding requests from **ChatGPT Web**. You do not
@@ -80,7 +82,7 @@ Download the matching Desktop artifact from the [GitHub Releases](https://github
 - **Windows:** use the installer matching your architecture, x64 or ARM64. Windows ARM64 Desktop is part of the v0.4.2+ release build path.
 - **macOS:** use the DMG matching your Mac architecture, Intel or Apple Silicon.
 
-Current macOS builds are ad-hoc signed and are not notarized. If Gatekeeper blocks the first launch of a newly downloaded build, open **System Settings → Privacy & Security → Open Anyway**, then confirm **Open**. Do not disable Gatekeeper globally.
+macOS signing has three explicit modes: `self-signed` is the current persistent fallback for public releases and long-lived dogfood; `developer-id` uses Developer ID Application plus notarization/stapling when Apple credentials are available; `adhoc` is only for disposable CI/local verification and promises no TCC upgrade continuity. Keep the same self-signed certificate **and private key** across builds and upgrades. Recreating a certificate with the same name changes identity. Both Desktop (`dev.webcodex.desktop`) and bundled Runner (`dev.webcodex.runner`) use certificate-anchored designated requirements without binary cdhash. Final app/DMG verification runs after Tauri nested signing. This does not preserve grants from historical ad-hoc builds automatically: users may need to reauthorize the new persistent identity once. Self-signed distribution is not Apple notarized; use **System Settings → Privacy & Security → Open Anyway** if Gatekeeper requires it, without disabling Gatekeeper globally.
 
 Launch WebCodex Desktop after installation.
 
@@ -214,6 +216,8 @@ change project access or Runner configuration to work around a network error.
 After saving any required change, continue to step 6.
 
 ## 6. Start the official OpenAI Secure Tunnel
+
+**Start automatically** in each connection controls restoration when Desktop opens. For a Desktop-managed local Runtime, enabled connections with autostart resume after Runtime becomes ready, including when Runtime autostart is off but Runtime is already running. **Stop** disables that connection, so reopening does not restart it. Persistent environments delegate Tunnel lifecycle to system services; opening Desktop observes their actual status without restarting stopped services.
 
 Open **Connection**, select **OpenAI Secure Tunnel**, then click **Start secure tunnel**. Selection alone does not start or stop processes. If an existing tunnel reports an error, stop it before starting again; failures remain visible with a retry path. When local handoff is ready, Desktop should show wording such as:
 

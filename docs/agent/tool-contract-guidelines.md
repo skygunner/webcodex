@@ -114,13 +114,47 @@ composition. None of these rules means “shell first” or weakens specialized 
 
 ## 2. Mechanical repair should be server-owned
 
-Current execution-input compatibility is deliberately narrow:
+Current ergonomic execution-input normalization is deliberately narrow:
 
 | Model input | Canonical interpretation | Condition |
 |---|---|---|
 | `run_process.argv`, `run_detached_process.argv` | `args` | If `args` is also present, values must be identical. |
 | `run_process` with exact `sh -c` or `bash -c` argv | `run_shell` with explicit `shell` | Runtime proves the request is lossless and the canonical shell path passes authority, policy, and capability gates. |
 | `run_process` with exact `bash -lc` argv | `run_shell(shell=bash, login=true)` | Same proof and Bash-login capability gate. |
+
+Input aliases save model turns; they are not an API compatibility promise.
+An alias must be explicit, closed, lossless and unambiguous: alias-only input
+canonicalizes; canonical plus alias with identical values canonicalizes; different
+values fail closed. Canonical ToolCall serialization retains only the canonical
+field. Advertise the known alias in Host input schema when necessary for it to
+reach Server normalization, without opening `additionalProperties`.
+
+Never fuzzy-correct unknown fields or tool names. Do not guess authority, target,
+effect, retry, fence or idempotency fields. Keep the explicit process spelling
+repair local; do not add a general alias registry without several concrete
+normalizations needing one. Stable `input_normalization` codes, such as
+`argv_to_args`, make normalization usage observable; counts do not prove how many
+model turns or corrective calls would otherwise have occurred.
+
+New aliases also need concrete return-on-cost evidence: a repeated mechanical
+correction pattern in dogfood/ActionAudit, a known Host/provider that consistently
+emits that spelling, or another explicit consumer requirement. When an alias must
+appear in the Direct Host input schema, compare its descriptor byte increase with
+observed corrective-call patterns and normalization usage. Do not populate every
+plausible synonym merely because a model might misspell a field. More aliases are
+not inherently more ergonomic: every extra spelling enlarges the model's selection
+and context surface. An immediate same-tool success alone does not establish the
+field that caused the failure; do not parse serde error prose to infer it.
+
+`ToolInputNormalizationCode` owns the four existing wire spellings and model hints.
+The parser, execution normalization, and result schema share that vocabulary.
+ModelErgonomics v13 adds only the optional typed `input_normalization_code` to the
+existing ActionAudit `summary.model_ergonomics` JSON. Capture canonical success
+before late model projection; omit the field for failures and unknown codes.
+Never persist the hint, command, arguments, path, or parser error as part of this
+metric. One successful invocation contributes at most one reported code, retaining
+existing result precedence when multiple normalization steps apply. Neither this
+measurement nor its absence changes runtime admission or retry semantics.
 
 `run_script(language=python)` is canonical; `python3` is not a language alias.
 Unknown spellings such as `timeout`, `workdir`, `command_args`, and
@@ -419,6 +453,124 @@ implementation switches are copied from configuration; a new wire field cannot i
 advertisement merely from config. All-enabled fixtures are tests only and iterate the
 typed catalog.
 
+### Canonical tool naming and model-surface exposure
+
+Tool identity must describe the operation, not today's Host presentation policy.
+Direct/Gateway placement is allowed to change as Host behavior, usage evidence and
+schema budgets change without renaming the canonical tool. Do not encode
+`direct`, `gateway`, `hidden`, `adaptive`, or a Host brand into an ordinary
+canonical tool name.
+
+For new model-visible tools, prefer a stable `verb_object` name and use these
+verbs consistently:
+
+| Form | Meaning |
+|---|---|
+| `list_*` | Bounded/filterable inventory of zero or more objects. |
+| `read_*` | Read bounded content or evidence, commonly with paging, snapshots or revisions. |
+| `get_*` | Exact durable object/state lookup when content-reading semantics are not the point. |
+| `observe_*` | Observe changing state for an already-known identity; cursor/token semantics may apply. |
+| `wait_for_*` | A real dependency wait/barrier with an owned deadline or continuation contract. |
+| `present_*` | Host-visible presentation/App integration whose descriptor carries presentation semantics. |
+| `create_*`, `update_*`, `assign_*`, `complete_*`, `stop_*` | Explicit lifecycle/effect verbs; keep target identity in the object name. |
+
+Use plural objects when one ordinary call is natively batch-shaped
+(`read_files`, `observe_jobs`, `search_project_texts`); use singular names
+for exact-resource operations unless an established domain term says otherwise.
+Provider-specific validation keeps `<provider>_<operation>`
+(`cargo_check`, `cargo_test`, `go_test`), while a portable orchestration
+entry may use a domain name such as `project_validate`.
+
+Reserve `*_tool` for a genuine gateway into a separately named or dynamic tool
+namespace, such as `plugin_tool` or `mcp_tool`. The generic
+`call_runtime_tool` is the explicit Adaptive Runtime dispatch gateway. Do not
+introduce `git_tool`, `job_tool`, `session_tool`, or similar mega-tools merely
+to reduce the Direct inventory.
+
+Model-visible names describe the business operation, not Host routing. Moving
+between Direct, Gateway and Hidden is not a rename reason; do not add routing
+prefixes such as `direct_`, `gateway_`, `hidden_`, `host_` or `adaptive_`.
+
+Ordinary ChatGPT tool names acquire no compatibility promise from a past schema.
+After a deliberate rename, the refreshed Host schema is the current contract.
+Update ToolDefinition, ToolCall, schemas, discovery, generated follow-ups, tests
+and documentation atomically. Do not retain duplicate model-visible tool names
+just because an earlier schema exposed them. A real frozen legacy adapter may
+need a narrowly scoped exception under section 10; ergonomic parameter spelling
+normalization is a different concern, described in section 2.
+
+Keep these four concerns independent:
+
+1. **canonical name** — stable operation identity used by parsing, audit and
+   generated follow-ups;
+2. **category** — complete non-overlapping domain taxonomy owned by
+   `ToolDefinition.category`;
+3. **semantic contract** — effect/risk/authority/execution and result meaning;
+4. **model-surface policy** — how the currently integrated Host should discover
+   or invoke that same canonical tool.
+
+Current Adaptive Runtime owns one optional `ToolAdaptiveDirectPolicy { rank,
+reason }` in `ToolDefinition.adaptive_runtime_direct`. Each dedicated descriptor
+has exactly one `ToolDirectReason` and a unique rank; derived rank/reason methods
+keep callers independent of the representation. `None` grants no admission: an
+ordinary admitted model-visible tool uses exact `tool_manifest` discovery plus
+`call_runtime_tool`, while ModelHidden and operator extensions keep their existing
+visibility/admission boundaries. Rank or reason changes are presentation/routing
+changes, not renames, authority changes or new ToolCalls. Neither the policy nor
+its reason is serialized into model-facing schemas/results.
+`tool_manifest.route.primary`/fallback reports the current callable posture.
+
+The Direct reasons are:
+
+- **CoreWorkflow** — high-frequency primitive needed in the ordinary coding loop;
+- **HostIntegration** — the dedicated descriptor carries Host-native input or
+  another integration contract that the generic gateway cannot reproduce;
+- **Presentation** — the descriptor carries MCP App/resource presentation
+  metadata; while that integration is enabled it must not be replaced by a
+  generic gateway call;
+- **Continuation** — fresh-turn/continuation integration whose value depends on
+  concrete Host lifecycle capability.
+
+Gateway is the absence of a Direct policy plus ordinary model-visible admission,
+not another Direct reason or a second tool taxonomy.
+
+These labels explain exposure; they grant no authority and do not create a
+second taxonomy. In particular, a Continuation tool may be down-admitted while a
+Host cannot reliably resume a fresh turn and later promoted again without
+changing its canonical name or domain contract. Presentation tools remain
+dedicated when their Host resource association requires the direct descriptor.
+CoreWorkflow tools should not be demoted merely to meet an arbitrary count
+target.
+
+Direct/Gateway decisions therefore belong to model-surface policy and measured
+Host ergonomics. Tool names, categories, parser variants, persisted identities,
+Runner protocol and domain authority must not churn when that policy changes.
+
+### Current continuation surface
+
+The current static Host surface does not advertise fresh-turn continuation:
+`wait_for_job_terminal` and `wait_for_agent_events` keep their canonical names,
+input/output contracts, keyed replay, authorization and durable state, but are
+Gateway tools. `present_agent_continuation` and
+`present_job_terminal_continuation` are ModelHidden, never generic Gateway
+presentation targets. Their ToolCalls, handlers, resources and existing hidden
+App protocol remain intact. A cached presentation descriptor follows existing
+admission rules; no old-schema compatibility bypass is added.
+
+`present_work_result` and `present_goal_plan` remain Direct with Presentation
+reason. `import_conversation_files_to_project` remains Direct with HostIntegration
+reason. No current Direct definition needs Continuation reason. Restore that
+policy explicitly (and presentation visibility), then refresh Host schema if
+fresh-turn support returns; do not couple registration to
+`WEBCODEX_MCP_APP_RESUME_MODE` or `ModelWorkflowPolicy`.
+
+Generated wait edges use the canonical Gateway wrapper; unavailable presentation
+edges are omitted from schema and value. MCP-added Job carrier suggestions also
+check the canonical Direct policy because they are outside the domain output
+schema. Retained recommended recipes are projected through current static
+visibility so dormant continuation recipes do not recommend unavailable tools.
+App-only protocol descriptors are not ordinary model-tool savings.
+
 ### Stable schemas and optional workflow guidance
 
 Host tool-schema refresh is an integration operation, not a workflow preference.
@@ -439,21 +591,39 @@ workflows, not a per-tool feature-flag or general rules engine.
 
 ## 10. Compatibility follows concrete consumers, not historical implementation
 
-For model-facing tool contracts, compatibility is opt-in rather than automatic.
-Before retaining an alias, dual shape, legacy argument, or compatibility parser,
-name the consumer or durable/public boundary that requires it.
+Compatibility belongs to a concrete durable/public consumer boundary, not to an
+ordinary ChatGPT model-facing tool schema or name. Before retaining a legacy
+name, dual shape, old argument or compatibility parser, name that real consumer.
+Known ergonomic input aliases are turn-economy normalization, not this domain.
 
 Valid reasons include, when actually present:
 
 - durable persisted state that must still restore;
 - mixed-version Server/Runner rolling operation;
 - a named external client/workflow or published artifact contract;
-- a required security/privacy migration boundary.
+- a required security/privacy migration boundary;
+- an explicitly frozen legacy adapter contract.
 
 "The old test expects it" and "a previous commit emitted it" are not consumers.
 Historical persisted evidence should remain truthful about the past, but current
 ToolDefinitions and model projections should not carry obsolete tool API baggage
 solely to preserve old model behavior.
+
+### Sole endpoint-name legacy exception
+
+`attach_agent_endpoint` is absent from the default canonical ToolDefinition,
+ToolCall parser, exact discovery and normal catalog. Use
+`rotate_agent_continuation_endpoint`. The frozen `legacy-gpt-actions` adapter
+still names the old operation, so enabling that existing feature retains its
+old definition/parser/schema/dispatch as one explicit exception. This is not
+complete adapter-local isolation: legacy-enabled builds also retain that
+long-tail model entry. Moving its exact discovery and request adaptation wholly
+into the retiring adapter would expand this change; remove the exception with
+GPT Actions rather than adding more historical model names.
+
+The Store operation key named `attach_agent_endpoint` is a separate persisted
+idempotency domain and deliberately remains unchanged. No durable endpoint
+state, replay key, authorization or controller fencing is migrated here.
 
 ## 11. Measure friction before pruning tools
 
@@ -512,6 +682,17 @@ elapsed time only from the model result; telemetry retains both. `wait_state`,
 ready Job ids/status/outcomes and pending ids remain, including terminal failures.
 Passive `job_attention` presence with nonempty `items` represents changed delivery
 without a second `changed=true` flag.
+
+Execution/validation success compaction shares this late boundary: Session and
+source consumers see canonical results, then definition-owned privacy projections
+and generic telemetry capture bounded facts, then the model receipt is compacted.
+Existing process/script/Skill and validation success shapes are unchanged.
+`run_shell` removes lifecycle/Job/timing bookkeeping only for proven synchronous
+exit-zero completion without Job/recovery identity or observation ambiguity. It
+retains runtime-selected `command_summary`, `cwd`, `shell`, any `ssh_resource`,
+nonempty output, truncation/loss, expectations, normalization and sidecars. Failure,
+timeout, uncertainty and exceptional handoff remain rich; normal pending receipts
+still contain `execution_state=pending` and the exact continuation.
 
 ### Runtime status projections
 

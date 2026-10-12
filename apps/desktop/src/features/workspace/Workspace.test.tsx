@@ -6,15 +6,16 @@ import { PRODUCT_LOCALES, PRODUCT_MESSAGES, productText } from "../../i18n/produ
 import { ProjectsPanel } from "../projects/ProjectsPanel";
 import { ActivityPanel } from "../activity/ActivityPanel";
 import { ExtensionsPanel } from "../extensions/ExtensionsPanel";
-import { WorkspaceProvider, sameProjectPath, sameProject, mergeProjects, sessionTitle, projectName, displayProjectPath } from "./WorkspaceContext";
+import { WorkspaceProvider, sameProjectPath, sameProject, mergeProjects, sessionTitle, projectName, displayProjectPath, useWorkspace } from "./WorkspaceContext";
 import { ChatgptObservation, observationTime, WorkspaceStatus } from "./WorkspaceStatus";
 import { DesktopMantineProvider } from "../../components/DesktopMantineProvider";
 import { Sidebar } from "../../components/Sidebar";
 import { Dashboard } from "../dashboard/Dashboard";
+import { connectionFixture, connectionSnapshot } from "../../test/connections-fixtures";
 
 const native = vi.hoisted(() => ({ invoke: vi.fn() }));
-const api = vi.hoisted(() => ({ prepareProjectUnregister: vi.fn(), unregisterProject: vi.fn(), runnerSettings: vi.fn(), updateRunnerSettings: vi.fn(), restartOwnedRunner: vi.fn(), addRunnerPlugin: vi.fn() }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }));
+const api = vi.hoisted(() => ({ managedInstructionsRead: vi.fn(async () => ({ path:"/fixture/desktop/instructions/AGENTS.md", exists:false, content:"", revision:"missing" })), prepareProjectUnregister: vi.fn(), unregisterProject: vi.fn(), runnerSettings: vi.fn(), updateRunnerSettings: vi.fn(), restartOwnedRunner: vi.fn(), sshResources: vi.fn(), addRunnerPlugin: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke, isTauri: () => false }));
 vi.mock("../../lib/desktop-api", () => ({ desktopApi: api }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 const alpha = { id: "agent:mini:alpha", path: "C:\\work\\alpha", name: "alpha", connected: true, sessions: { running_sessions: 0, active_sessions: 2, latest_updated_at: 100 } };
@@ -39,6 +40,7 @@ beforeEach(() => {
   HTMLDialogElement.prototype.showModal = function () { this.setAttribute("open", ""); };
   HTMLDialogElement.prototype.close = function () { this.removeAttribute("open"); };
   api.runnerSettings.mockResolvedValue({ target: { client_id: "mini", config_path: "fixture.toml", server_url: "http://localhost" }, paths: { instruction_files: [], skill_roots: [] }, plugin_ids: [], can_restart: true });
+  api.sshResources.mockRejectedValue(new Error("fixture-unavailable"));
   native.invoke.mockImplementation(async (_command, { request }) => {
     switch (request.kind) {
       case "overview": return overview;
@@ -50,7 +52,7 @@ beforeEach(() => {
       case "extensions": return { project: alpha.id, runner: "mini", can_reload_plugins: true,
         instructions: { files: [{ source_scope: "project", path: "AGENTS.md", fingerprint: "revision-one", total_lines: 2 }], scan_complete: true },
         skills: { available: true, catalog: { skills: [{ skill_id: "skill-1", name: "Review changes", description: "Review project changes", source_scope: "project" }] } },
-        plugins: { available: true, catalog: { plugins: [{ id: "sample", name: "Sample provider", status: "ready", tool_count: 3 }] } },
+        plugins: { available: true, catalog: { plugins: [{ plugin: "sample", name: "Sample provider", status: "ready", errorCode: null }] } },
       };
       case "instruction": return { content: "# Project instructions\nUse existing tests.", truncated: false };
       case "plugin_reload": return { reloaded: true };
@@ -61,15 +63,62 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("product workspace task flows", () => {
+  it("ignores failures from pre-refresh observations and resumes overview and Git reads", async () => {
+    const pending = new Map<string, (error: Error) => void>();
+    const normal = native.invoke.getMockImplementation()!;
+    function Status() {
+      const workspace = useWorkspace();
+      return <><span>{workspace.error || workspace.windowsError ? "Observation failed" : "Observation healthy"}</span>
+        <button onClick={workspace.refresh}>Refresh observations</button></>;
+    }
+    const content = (suspended: boolean) => <DesktopMantineProvider><LocaleProvider><WorkspaceProvider state={state} suspended={suspended}>
+      <Status /><ProjectsPanel />
+    </WorkspaceProvider></LocaleProvider></DesktopMantineProvider>;
+    const view = render(content(false));
+    expect(await screen.findAllByText("feat/export")).toHaveLength(2);
+    native.invoke.mockImplementation((_command, { request }) => new Promise((_resolve, reject) => {
+      pending.set(request.kind === "project_git" ? request.project : request.kind, reject);
+    }));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh observations" }));
+    expect(pending.size).toBe(5);
+    view.rerender(content(true));
+    await act(async () => { for (const reject of pending.values()) reject(new Error("workspace_unavailable")); });
+    expect(screen.getByText("Observation healthy")).toBeInTheDocument();
+    expect(screen.queryByText("feat/export")).not.toBeInTheDocument();
+    native.invoke.mockClear();
+    native.invoke.mockImplementation(normal);
+    view.rerender(content(false));
+    expect(await screen.findAllByText("feat/export")).toHaveLength(2);
+    await waitFor(() => expect(native.invoke).toHaveBeenCalledTimes(5));
+    expect(screen.getByText("Observation healthy")).toBeInTheDocument();
+  });
+
+
+  it("clears stale Git observations and shows an unconfirmed state when refresh cannot inspect a project", async () => {
+    const normal = native.invoke.getMockImplementation()!;
+    render(wrap(<ProjectsPanel onState={vi.fn()} />));
+    const initial = await screen.findByRole("row", { name: "alpha" });
+    expect(await within(initial).findByText("feat/export")).toBeInTheDocument();
+
+    native.invoke.mockImplementation((command, value) => value.request.kind === "project_git" && value.request.project === alpha.id
+      ? Promise.reject(new Error("project path unavailable")) : normal(command, value));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+
+    const refreshed = await screen.findByRole("row", { name: "alpha" });
+    await within(refreshed).findByText("Status unconfirmed");
+    expect(refreshed).not.toHaveTextContent("feat/export");
+    expect(screen.getByRole("button", { name: "Remove project alpha" })).toBeInTheDocument();
+  });
+
   it("shows no local Runner on a viewer while retaining raw stopped readiness", () => {
     const viewer = { ...state, readiness: { ...state.readiness, runner: "stopped" as const },
       topology: { ...state.topology!, server: { kind: "remote" as const, url: "https://central.example" }, runner: { kind: "none" as const } } } as DesktopState;
     render(wrap(<><WorkspaceStatus state={viewer} /><Sidebar state={viewer} navigation="home" setNavigation={vi.fn()} /></>, viewer));
-    expect(screen.getByRole("status")).toHaveTextContent("ServerRunning");
-    expect(screen.getByRole("status")).toHaveTextContent("Local RunnerNot configured");
-    expect(screen.getByRole("status")).not.toHaveTextContent("RunnerStopped");
+    expect(screen.getByRole("status")).toHaveTextContent("Server ConnectionRunning");
+    expect(screen.getByRole("status")).toHaveTextContent("Local task serviceNot configured");
+    expect(screen.getByRole("status")).not.toHaveTextContent("Local task serviceStopped");
     expect(screen.getByRole("complementary")).toHaveTextContent("Server Connection · Running");
-    expect(screen.getByRole("complementary")).not.toHaveTextContent("Runner · Stopped");
+    expect(screen.getByRole("complementary")).not.toHaveTextContent("Local task service · Stopped");
     expect(viewer.readiness.runner).toBe("stopped");
   });
 
@@ -77,8 +126,25 @@ describe("product workspace task flows", () => {
     const viewer = { ...state, project: null, saved_projects: [], workspace_runner: null,
       topology: { ...state.topology!, server: { kind: "remote" as const, url: "https://central.example" }, runner: { kind: "none" as const } } } as DesktopState;
     render(wrap(<Dashboard state={viewer} refreshing={false} onRefresh={vi.fn()} onResumeRuntime={vi.fn()}
-      onChangeSetup={vi.fn()} onNavigate={vi.fn()} onStopQuickShare={vi.fn()} onStopRuntime={vi.fn()} />, viewer));
+      onChangeSetup={vi.fn()} onNavigate={vi.fn()} onStopQuickShare={vi.fn()} />, viewer));
     expect(screen.queryByRole("button", { name: "Add Project" })).not.toBeInTheDocument();
+  });
+  it("describes locally ready tunnels without counting a live but unhealthy process as ready", () => {
+    const selected = { ...state, connections: connectionSnapshot(connectionFixture({ ready: false, process_started: true, lifecycle: "running" })) };
+    render(wrap(<><WorkspaceStatus state={selected} /><Sidebar state={selected} navigation="home" setNavigation={vi.fn()} /></>, selected));
+    expect(screen.getByRole("status")).toHaveTextContent("0 of 1 tunnels locally ready");
+    expect(screen.getByRole("complementary")).toHaveTextContent("0 of 1 tunnels locally ready");
+    expect(screen.queryByText("ChatGPT connected")).not.toBeInTheDocument();
+  });
+  it.each([
+    [connectionSnapshot(), "No tunnels configured"],
+    [{ ...connectionSnapshot(), config_error: true }, "Tunnel status unconfirmed"],
+    [undefined, "Tunnel status unconfirmed"],
+  ])("distinguishes missing configuration from unavailable tunnel observations", (connections, label) => {
+    const selected = { ...state, connections };
+    render(wrap(<WorkspaceStatus state={selected} />, selected));
+    expect(screen.getByRole("status")).toHaveTextContent(label);
+    expect(screen.getByRole("status")).not.toHaveTextContent("0 / 0");
   });
   it.each([
     ["workspace_authentication_required", "User authentication is missing or expired. Restore your Server credential."],
@@ -89,7 +155,7 @@ describe("product workspace task flows", () => {
     render(wrap(<ProjectsPanel />));
     expect(await screen.findByRole("alert")).toHaveTextContent(message);
     expect(screen.queryByText("secret-response-body")).not.toBeInTheDocument();
-    expect(screen.queryByText("No Runtime projects observed yet")).not.toBeInTheDocument();
+    expect(screen.queryByText("No project folders to show")).not.toBeInTheDocument();
     if (code !== "workspace_server_unreachable") expect(screen.queryByRole("row", { name: "alpha" })).not.toBeInTheDocument();
   });
 
@@ -98,16 +164,45 @@ describe("product workspace task flows", () => {
     native.invoke.mockImplementation((name, value) => value.request.kind === "overview"
       ? Promise.resolve({ ...overview, runners: [{ client_id: "mini", connected: true, computer_session_availability: true }] }) : normal(name, value));
     render(wrap(<ProjectsPanel />));
-    const fleet = await screen.findByRole("region", { name: "Authorized Runners" });
-    expect(fleet).toHaveTextContent("GUI session available");
+    const fleet = await screen.findByRole("region", { name: "Task execution devices" });
+    expect(fleet).toHaveTextContent("Desktop session connected");
     native.invoke.mockRejectedValue({ code: "workspace_server_unreachable" });
     fireEvent(document, new Event("visibilitychange"));
     await screen.findByRole("alert");
-    expect(fleet).toHaveTextContent("Status is stale · GUI session unavailable");
+    expect(fleet).toHaveTextContent("Refresh to confirm status");
+    expect(fleet).toHaveTextContent("Desktop session status needs a fresh check");
+    expect(fleet).not.toHaveTextContent("Desktop session unavailable");
     native.invoke.mockRejectedValue({ code: "workspace_permission_denied" });
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
-    await waitFor(() => expect(screen.queryByRole("region", { name: "Authorized Runners" })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Task execution devices" })).not.toBeInTheDocument());
     expect(screen.queryByRole("row", { name: "alpha" })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    [true, "Desktop session connected"],
+    [false, "Desktop session unavailable"],
+    [undefined, "Desktop session status not reported"],
+    [null, "Desktop session status not reported"],
+  ])("explains the local device without treating %s desktop availability as a file-tool failure", async (availability, label) => {
+    const normal = native.invoke.getMockImplementation()!;
+    native.invoke.mockImplementation((name, value) => value.request.kind === "overview"
+      ? Promise.resolve({ ...overview, runners: [{ client_id: "mini", connected: true, computer_session_availability: availability }] }) : normal(name, value));
+    const openSettings = vi.fn();
+    render(wrap(<ProjectsPanel onComputerSettings={openSettings} />));
+    const devices = await screen.findByRole("region", { name: "Task execution devices" });
+    expect(within(devices).getByRole("heading", { name: "This computer" })).toBeInTheDocument();
+    expect(devices).toHaveTextContent(label);
+    expect(screen.getByRole("row", { name: "alpha" })).toHaveTextContent("Runs on · This computer");
+    if (availability === true) {
+      expect(devices).toHaveTextContent("still require system permissions");
+      expect(within(devices).queryByRole("button")).not.toBeInTheDocument();
+    } else {
+      if (availability === false) expect(devices).toHaveTextContent("File and command tools do not depend on this session");
+      else expect(devices).not.toHaveTextContent("Desktop session unavailable");
+      fireEvent.click(within(devices).getByRole("button", { name: "Desktop access settings" }));
+      expect(openSettings).toHaveBeenCalledTimes(1);
+    }
+    expect(native.invoke.mock.calls.every(([command]) => command === "workspace_query")).toBe(true);
   });
 
   it("shows the authorized B/C fleet and GUI availability on a viewer with no local Runner", async () => {
@@ -122,14 +217,18 @@ describe("product workspace task flows", () => {
         ] })
       : value.request.kind === "projects" ? Promise.resolve({ projects, total: 2, truncated: false }) : normal(name, value));
     render(wrap(<ProjectsPanel />, viewer));
-    const fleet = await screen.findByRole("region", { name: "Authorized Runners" });
+    const fleet = await screen.findByRole("region", { name: "Task execution devices" });
     const rows = within(fleet).getAllByRole("listitem");
-    expect(rows[0]).toHaveTextContent("B · Online · GUI session available");
-    expect(rows[1]).toHaveTextContent("C · Status is stale · GUI session unavailable");
-    expect(screen.getByRole("row", { name: "alpha" })).toHaveTextContent("Runner · B");
-    expect(screen.getByRole("row", { name: "beta" })).toHaveTextContent("Runner · C");
+    expect(rows[0]).toHaveTextContent("Runner identifier · B");
+    expect(rows[0]).toHaveTextContent("Connected to Server");
+    expect(rows[0]).toHaveTextContent("Desktop session connected");
+    expect(rows[1]).toHaveTextContent("Runner identifier · C");
+    expect(rows[1]).toHaveTextContent("Refresh to confirm status");
+    expect(rows[1]).not.toHaveTextContent("Desktop session connected");
+    expect(screen.getByRole("row", { name: "alpha" })).toHaveTextContent("Runs on · B");
+    expect(screen.getByRole("row", { name: "beta" })).toHaveTextContent("Runs on · C");
     expect(screen.queryByRole("button", { name: "Add Project" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Unregister project/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Remove project/ })).not.toBeInTheDocument();
   });
 
   it("never merges a remote path into a local saved project just because the strings match", () => {
@@ -140,16 +239,39 @@ describe("product workspace task flows", () => {
   });
 
   it("shows Runner Projects as read-only observed runtime inventory", async () => {
-    render(wrap(<ProjectsPanel />));    await screen.findByLabelText("2 active sessions"); expect(await screen.findAllByText("feat/export")).toHaveLength(2);
+    render(wrap(<ProjectsPanel />));    await screen.findByLabelText("2 open sessions"); expect(await screen.findAllByText("feat/export")).toHaveLength(2);
     expect(screen.getAllByRole("row")).toHaveLength(3);
     for (const row of screen.getAllByRole("row")) expect(within(row).queryByRole("button", { name: /Use project|Select project/ })).not.toBeInTheDocument();
     expect(screen.queryByText("Current")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Add Project" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Unregister project/ })).not.toBeInTheDocument();
-    expect(screen.getByText("Runner allowed folders in Settings → File access define filesystem access. Runtime Projects are observed identity and appear automatically when AI opens an authorized folder.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Remove project/ })).not.toBeInTheDocument();
+    expect(screen.getByText(/Projects are registered working folders/)).toBeInTheDocument();
+    expect(screen.getByText(/removing access does not remove a registered project/)).toBeInTheDocument();
     fireEvent.change(screen.getByRole("searchbox", { name: "Search projects" }), { target: { value: "ALPHA" } });
     expect(screen.getAllByRole("row")).toHaveLength(2);
   });
+  it("removes only a confirmed local project registration and keeps permission semantics explicit", async () => {
+    const observation = {
+      target: { config_path: "fixture.toml", client_id: "mini", server_url: "http://localhost" },
+      project: beta.id,
+      expected_revision: "sha256:" + "a".repeat(64),
+      path: beta.path,
+    };
+    const onState = vi.fn();
+    api.prepareProjectUnregister.mockResolvedValue(observation);
+    api.unregisterProject.mockResolvedValue({ ...state, project: state.project, saved_projects: [state.saved_projects![0]] });
+    render(wrap(<ProjectsPanel onState={onState} />));
+    await screen.findByLabelText("2 open sessions");
+    fireEvent.click(screen.getByRole("button", { name: "Remove project beta" }));
+    const dialog = await screen.findByRole("dialog", { name: "Remove project" });
+    expect(dialog).toHaveTextContent("file access permissions are unchanged");
+    expect(dialog).toHaveTextContent("Your folder and Git files stay on disk");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove project" }));
+    await waitFor(() => expect(api.unregisterProject).toHaveBeenCalledExactlyOnceWith(observation));
+    expect(onState).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.queryByRole("row", { name: "beta" })).not.toBeInTheDocument());
+  });
+
   it.each([
     ["agent:msi:foo", "\\\\?\\D:\\repo", "D:\\repo"],
     [undefined, "\\\\?\\D:\\repo", "D:\\repo"],
@@ -166,7 +288,7 @@ describe("product workspace task flows", () => {
         : value.request.kind === "project_git" && !savedId
         ? Promise.reject(new Error("Git metadata unavailable")) : normal(name, value));
     render(wrap(<ProjectsPanel />, selected));
-    await screen.findByLabelText("2 active sessions");
+    await screen.findByLabelText("2 open sessions");
     const row = screen.getByRole("row", { name: "repo" });
     expect(screen.getAllByRole("row")).toHaveLength(2);
     expect(within(row).getByText(observationTime(runner.sessions.latest_updated_at * 1000, "en-US"))).toBeInTheDocument();
@@ -180,12 +302,12 @@ describe("product workspace task flows", () => {
   it("keeps the Runner inventory observable without a Desktop default project", async () => {
     const emptyDefault = { ...state, project: null, saved_projects: [], readiness: { ...state.readiness, project: "none" as const, runtime_ready: false } };
     render(wrap(<ProjectsPanel />, emptyDefault));
-    await screen.findByLabelText("2 active sessions");
+    await screen.findByLabelText("2 open sessions");
     expect(screen.getAllByRole("row")).toHaveLength(3);
   });
   it("opens a Window's associated Workflow Session and presents product activity rather than a ledger", async () => {
     render(wrap(<ActivityPanel activity={[]} />));
-    expect(screen.getByRole("tab", { name: "ChatGPT calls" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "Tool calls" })).toHaveAttribute("aria-selected", "true");
     fireEvent.click(await screen.findByRole("button", { name: /Open call details:.*window-001/ }));
     const detail = await screen.findByRole("dialog", { name: "Request details · window-001" });
     fireEvent.click(await within(detail).findByRole("button", { name: /Fix export workflow/ }));
@@ -197,8 +319,69 @@ describe("product workspace task flows", () => {
     expect(native.invoke).toHaveBeenCalledWith("workspace_query", { request: { kind: "session", project: alpha.id, session_id: session.session_id } });
     fireEvent.click(within(workflow).getByRole("button", { name: "Close" }));
     fireEvent.click(screen.getByRole("tab", { name: "Workflow Sessions" }));
-    expect(await screen.findByRole("button", { name: /Fix export workflow/ })).toHaveTextContent("Active jobs 1");
-    expect(screen.getByRole("tab", { name: "System events" })).toHaveAttribute("aria-selected", "false");
+    const row = await screen.findByRole("button", { name: /Fix export workflow/ });
+    expect(within(row).getAllByText("Active jobs 1")).toHaveLength(1);
+    expect(row).not.toHaveTextContent("Active Jobs:");
+    expect(screen.getByRole("tab", { name: "Service events" })).toHaveAttribute("aria-selected", "false");
+  });
+  it("labels tool completion separately from response handoff and keeps transport evidence in details", async () => {
+    const normal = native.invoke.getMockImplementation()!;
+    native.invoke.mockImplementation((command, value) => value.request.kind === "windows"
+      ? Promise.resolve({ windows: [{ ...windowRow, active_count: 0 }] }) : normal(command, value));
+    render(wrap(<ActivityPanel activity={[]} />));
+    const row = await screen.findByRole("button", { name: /Open call details: Fix export workflow/ });
+    await within(row).findByText("Call completed");
+    expect(row).not.toHaveTextContent("HTTP");
+    expect(row).not.toHaveTextContent("Response handoff");
+    fireEvent.click(row);
+    const dialog = await screen.findByRole("dialog", { name: "Request details · window-001" });
+    expect((await within(dialog).findAllByText("Response handoff not confirmed")).length).toBeGreaterThan(0);
+  });
+  it("does not infer a call result when the preview observation fails", async () => {
+    const normal = native.invoke.getMockImplementation()!;
+    native.invoke.mockImplementation((command, value) => value.request.kind === "window" ? Promise.reject(new Error("unreachable")) : value.request.kind === "windows"
+      ? Promise.resolve({ windows: [{ ...windowRow, active_count: 0 }] }) : normal(command, value));
+    render(wrap(<ActivityPanel activity={[]} />));
+    const row = await screen.findByRole("button", { name: /Open call details: Tool calls/ });
+    expect(row).toHaveTextContent("Call result unconfirmed");
+    expect(row).not.toHaveTextContent("Call completed");
+  });
+  it("uses the active call's project and does not borrow another project's session title", async () => {
+    const normal = native.invoke.getMockImplementation()!;
+    native.invoke.mockImplementation((command, value) => value.request.kind === "window"
+      ? Promise.resolve({ ...windowRow, active_requests: [{ tool_name: "read_files", project: beta.id }], linked_sessions: [{ project: alpha.id, title: session.title }], activity: [] }) : normal(command, value));
+    render(wrap(<ActivityPanel activity={[]} />));
+    const row = await screen.findByRole("button", { name: /Open call details: read_files/ });
+    expect(row).toHaveTextContent("beta");
+    expect(row).not.toHaveTextContent("alpha");
+    expect(row).not.toHaveTextContent(session.title);
+  });
+  it("distinguishes an open idle session from running work and hides empty attention counts", async () => {
+    const normal = native.invoke.getMockImplementation()!;
+    const idle = { ...session, running_jobs: 0, overview: { attention: { open_todos: 0, open_questions: 0, open_risks: 0 } } };
+    native.invoke.mockImplementation((command, value) => value.request.kind === "overview"
+      ? Promise.resolve({ ...overview, recent_sessions: { sessions: [idle], truncated: false } }) : normal(command, value));
+    render(wrap(<ActivityPanel activity={[]} />));
+    fireEvent.click(screen.getByRole("tab", { name: "Workflow Sessions" }));
+    const row = await screen.findByRole("button", { name: /Fix export workflow/ });
+    expect(row).toHaveTextContent("Open");
+    expect(row).not.toHaveTextContent("In progress");
+    expect(row).not.toHaveTextContent("Active jobs");
+    expect(row).not.toHaveTextContent("unknown");
+  });
+  it.each([
+    ["passed", "檢查通過"], ["failed", "檢查失敗"], ["inconclusive", "檢查尚無明確結論"], ["not_run", "尚未執行檢查"], ["unavailable", "尚無可確認的檢查結果"],
+  ])("localizes %s validation evidence in Traditional Chinese session details", async (validation, label) => {
+    localStorage.setItem("webcodex.desktop.locale", "zh-TW");
+    const normal = native.invoke.getMockImplementation()!;
+    native.invoke.mockImplementation((command, value) => value.request.kind === "session"
+      ? Promise.resolve({ ...session, overview: { ...session.overview, validation: { state: validation } } }) : normal(command, value));
+    render(wrap(<ActivityPanel activity={[]} />));
+    fireEvent.click(screen.getByRole("tab", { name: "工作會話" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Fix export workflow/ }));
+    const dialog = await screen.findByRole("dialog", { name: "Fix export workflow" });
+    expect(await within(dialog).findByText(label)).toBeInTheDocument();
+    expect(dialog).not.toHaveTextContent(`: ${validation}`);
   });
   it("opens effective instructions, lists real Skills and reloads a provider only on request", async () => {
     render(wrap(<ExtensionsPanel state={state} onState={vi.fn()} />));
@@ -209,13 +392,46 @@ describe("product workspace task flows", () => {
     expect(native.invoke).toHaveBeenCalledWith("workspace_query", { request: { kind: "instruction", project: alpha.id, source_scope: "project", path: "AGENTS.md", fingerprint: "revision-one" } });
     fireEvent.click(within(document).getByRole("button", { name: "Close" }));
     fireEvent.click(screen.getByRole("tab", { name: "Skills" })); expect(screen.getByText("Review changes")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: "MCP Providers" }));
-    fireEvent.click(screen.getByText("Advanced: Native Tool Plugins", { selector: "summary" }));
-    expect(screen.getByText(/3 tools/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Native Plugins" }));
+    const pluginRow = screen.getByText("Sample provider").closest("article")!;
+    expect(within(pluginRow).getByText("Available")).toBeInTheDocument();
+    expect(pluginRow).not.toHaveTextContent("— tools");
     expect(native.invoke.mock.calls.some(([, value]) => value.request.kind === "plugin_reload")).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "Reload" }));
     await waitFor(() => expect(native.invoke).toHaveBeenCalledWith("workspace_query", { request: { kind: "plugin_reload", project: alpha.id, plugin: "sample" } }));
     expect(api.restartOwnedRunner).not.toHaveBeenCalled();
+  });
+  it("explains every extension category and exposes native registrations without a project", async () => {
+    const runner = { target: state.workspace_runner!, paths: { instruction_files: [], skill_roots: [] }, plugin_ids: ["safe-delete"], can_restart: true };
+    api.runnerSettings.mockResolvedValue(runner);
+    render(wrap(<ExtensionsPanel state={{ ...state, project: null }} onState={vi.fn()} />));
+    for (const [label, purpose] of [["Coding Agents", "codingAgentsPurpose"], ["SSH Resources", "sshPurpose"], ["MCP servers", "mcpPurpose"], ["Native Plugins", "pluginsPurpose"], ["Skills", "skillsPurpose"], ["Instructions", "instructionsPurpose"]] as const) {
+      fireEvent.click(screen.getByRole("tab", { name: label }));
+      expect(screen.getByText(productText("en-US", purpose))).toBeVisible();
+    }
+    fireEvent.click(screen.getByRole("tab", { name: "Native Plugins" }));
+    expect(await screen.findByText("safe-delete")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Reload" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Add a native Tool Plugin" }));
+    expect(await screen.findByRole("dialog", { name: "Add a native Tool Plugin" })).toBeInTheDocument();
+    expect(api.addRunnerPlugin).not.toHaveBeenCalled();
+  });
+  it("shows canonical failed Plugin state with recovery guidance rather than a saved-registration status", async () => {
+    const normal = native.invoke.getMockImplementation()!;
+    native.invoke.mockImplementation(async (command, value) => {
+      const result = await normal(command, value);
+      return value.request.kind === "extensions" ? { ...result, plugins: { available: true, catalog: { plugins: [{ plugin: "artifact-tools", name: "Artifact tools", status: "failed", errorCode: "initialize_timeout" }] } } } : result;
+    });
+    render(wrap(<ExtensionsPanel state={state} onState={vi.fn()} />));
+    fireEvent.click(screen.getByRole("tab", { name: "Native Plugins" }));
+    const row = (await screen.findByText("Artifact tools")).closest("article")!;
+    expect(within(row).getByText("Failed to load")).toBeVisible();
+    expect(within(row).getByText(productText("en-US", "pluginFailureHelp"))).toBeVisible();
+    expect(row).not.toHaveTextContent("Registered");
+    expect(row).not.toHaveTextContent("— tools");
+    expect(native.invoke.mock.calls.some(([, value]) => value.request.kind === "plugin_reload")).toBe(false);
+    fireEvent.click(within(row).getByRole("button", { name: "Reload" }));
+    await waitFor(() => expect(native.invoke).toHaveBeenCalledWith("workspace_query", { request: { kind: "plugin_reload", project: alpha.id, plugin: "artifact-tools" } }));
   });
   it("rejects an older workspace result after a Runner identity change", async () => {
     let complete!: (value: unknown) => void;
@@ -226,7 +442,7 @@ describe("product workspace task flows", () => {
     await waitFor(() => expect(overviewCalls).toBe(1));
     const switched = { ...state, workspace_runner: { client_id: "mini", server_url: "http://localhost", config_path: "new-runner.toml" } };
     view.rerender(wrap(<ProjectsPanel />, switched));
-    await screen.findByLabelText("2 active sessions");
+    await screen.findByLabelText("2 open sessions");
     await act(async () => { complete({ ...overview, projects: [{ ...alpha, id: "agent:old:other", name: "Stale project", path: "/old" }] }); });
     expect(screen.queryByText("Stale project")).not.toBeInTheDocument();
     expect(screen.getByRole("row", { name: "beta" })).toBeInTheDocument();
@@ -298,7 +514,7 @@ describe("inventory convergence", () => {
     const selected = { ...state, project: null };
     render(wrap(<ProjectsPanel />, selected));
     await waitFor(() => expect(screen.queryByRole("row", { name: "alpha" })).not.toBeInTheDocument());
-    if (empty) expect(screen.getByText("No Runtime projects observed yet")).toBeInTheDocument();    else expect(screen.getByRole("row", { name: "beta" })).toBeInTheDocument();
+    if (empty) expect(screen.getByText("No project folders to show")).toBeInTheDocument();    else expect(screen.getByRole("row", { name: "beta" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Add Project" })).not.toBeInTheDocument();
   });
   it.each([{ projects_truncated: true }, { connected: false }, { projects_available: false }, { visible_project_count: 1 }])("retains history on incomplete observation %s", async flags => {
@@ -311,7 +527,7 @@ describe("inventory convergence", () => {
 
 it("keeps Runner overview when only the default display Project disappears", async () => {
   const view = render(wrap(<ProjectsPanel />));
-  await screen.findByLabelText("2 active sessions");
+  await screen.findByLabelText("2 open sessions");
   const calls = native.invoke.mock.calls.filter(([, value]) => value.request.kind === "overview").length;
   const projectless = { ...state, project: null, saved_projects: [] };
   view.rerender(wrap(<ProjectsPanel />, projectless));

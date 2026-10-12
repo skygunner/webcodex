@@ -64,12 +64,29 @@ When a registered Project already exists and isolated work is needed, use `work_
 
 When `work_on_project`, `start_session`, `session_summary`, or an explicit handoff returns `session_ref`, prefer that short selector for later explicit Session selection. Business `session_id` and wrapper `recording_session_id` remain separate contracts, but either may explicitly carry the already-issued ref: Runtime canonicalizes it to the pinned `wc_sess_*` before the role-specific authorization and lifecycle/guard logic runs. The canonical identity remains valid and authoritative. The ref is principal-scoped convenience only; omission never infers a recorder and no sticky recorder context is created.
 
+### Switch back to an exact workspace context
+
+For an already selected Active Session, `work_on_project(session_id="~s12", instruction="Continue the review")` is sufficient. Omit `project`, `client_id`, and `path`; the default `checkout` mode authorizes that exact Session, derives its bound Project, reauthorizes current Project access, and resumes the same Session. The result supplies `project_ref` for ordinary Project tools. Supplying an explicit Project is still supported and must match; `_wc.record` remains independent recorder provenance and never supplies the target.
+
+Fresh work still needs `project` or `client_id + path`. `mode="worktree"` always needs an explicit source and does not accept a Session as that source. Closed, missing, inaccessible or unscoped Sessions do not trigger a fresh fallback. No current Project/Session is remembered implicitly in a Window.
+
+When the Session selector was lost in the original Window, request `_wc.context=["workflow.resume"]` and explicitly choose a candidate. Authorized candidates retain canonical identity and also expose `session_ref` and, when the current root fingerprint/reference store is available, `project_ref`. This is discovery, not automatic resume; read the exact handoff when task context was lost. Across windows use `list_sessions(project)` when needed.
+
 ## Tool strategy guidance
 
+For account/window switches, save agreed decisions and current progress with
+`post_session_message`. If the old Session identity is missing, discover with
+`list_sessions(project)`, explicitly select a candidate, then read its handoff
+before resuming. See [Session continuity](SESSION_CONTINUITY.md) for the full
+recovery and configured model review flow.
+
 `work_on_project` accepts an optional `guidance_profile`. An explicit value always
-wins. When omitted on MCP, the configured `WEBCODEX_MCP_HOST_PROFILE` supplies the
-model-guidance default; omission on non-MCP/internal calls falls back to `direct`.
-Workflow contract v26 returns shared `guidance`, `model_protocol` and review `roles`,
+wins for guidance only. MCP omission uses the current request's
+`X-WebCodex-MCP-Profile`, or the deployment `WEBCODEX_MCP_HOST_PROFILE` when absent.
+See [request-local client policy](MCP.md#request-local-client-policy); HTTP headers
+select transport timing independently from this tool argument. Non-MCP/internal
+omission falls back to `direct`.
+Workflow contract v28 returns shared `guidance`, `model_protocol` and review `roles`,
 plus only the selected `tool_strategy`, when explicitly requested through
 `context_request=["webcodex.workflow"]`. The selection is request-local: choose again
 on exact resume without changing Session identity or business state. It is never
@@ -107,9 +124,9 @@ context refreshes use the same effective-profile rule.
   recompute ready work and the blocked set; if neither changed and no new semantic information
   exists, do not mechanically repeat the same-set wait and yield near the budget boundary. Job
   terminal does not imply mechanically_followable; fallback recovery, authority changes, ambiguity,
-  outcome_unknown and effect uncertainty still return to the model. Use `wait_for_job_terminal`
-  for a future activation when terminal is a hard dependency. Do not use `observe_jobs` heartbeat
-  polling. The
+  outcome_unknown and effect uncertainty still return to the model. Returning from a Host cell
+  does not complete the current model turn. Continue the task within that turn; never assume an
+  automatic next turn or use `observe_jobs` heartbeat polling. The
   startup `tool_strategy.host_orchestration` catalog and exact
   `tool_manifest(tool_name=...)` hint are both derived from canonical
   `ToolDefinition` metadata. They are guidance only and do not alter
@@ -180,7 +197,7 @@ Review the actual workspace/diff after editing and validation. Passing tests do 
 
 ## Long-running work
 
-A command or validation that outlives the synchronous grace period continues as the same WebCodex Job. Keep its exact Job identity and parser-ready continuation. If useful independent work remains, continue that work and observe the Job later; do not repeatedly poll a running Job merely to keep it visible. When the next useful action actually depends on the terminal result, use the returned continuation; the Server bounds its observation wait for the configured MCP Host profile. The Runtime still supports its transport-neutral observation ceiling internally, while MCP waiting is adapted to the Host budget. For one Job or when any terminal result unblocks progress, use `terminal`; when every Job in a predetermined set is required before progress, use `all_terminal`. Recovery/continuation hints never authorize a retry of an uncertain effect.
+A command or validation that outlives the synchronous grace period continues as the same WebCodex Job. Retain its exact identity and fallback continuation, then finish independent work in the current turn. When Job dependencies block progress, use one bounded `wait_for_job_readiness` join: `any` when one terminal outcome unlocks work, `all` only when every selected dependency is needed. Read logs/details with `observe_jobs`; observation may itself use bounded `terminal` / `all_terminal` waiting when needed. MCP waiting respects the current request policy without shortening execution lifetime. At deadline reassess work and dependencies, never mechanically refill waits or redispatch. A Host cell ending is not task completion; ordinary work does not require an automatic next turn. Preserve pending identities when the task cannot finish. Durable `wait_for_job_terminal` is only for an explicitly established optional continuation workflow, not ordinary waiting. Recovery hints never authorize uncertain-effect retries.
 
 ## Manual multi-window collaboration
 

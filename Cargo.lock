@@ -69,18 +69,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ahash"
-version = "0.8.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a15f179cd60c4584b8a8c596927aadc462e27f2ca70c04e0071964a73ba7a75"
-dependencies = [
- "cfg-if",
- "once_cell",
- "version_check",
- "zerocopy",
-]
-
-[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1305,6 +1293,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
 
 [[package]]
+name = "foldhash"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
+
+[[package]]
 name = "form_urlencoded"
 version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1576,16 +1570,7 @@ version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a9ee70c43aaf417c914396645a0fa852624801b24ebb7ae78fe8272889ac888"
 dependencies = [
- "ahash 0.7.8",
-]
-
-[[package]]
-name = "hashbrown"
-version = "0.14.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
-dependencies = [
- "ahash 0.8.12",
+ "ahash",
 ]
 
 [[package]]
@@ -1594,7 +1579,16 @@ version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
 dependencies = [
- "foldhash",
+ "foldhash 0.1.5",
+]
+
+[[package]]
+name = "hashbrown"
+version = "0.16.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
+dependencies = [
+ "foldhash 0.2.0",
 ]
 
 [[package]]
@@ -1602,14 +1596,17 @@ name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+dependencies = [
+ "foldhash 0.2.0",
+]
 
 [[package]]
 name = "hashlink"
-version = "0.9.1"
+version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ba4ff7128dee98c7dc9794b6a411377e1404dba1c97deb8d1a55297bd25d8af"
+checksum = "a596f1b20ed2cc5ecac41a164aaebc7258057060f06c0cf7a2ba3991ee7990fb"
 dependencies = [
- "hashbrown 0.14.5",
+ "hashbrown 0.17.1",
 ]
 
 [[package]]
@@ -2278,9 +2275,9 @@ dependencies = [
 
 [[package]]
 name = "libsqlite3-sys"
-version = "0.30.1"
+version = "0.38.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e99fb7a497b1e3339bc746195567ed8d3e24945ecd636e3619d20b9de9e9149"
+checksum = "f1d20bef17f513b9b3004532233187769cd072d790971f4e4da0e346eb6401e8"
 dependencies = [
  "cc",
  "pkg-config",
@@ -3561,10 +3558,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "rusqlite"
-version = "0.32.1"
+name = "rsqlite-vfs"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7753b721174eb8ff87a9a0e799e2d7bc3749323e773db92e0984debb00019d6e"
+checksum = "c51c9ae4df8a7fba42103df5c621fa3c37eccf3a3c650879e90fc48b11cc192c"
+dependencies = [
+ "hashbrown 0.16.1",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "rusqlite"
+version = "0.40.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23f2a97da3e3873c73cb2a2e71b35c40ff95e0b1eefa8d72d8499a6928c3b5b3"
 dependencies = [
  "bitflags 2.13.1",
  "fallible-iterator",
@@ -3572,6 +3579,7 @@ dependencies = [
  "hashlink",
  "libsqlite3-sys",
  "smallvec",
+ "sqlite-wasm-rs",
 ]
 
 [[package]]
@@ -4334,6 +4342,18 @@ name = "spin"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
+
+[[package]]
+name = "sqlite-wasm-rs"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc3efc0da82635d7e1ced0053bbbfa8c7ab9645d0bf36ceb4f7127bb85315d75"
+dependencies = [
+ "cc",
+ "js-sys",
+ "rsqlite-vfs",
+ "wasm-bindgen",
+]
 
 [[package]]
 name = "stable_deref_trait"
@@ -5376,7 +5396,7 @@ dependencies = [
 
 [[package]]
 name = "webcodex"
-version = "0.4.3"
+version = "0.4.6"
 dependencies = [
  "anyhow",
  "base64",
@@ -5405,6 +5425,7 @@ dependencies = [
  "urlencoding",
  "uuid",
  "webcodex-admin",
+ "webcodex-build-info",
  "webcodex-code-mode",
  "webcodex-core",
  "webcodex-environment",
@@ -5423,7 +5444,7 @@ dependencies = [
 
 [[package]]
 name = "webcodex-admin"
-version = "0.4.3"
+version = "0.4.6"
 dependencies = [
  "reqwest 0.12.28",
  "serde_json",
@@ -5433,7 +5454,7 @@ dependencies = [
 
 [[package]]
 name = "webcodex-browser"
-version = "0.4.3"
+version = "0.4.6"
 dependencies = [
  "base64",
  "reqwest 0.12.28",
@@ -5448,8 +5469,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "webcodex-build-info"
+version = "0.4.6"
+dependencies = [
+ "webcodex-core",
+]
+
+[[package]]
 name = "webcodex-cli"
-version = "0.4.3"
+version = "0.4.6"
 dependencies = [
  "chrono",
  "fs2",
@@ -5468,6 +5496,7 @@ dependencies = [
  "uuid",
  "webcodex",
  "webcodex-admin",
+ "webcodex-build-info",
  "webcodex-core",
  "webcodex-environment",
  "webcodex-runner-config",
@@ -5476,7 +5505,7 @@ dependencies = [
 
 [[package]]
 name = "webcodex-code-mode"
-version = "0.4.3"
+version = "0.4.6"
 dependencies = [
  "deno_core_icudata",
  "serde",
@@ -5487,7 +5516,7 @@ dependencies = [
 
 [[package]]
 name = "webcodex-computer"
-version = "0.4.3"
+version = "0.4.6"
 dependencies = [
  "base64",
  "block2",
@@ -5510,7 +5539,7 @@ dependencies = [
 
 [[package]]
 name = "webcodex-core"
-version = "0.4.3"
+version = "0.4.6"
 dependencies = [
  "base64",
  "getrandom 0.3.4",
@@ -5524,7 +5553,7 @@ dependencies = [
 
 [[package]]
 name = "webcodex-environment"
-version = "0.4.3"
+version = "0.4.6"
 dependencies = [
  "fs2",
  "libc",
@@ -5540,13 +5569,14 @@ dependencies = [
  "url",
  "uuid",
  "webcodex-core",
+ "webcodex-process",
  "webcodex-runner-config",
  "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "webcodex-lsp"
-version = "0.4.3"
+version = "0.4.6"
 dependencies = [
  "libc",
  "serde_json",
@@ -5562,7 +5592,7 @@ dependencies = [
 
 [[package]]
 name = "webcodex-persistent-shell"
-version = "0.4.3"
+version = "0.4.6"
 dependencies = [
  "base64",
  "libc",
@@ -5574,7 +5604,7 @@ dependencies = [
 
 [[package]]
 name = "webcodex-process"
-version = "0.4.3"
+version = "0.4.6"
 dependencies = [
  "libc",
  "tempfile",
@@ -5583,7 +5613,7 @@ dependencies = [
 
 [[package]]
 name = "webcodex-runner"
-version = "0.4.3"
+version = "0.4.6"
 dependencies = [
  "agent-client-protocol-schema",
  "base64",
@@ -5607,6 +5637,7 @@ dependencies = [
  "url",
  "uuid",
  "webcodex-browser",
+ "webcodex-build-info",
  "webcodex-computer",
  "webcodex-core",
  "webcodex-environment",
@@ -5624,7 +5655,7 @@ dependencies = [
 
 [[package]]
 name = "webcodex-runner-config"
-version = "0.4.3"
+version = "0.4.6"
 dependencies = [
  "serde",
  "toml 0.8.23",
@@ -5633,7 +5664,7 @@ dependencies = [
 
 [[package]]
 name = "webcodex-runner-registry"
-version = "0.4.3"
+version = "0.4.6"
 dependencies = [
  "chrono",
  "serde",
@@ -5647,7 +5678,7 @@ dependencies = [
 
 [[package]]
 name = "webcodex-store"
-version = "0.4.3"
+version = "0.4.6"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5664,7 +5695,7 @@ dependencies = [
 
 [[package]]
 name = "webcodex-tool-contracts"
-version = "0.4.3"
+version = "0.4.6"
 dependencies = [
  "regex",
  "schemars 1.2.2",
@@ -5675,7 +5706,7 @@ dependencies = [
 
 [[package]]
 name = "webcodex-tool-runtime-contracts"
-version = "0.4.3"
+version = "0.4.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -5687,7 +5718,7 @@ dependencies = [
 
 [[package]]
 name = "webcodex-validation"
-version = "0.4.3"
+version = "0.4.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -5698,11 +5729,12 @@ dependencies = [
  "webcodex-tool-contracts",
  "webcodex-tool-runtime-contracts",
  "webcodex-workflow-session",
+ "webcodex-workspace",
 ]
 
 [[package]]
 name = "webcodex-workflow-session"
-version = "0.4.3"
+version = "0.4.6"
 dependencies = [
  "base64",
  "chrono",
@@ -5719,12 +5751,13 @@ dependencies = [
 
 [[package]]
 name = "webcodex-workspace"
-version = "0.4.3"
+version = "0.4.6"
 dependencies = [
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
+ "toml 0.8.23",
  "webcodex-core",
 ]
 

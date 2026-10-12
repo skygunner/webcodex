@@ -18,6 +18,7 @@ type Props = {
 };
 
 export function WindowSessionPanel({
+  client,
   detail,
   projects,
   language,
@@ -39,6 +40,7 @@ export function WindowSessionPanel({
   return (
     <section className="window-session-panel" aria-label={t("Work Sessions")}>
       <WindowActivityFeed
+        client={client}
         detail={detail}
         projects={projects}
         language={language}

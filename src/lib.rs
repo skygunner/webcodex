@@ -65,9 +65,10 @@ mod workspace_activity_store;
 
 #[cfg(test)]
 pub(crate) use webcodex_admin as admin_cli;
+pub(crate) use webcodex_build_info as build_info;
 pub(crate) use webcodex_core::{
-    apply_edits_shared, apply_patch_shared, artifact_policy, build_info, lsp_bridge,
-    runner_protocol, sensitive_paths,
+    apply_edits_shared, apply_patch_shared, artifact_policy, lsp_bridge, runner_protocol,
+    sensitive_paths,
 };
 pub(crate) use webcodex_runner_config as runner_config;
 pub(crate) use webcodex_workspace::project_overview;
@@ -124,6 +125,7 @@ async fn healthz(res: &mut Response) {
 pub enum ServerBinaryAction {
     Run {
         stop_on_stdin_eof: bool,
+        env_file: Option<std::path::PathBuf>,
     },
     Exit {
         code: i32,
@@ -144,13 +146,25 @@ where
     match args.as_slice() {
         [] => ServerBinaryAction::Run {
             stop_on_stdin_eof: false,
+            env_file: None,
         },
         [arg] if arg == "--stop-on-stdin-eof" => ServerBinaryAction::Run {
             stop_on_stdin_eof: true,
+            env_file: None,
+        },
+        [flag, path] if flag == "--env-file" && !path.is_empty() && !path.starts_with('-') => ServerBinaryAction::Run {
+            stop_on_stdin_eof: false,
+            env_file: Some(path.into()),
+        },
+        [flag, path, parent] | [parent, flag, path]
+            if flag == "--env-file" && parent == "--stop-on-stdin-eof"
+                && !path.is_empty() && !path.starts_with('-') => ServerBinaryAction::Run {
+            stop_on_stdin_eof: true,
+            env_file: Some(path.into()),
         },
         [arg] if matches!(arg.as_str(), "--help" | "-h") => ServerBinaryAction::Exit {
             code: 0,
-            stdout: "Usage: webcodex-server [OPTIONS]\n\nRun the WebCodex server runtime.\n\nOptions:\n      --stop-on-stdin-eof  Stop when the invoking parent closes stdin\n  -h, --help               Print help and exit\n  -V, --version            Print version and exit\n".to_string(),
+            stdout: "Usage: webcodex-server [OPTIONS]\n\nRun the WebCodex server runtime.\n\nOptions:\n      --env-file PATH     Load the selected private Server environment\n      --stop-on-stdin-eof  Stop when the invoking parent closes stdin\n  -h, --help               Print help and exit\n  -V, --version            Print version and exit\n".to_string(),
             stderr: String::new(),
         },
         [arg] if arg == "--build-info-json" => ServerBinaryAction::Exit {
@@ -258,18 +272,6 @@ pub async fn run_server_with_shutdown(
         );
     }
     let config = Config::from_env();
-    if crate::auth::shared_key_enabled() {
-        let remote_boundary = crate::auth::shared_key_requires_remote_opt_in(&config);
-        if remote_boundary && crate::auth::shared_key_remote_enabled() {
-            tracing::warn!(
-                "Direct shared-key fallback is remotely exposed by explicit WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true; any unknown non-wc_* Bearer becomes a shared-key principal. Prefer managed PAT/OAuth/Runner credentials for Internet-facing deployments."
-            );
-        } else if remote_boundary {
-            tracing::warn!(
-                "Direct shared-key fallback is configured but disabled because the Server is not local-only. Use managed PAT/OAuth/Runner credentials, or explicitly set WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true to acknowledge remote shared-key exposure."
-            );
-        }
-    }
     let mcp_host_policy = mcp_host::McpHostConfig::from_env().runtime_policy();
     let model_workflow_policy =
         model_workflow::ModelWorkflowPolicy::from_env().map_err(std::io::Error::other)?;
@@ -292,14 +294,16 @@ only for local/trusted-network demos."
             tracing::warn!(
                 "Direct shared-key auth is exposed to remote callers: the server bind or \
 WEBCODEX_PUBLIC_URL crosses a remote boundary and WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true is set. \
-Anyone holding the shared key gets full shared-key access from the network."
+Anyone holding the shared key gets full shared-key access from the network; any unknown non-wc_* \
+Bearer becomes a shared-key principal. Prefer managed PAT/OAuth/Runner credentials for \
+Internet-facing deployments."
             );
         } else {
             tracing::warn!(
                 "Direct shared-key auth is configured (WEBCODEX_SHARED_KEY_ENABLED=true) but \
 DISABLED: the server bind or WEBCODEX_PUBLIC_URL crosses a remote boundary and \
 WEBCODEX_SHARED_KEY_REMOTE_ENABLED is not set. Set WEBCODEX_SHARED_KEY_REMOTE_ENABLED=true to \
-explicitly allow remote shared-key auth."
+explicitly allow remote shared-key auth, or use managed PAT/OAuth/Runner credentials."
             );
         }
     }
@@ -880,14 +884,52 @@ mod tests {
             server_binary_action(std::iter::empty::<&str>()),
             ServerBinaryAction::Run {
                 stop_on_stdin_eof: false,
+                env_file: None,
             }
         );
         assert_eq!(
             server_binary_action(["--stop-on-stdin-eof"]),
             ServerBinaryAction::Run {
                 stop_on_stdin_eof: true,
+                env_file: None,
             }
         );
+    }
+
+    #[test]
+    fn server_binary_accepts_the_existing_user_task_environment_argument() {
+        let path = r"C:\Users\owner\AppData\Roaming\WebCodex\server\webcodex.env";
+        assert_eq!(
+            server_binary_action(["--env-file", path]),
+            ServerBinaryAction::Run {
+                stop_on_stdin_eof: false,
+                env_file: Some(path.into()),
+            }
+        );
+        for args in [
+            ["--env-file", path, "--stop-on-stdin-eof"],
+            ["--stop-on-stdin-eof", "--env-file", path],
+        ] {
+            assert_eq!(
+                server_binary_action(args),
+                ServerBinaryAction::Run {
+                    stop_on_stdin_eof: true,
+                    env_file: Some(path.into()),
+                }
+            );
+        }
+        for args in [
+            vec!["--env-file"],
+            vec!["--env-file", ""],
+            vec!["--env-file", "--version"],
+            vec!["--env-file", path, "--env-file", path],
+            vec!["--env-file", path, "unknown"],
+        ] {
+            assert!(matches!(
+                server_binary_action(args),
+                ServerBinaryAction::Exit { code: 2, .. }
+            ));
+        }
     }
 
     #[test]

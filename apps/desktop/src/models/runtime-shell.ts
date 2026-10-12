@@ -7,7 +7,11 @@ export interface MachineBuildInfo {
   agent_protocol_generation?: number | null;
 }
 export type RuntimeSource = { kind: "bundled" } | { kind: "custom"; directory: string };
-export interface BinaryProbe { name: string; present: boolean; executable: boolean; metadata: MachineBuildInfo | null; sha256: string | null; error_code: string | null }
+export interface BinaryProbe {
+  name: string; present: boolean | null; startup_check: "not_checked" | "passed" | "failed";
+  metadata: MachineBuildInfo | null; sha256: string | null; error_code: string | null;
+  diagnostics: { exit_code: number | null; io_kind: string | null } | null;
+}
 export interface RuntimeCandidate {
   candidate_id: string; source: RuntimeSource; selection_revision: number; checked_at_ms: number; directory: string | null;
   binaries: BinaryProbe[]; compatibility: ProtocolCompatibility; build_alignment: BuildAlignment; advisories: string[];
@@ -25,7 +29,7 @@ export interface RuntimeSettings {
 export interface RuntimeSwitchRequest { candidate_id: string; expected_selection_revision: number; confirm_interrupt: boolean }
 export type TraceMode = "off" | "metadata" | "full";
 export interface TraceSettings {
-  mode: TraceMode; effective_mode: TraceMode | null; revision: string; available: boolean; restart_required: boolean;
+  configured_mode: TraceMode | null; effective_mode: TraceMode | null; revision: string; can_edit: boolean; restart_required: boolean;
   can_restart: boolean; error_code: string | null;
 }
 export interface TraceUpdate { mode: TraceMode; expected_revision: string; confirm_full: boolean; restart: boolean; confirm_interrupt: boolean }

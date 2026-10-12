@@ -1,5 +1,8 @@
 #![allow(clippy::all)]
 
+#[path = "sqlite_runtime_tests.rs"]
+mod sqlite_runtime_tests;
+
 #[test]
 fn pairing_capability_migration_preserves_old_codes_without_granting_scopes() {
     let dir = tempfile::tempdir().unwrap();
@@ -105,6 +108,7 @@ fn store_connection_domains_and_metric_names_are_closed_and_stable() {
             "agent_task",
             "agent_wait",
             "agent_wake",
+            "artifact_handoff",
             "audit",
             "communication",
             "core",

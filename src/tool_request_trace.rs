@@ -1,7 +1,7 @@
 //! Gated lifecycle and forensic tracing for model-facing tool invocations.
 //!
-//! `WEBCODEX_TOOL_REQUEST_TRACE=true|metadata` preserves the historical
-//! metadata-only behavior. `WEBCODEX_TOOL_REQUEST_TRACE=full` additionally
+//! `WEBCODEX_TOOL_REQUEST_TRACE=true|metadata` persists bounded lifecycle and
+//! selected operator diagnostics without raw bodies. `full` additionally
 //! persists semantic JSON request/argument/result payloads on the Server host.
 //! Full payloads are zstd-compressed files under a bounded trace directory; they
 //! are deliberately not stored in the canonical runtime database. Compression,
@@ -33,13 +33,17 @@ use std::fs::{self, File, OpenOptions};
 use std::future::Future;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 #[cfg(unix)]
 use std::{os::unix::fs::OpenOptionsExt, os::unix::fs::PermissionsExt};
 use uuid::Uuid;
+
+mod diagnostics;
+mod reader;
+pub(crate) use reader::{capture_mode, read_trace};
 
 tokio::task_local! {
     static ACTIVE_TOOL_TRACE_ID: String;
@@ -55,6 +59,17 @@ const TRACE_WRITER_QUEUE_CAPACITY: usize = 64;
 static TRACE_IO_STATE: OnceLock<Mutex<TraceStoreAccounting>> = OnceLock::new();
 static TRACE_CORRELATIONS: OnceLock<Mutex<TraceCorrelations>> = OnceLock::new();
 static TRACE_WRITER: OnceLock<Option<TraceWriter>> = OnceLock::new();
+// Bounded process-wide counters, not per-trace completeness or durable history.
+static TRACE_QUEUE_DROPS: AtomicU64 = AtomicU64::new(0);
+static TRACE_BUDGET_DROPS: AtomicU64 = AtomicU64::new(0);
+static TRACE_WRITE_FAILURES: AtomicU64 = AtomicU64::new(0);
+
+fn capture_health() -> Value {
+    json!({"scope":"server_process_since_start_not_per_trace",
+        "queue_drops":TRACE_QUEUE_DROPS.load(Ordering::Relaxed),
+        "budget_drops":TRACE_BUDGET_DROPS.load(Ordering::Relaxed),
+        "write_failures":TRACE_WRITE_FAILURES.load(Ordering::Relaxed)})
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TraceCorrelation {
@@ -337,7 +352,15 @@ fn trace_writer_loop(receiver: mpsc::Receiver<TraceWrite>) {
                 phase,
                 event,
                 config,
-            } => match persist_metadata_event_with_config(&trace_id, event, &config) {
+            } => match persist_metadata_event_with_config(&trace_id, event, &config)
+                .inspect(|accepted| {
+                    if !accepted {
+                        TRACE_BUDGET_DROPS.fetch_add(1, Ordering::Relaxed);
+                    }
+                })
+                .inspect_err(|_| {
+                    TRACE_WRITE_FAILURES.fetch_add(1, Ordering::Relaxed);
+                }) {
                 Ok(true) => {}
                 Ok(false) => tracing::warn!(
                     event = "tool_trace_capture_omitted",
@@ -360,7 +383,15 @@ fn trace_writer_loop(receiver: mpsc::Receiver<TraceWrite>) {
                 value,
                 event,
                 config,
-            } => match persist_payload_with_config(&trace_id, &phase, &value, event, &config) {
+            } => match persist_payload_with_config(&trace_id, &phase, &value, event, &config)
+                .inspect(|accepted| {
+                    if accepted.is_none() {
+                        TRACE_BUDGET_DROPS.fetch_add(1, Ordering::Relaxed);
+                    }
+                })
+                .inspect_err(|_| {
+                    TRACE_WRITE_FAILURES.fetch_add(1, Ordering::Relaxed);
+                }) {
                 Ok(Some((payload_bytes, compressed_bytes, digest, path))) => tracing::info!(
                     event = "tool_trace_payload_persisted",
                     server_trace_id = %trace_id,
@@ -492,6 +523,9 @@ fn parse_trace_payload_index(
 ) -> Result<Vec<IndexedTracePayload>, TraceReadError> {
     require_private_regular_file(&trace_dir.join(TRACE_OWNER_MARKER), "trace_corrupt")?;
     let events_path = trace_dir.join("events.jsonl");
+    let read_guard = trace_io_state().lock().map_err(|_| {
+        TraceReadError::new("trace_store_unavailable", "trace index lock unavailable")
+    })?;
     let metadata = require_private_regular_file(&events_path, "trace_corrupt")?;
     if metadata.len() > MAX_TRACE_EVENTS_FILE_BYTES {
         return Err(TraceReadError::new(
@@ -499,8 +533,19 @@ fn parse_trace_payload_index(
             "trace event index exceeds the diagnostic read ceiling",
         ));
     }
-    let text = fs::read_to_string(events_path)
+    let mut text = String::new();
+    File::open(events_path)
+        .map_err(|_| TraceReadError::new("trace_corrupt", "trace event index is unreadable"))?
+        .take(MAX_TRACE_EVENTS_FILE_BYTES + 1)
+        .read_to_string(&mut text)
         .map_err(|_| TraceReadError::new("trace_corrupt", "trace event index is unreadable"))?;
+    drop(read_guard);
+    if text.len() as u64 > MAX_TRACE_EVENTS_FILE_BYTES {
+        return Err(TraceReadError::new(
+            "trace_too_large",
+            "trace index grew beyond read budget",
+        ));
+    }
     let mut payloads = Vec::new();
     for line in text.lines().filter(|line| !line.trim().is_empty()) {
         let event: Value = serde_json::from_str(line).map_err(|_| {
@@ -603,12 +648,6 @@ pub(crate) fn read_full_trace(
     limit: Option<usize>,
     payload_index: Option<usize>,
 ) -> Result<Value, TraceReadError> {
-    if !full_trace_enabled() {
-        return Err(TraceReadError::new(
-            "trace_mode_not_full",
-            "full tool-request tracing is not enabled on this Server",
-        ));
-    }
     validate_trace_ref(trace_ref)?;
     if payload_index.is_some() && (offset.is_some() || limit.is_some()) {
         return Err(TraceReadError::new(
@@ -726,6 +765,7 @@ pub(crate) fn read_full_trace(
 
 fn enqueue_trace_write(write: TraceWrite, trace_id: &str, phase: &str) {
     let Some(writer) = trace_writer() else {
+        TRACE_WRITE_FAILURES.fetch_add(1, Ordering::Relaxed);
         tracing::warn!(
             event = "tool_trace_capture_failed",
             server_trace_id = %trace_id,
@@ -735,7 +775,17 @@ fn enqueue_trace_write(write: TraceWrite, trace_id: &str, phase: &str) {
         );
         return;
     };
-    match writer.sender.try_send(write) {
+    match writer
+        .sender
+        .try_send(write)
+        .inspect_err(|error| match error {
+            mpsc::TrySendError::Full(_) => {
+                TRACE_QUEUE_DROPS.fetch_add(1, Ordering::Relaxed);
+            }
+            mpsc::TrySendError::Disconnected(_) => {
+                TRACE_WRITE_FAILURES.fetch_add(1, Ordering::Relaxed);
+            }
+        }) {
         Ok(()) => {}
         Err(mpsc::TrySendError::Full(_)) => tracing::warn!(
             event = "tool_trace_capture_omitted",
@@ -1394,7 +1444,7 @@ pub(crate) fn record_runner_request_enqueued<T: Serialize>(
         }
     }
 
-    if full_trace_enabled() {
+    {
         let mut event = base_event(&trace_id, "tool_runner_request_enqueued");
         merge_event_fields(
             &mut event,
@@ -1447,14 +1497,99 @@ fn remove_correlation(correlation: &TraceCorrelation) {
     }
 }
 
-/// Capture one authoritative Runner result after the shell-client layer has
-/// accepted its client / instance / request ownership. Capture never consumes
-/// correlation; finalization is a separate post-acceptance step.
+/// Record bounded arguments entering the canonical parser, not a proof of
+/// successful parsing, authorization or later execution normalization.
+pub(crate) fn capture_effective_arguments(tool: &str, arguments: &Value) {
+    if !tool_request_trace_enabled() {
+        return;
+    }
+    let Some(trace_id) = current_active_trace_id() else {
+        return;
+    };
+    let Some(diagnostic) = diagnostics::arguments(tool, arguments) else {
+        return;
+    };
+    let mut event = base_event(&trace_id, "tool_trace_diagnostic");
+    merge_event_fields(
+        &mut event,
+        json!({"phase":"kernel_arguments", "tool_name":tool, "diagnostic":diagnostic}),
+    );
+    enqueue_metadata_event(&trace_id, "kernel_arguments", event);
+}
+
+/// Record canonical normalization/effect evidence before model compression.
+/// Fields come from the producer's result; missing fields remain unobserved.
+pub(crate) fn capture_execution_evidence(tool: &str, output: &Value) {
+    if !tool_request_trace_enabled() || !diagnostics::selected(tool) {
+        return;
+    }
+    let Some(trace_id) = current_active_trace_id() else {
+        return;
+    };
+    let mut evidence = serde_json::Map::new();
+    for name in [
+        "input_normalization",
+        "execution_state",
+        "command_execution_state",
+        "command_started",
+        "command_completed",
+        "effective_timeout_secs",
+        "sync_wait_secs",
+        "state_changed",
+        "failure_kind",
+        "job_id",
+        "resolved_project",
+    ] {
+        if let Some(value) = output.get(name) {
+            evidence.insert(name.into(), value.clone());
+        }
+    }
+    let Some(diagnostic) = diagnostics::arguments(tool, &Value::Object(evidence)) else {
+        return;
+    };
+    let mut event = base_event(&trace_id, "tool_trace_diagnostic");
+    merge_event_fields(
+        &mut event,
+        json!({"phase":"execution_evidence", "tool_name":tool, "diagnostic":diagnostic}),
+    );
+    enqueue_metadata_event(&trace_id, "execution_evidence", event);
+}
+
+/// Closed call-site phase/outcome labels only; no arguments or payloads.
+/// The existing bounded trace writer never backpressures requests.
+pub(crate) fn record_phase_latency(phase: &'static str, started: Instant, outcome: &'static str) {
+    let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+    tracing::debug!(target: "webcodex::phase", phase, outcome, elapsed_ms, "runtime phase completed");
+    if !tool_request_trace_enabled() {
+        return;
+    }
+    let Some(trace_id) = current_active_trace_id() else {
+        return;
+    };
+    let mut event = base_event(&trace_id, "tool_phase_latency");
+    merge_event_fields(
+        &mut event,
+        json!({"phase": phase, "outcome": outcome, "elapsed_ms": elapsed_ms}),
+    );
+    enqueue_metadata_event(&trace_id, phase, event);
+}
+
+/// Capture only after the shell client accepted exact Runner/request ownership.
+/// Finalizing the correlation remains separate from observational capture.
 pub(crate) fn capture_runner_result<T: Serialize>(request_id: &str, payload: &T) {
+    if !tool_request_trace_enabled() {
+        return;
+    }
     let Some(correlation) = lookup_request_correlation(request_id) else {
         return;
     };
     if !full_trace_enabled() {
+        let mut event = base_event(&correlation.trace_id, "tool_runner_result_accepted");
+        merge_event_fields(
+            &mut event,
+            json!({"runner_request_id": request_id, "runner_job_id": correlation.job_id}),
+        );
+        enqueue_metadata_event(&correlation.trace_id, "runner_result_accepted", event);
         return;
     }
     match serde_json::to_value(payload) {
@@ -1547,6 +1682,14 @@ pub(crate) fn finalize_runner_job_correlation(request_id: Option<&str>, job_id: 
     let Some(correlation) = lookup_job_correlation(request_id, job_id) else {
         return;
     };
+    if tool_request_trace_enabled() {
+        let mut event = base_event(&correlation.trace_id, "tool_runner_job_terminal_accepted");
+        merge_event_fields(
+            &mut event,
+            json!({"runner_request_id":correlation.request_id, "runner_job_id":job_id}),
+        );
+        enqueue_metadata_event(&correlation.trace_id, "runner_job_terminal_accepted", event);
+    }
     remove_correlation(&correlation);
 }
 
@@ -1644,9 +1787,61 @@ impl ToolRequestLifecycle {
     }
 
     pub fn capture_payload(&self, phase: &str, value: &Value) {
+        if phase == "final_response" && self.enabled() && !self.suppress_payload_capture {
+            if let Some(summary) = self
+                .tool_name
+                .as_deref()
+                .and_then(|tool| diagnostics::result(tool, value))
+            {
+                self.capture_diagnostic("response_summary", summary);
+            }
+        }
         if self.full_enabled() && !self.suppress_payload_capture {
             capture_payload_for_trace(&self.trace_id, phase, value);
         }
+    }
+
+    /// Observe bounded supplied arguments before envelope parsing. This does not
+    /// invoke the full-payload lazy closure or infer successful normalization.
+    pub(crate) fn capture_request_diagnostic(&self, entry: &str, arguments: &Value) {
+        if !self.enabled() {
+            return;
+        }
+        if let Some(summary) = diagnostics::request(entry, arguments) {
+            self.capture_diagnostic("supplied_arguments", summary);
+        }
+    }
+
+    fn capture_diagnostic(&self, phase: &str, diagnostic: Value) {
+        let mut event = base_event(&self.trace_id, "tool_trace_diagnostic");
+        merge_event_fields(
+            &mut event,
+            json!({"phase": phase, "diagnostic": diagnostic,
+            "tool_name": self.tool_name, "client_window_key": self.client_window.as_ref().map(ClientWindow::key)}),
+        );
+        enqueue_metadata_event(&self.trace_id, phase, event);
+    }
+
+    /// The MCP adapter supplies only its validated selection receipt. Never
+    /// inspect raw headers, infer the caller brand, or change the policy here.
+    pub(crate) fn capture_mcp_host_policy(
+        &self,
+        selection: &crate::mcp_host::McpHostPolicySelection,
+    ) {
+        if !self.enabled() {
+            return;
+        }
+        let mut event = base_event(&self.trace_id, "mcp_request_policy_selected");
+        merge_event_fields(
+            &mut event,
+            json!({
+                "selection": selection, "method": self.method,
+                "tool_name": self.tool_name,
+                "client_window_key": self.client_window.as_ref().map(ClientWindow::key),
+                "duration_ms": self.duration_ms(),
+            }),
+        );
+        enqueue_metadata_event(&self.trace_id, "request_policy", event);
     }
 
     pub fn capture_payload_lazy<F>(&self, phase: &str, build: F)
@@ -1772,7 +1967,8 @@ impl ToolRequestLifecycle {
             category = category,
             "{event}"
         );
-        if self.full_enabled() {
+        // Metadata persists the same bounded lifecycle index, without raw payloads.
+        {
             let mut stored = base_event(&self.trace_id, &event);
             merge_event_fields(
                 &mut stored,

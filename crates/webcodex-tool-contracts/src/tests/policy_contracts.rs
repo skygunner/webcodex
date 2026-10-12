@@ -505,6 +505,7 @@ fn tool_definitions_drive_session_and_permission_policy() {
             PERMISSION_RISK_ARTIFACT_WRITE,
         ),
         ("transfer_project_artifact", PERMISSION_RISK_ARTIFACT_WRITE),
+        ("accept_artifact_handoff", PERMISSION_RISK_ARTIFACT_WRITE),
         ("artifact_upload_finish", PERMISSION_RISK_ARTIFACT_WRITE),
         ("artifact_upload_abort", PERMISSION_RISK_ARTIFACT_WRITE),
         ("computer_save_snapshot", PERMISSION_RISK_ARTIFACT_WRITE),
@@ -520,6 +521,7 @@ fn tool_definitions_drive_session_and_permission_policy() {
         ("complete_agent_task_attempt", PERMISSION_RISK_WRITE),
         ("update_agent_identity", PERMISSION_RISK_WRITE),
         ("rotate_agent_continuation_endpoint", PERMISSION_RISK_WRITE),
+        #[cfg(feature = "legacy-gpt-actions")]
         ("attach_agent_endpoint", PERMISSION_RISK_WRITE),
         ("detach_agent_endpoint", PERMISSION_RISK_WRITE),
         ("consume_agent_deliveries", PERMISSION_RISK_WRITE),

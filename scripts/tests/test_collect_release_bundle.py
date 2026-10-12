@@ -230,6 +230,39 @@ class ArtifactSelectionTests(unittest.TestCase):
 
 
 class BundleTests(unittest.TestCase):
+    def test_required_unified_contract_cannot_be_downgraded_to_legacy(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            stem, _ = _write_bundle(root, f"v{VERSION}", "release")
+            kwargs = dict(repo=collector.DEFAULT_REPO, run_id=RUN_ID,
+                          expected_source_sha=SOURCE_SHA, expected_tag=f"v{VERSION}",
+                          artifact_name=f"{stem}-bundle")
+            collector.verify_bundle_directory(root, **kwargs)
+            with self.assertRaisesRegex(collector.CollectionError, "required unified installer"):
+                collector.verify_bundle_directory(root, **kwargs, require_unified_installers=True)
+            path = root / "release-build.json"
+            metadata = json.loads(path.read_text())
+            metadata["installer_artifacts"] = None
+            path.write_text(json.dumps(metadata))
+            for strict in (False, True):
+                with self.assertRaisesRegex(collector.CollectionError, "eight unified installer"):
+                    collector.verify_bundle_directory(root, **kwargs, require_unified_installers=strict)
+
+    def test_strict_unified_contract_requires_all_sources_manifest_and_checksums(self):
+        for missing in ("manifest.json", "SHA256SUMS",
+                        f"webcodex-source-v{VERSION}-linux-x64.json",
+                        collector.installer_artifact_filename(VERSION, "linux-arm64-rpm")):
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                stem, _ = _write_bundle(root, f"v{VERSION}", "release", unified=True)
+                kwargs = dict(repo=collector.DEFAULT_REPO, run_id=RUN_ID,
+                              expected_source_sha=SOURCE_SHA, expected_tag=f"v{VERSION}",
+                              artifact_name=f"{stem}-bundle", require_unified_installers=True)
+                collector.verify_bundle_directory(root, **kwargs)
+                (root / missing).unlink()
+                with self.assertRaises(collector.CollectionError):
+                    collector.verify_bundle_directory(root, **kwargs)
+
     def test_release_bundle_contract_with_eight_unified_installer_targets(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

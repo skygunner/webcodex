@@ -34,7 +34,8 @@ export function UpdateWorkflow({ updates, banner = false }: { updates: RuntimeUp
   const s = useShellText(); const status = updates.status; const update = status?.download;
   const [openError, setOpenError] = useState(false); const [confirmVersion, setConfirmVersion] = useState<string | null>(null);
   const title = useId();
-  if (!status?.latest && !update?.pending_install) return null;
+  const recovery = update?.error_kind === "recovery_required";
+  if (!status?.latest && !update?.pending_install && !recovery) return null;
   const version = update?.pending_install ? update.version : status?.latest?.version;
   const sameTarget = Boolean(update?.version && update.version === version);
   const phase = sameTarget ? update?.phase : "available";
@@ -47,7 +48,7 @@ export function UpdateWorkflow({ updates, banner = false }: { updates: RuntimeUp
   const blocked = update?.installation === "source_build" || update?.installation === "unmanaged_installation";
   const unsupported = update?.installation === "unsupported_platform";
   const ready = sameTarget && phase === "ready_to_install";
-  const canDownload = status?.update_available && update && !unsupported && !update.legacy_release && !pending && !active && !installing && !ready;
+  const canDownload = status?.update_available && update && !unsupported && !update.legacy_release && !pending && !recovery && !active && !installing && !ready;
   const stateText = phase === "checking" ? "Checking installer metadata…"
     : phase === "downloading" ? "Downloading update…"
     : phase === "verifying" ? "Verifying update…"
@@ -57,8 +58,8 @@ export function UpdateWorkflow({ updates, banner = false }: { updates: RuntimeUp
     : update?.cancelled && phase !== "failed" ? "Download paused until you choose Retry."
     : "A new stable WebCodex release is available.";
   return <div className="update-workflow" aria-label={s("Stable update")}>
-    {!banner && <strong>WebCodex {version}</strong>}
-    <p role="status">{s(stateText)}</p>
+    {!banner && version && <strong>WebCodex {version}</strong>}
+    {!recovery && <p role="status">{s(stateText)}</p>}
     {phase === "downloading" && <div className="update-progress">
       <progress aria-label={s("Update download progress")} value={percent ?? undefined} max={100} />
       <span>{percent !== null ? `${percent}% · ` : ""}{formatUpdateBytes(update?.downloaded_bytes ?? 0)}{knownTotal ? ` / ${formatUpdateBytes(update!.total_bytes!)}` : ""}</span>
@@ -70,20 +71,20 @@ export function UpdateWorkflow({ updates, banner = false }: { updates: RuntimeUp
     {failure && <p role="status" className="update-error">{s(failure)}</p>}
     {updates.actionError && !failure && <p role="status">{s("The update action could not be completed. Review the update status.")}</p>}
     <div className="shell-actions">
-      {ready && update?.can_install && !pending && <button type="button" className="primary-button" disabled={updates.actionBusy} onClick={() => setConfirmVersion(version ?? null)}>{s("Install update")}</button>}
+      {ready && update?.can_install && !pending && !recovery && <button type="button" className="primary-button" disabled={updates.actionBusy} onClick={() => setConfirmVersion(version ?? null)}>{s("Install update")}</button>}
       {canDownload && <button type="button" className="secondary-button" disabled={updates.actionBusy} onClick={() => void updates.download()}>{s(phase === "failed" || update?.cancelled ? "Retry" : "Download update")}</button>}
       {active && <button type="button" className="secondary-button" disabled={updates.actionBusy} onClick={() => void updates.cancelDownload()}>{s("Cancel download")}</button>}
       {status?.latest && <button type="button" className="secondary-button" onClick={() => {
         setOpenError(false); void desktopApi.openLatestRelease().catch(() => setOpenError(true));
       }}>{s(status.latest.compatibility === "desktop_required" ? "View Desktop release" : "View release")}</button>}
-      {!pending && !installing && <button type="button" className="text-button" disabled={updates.actionBusy} onClick={() => { setConfirmVersion(null); void updates.remindLater(); }}>{s(ready ? "Later" : "Remind me later")}</button>}
+      {!pending && !recovery && !installing && <button type="button" className="text-button" disabled={updates.actionBusy} onClick={() => { setConfirmVersion(null); void updates.remindLater(); }}>{s(ready ? "Later" : "Remind me later")}</button>}
     </div>
     {openError && <p role="status">{s("Unable to open this location.")}</p>}
     {confirmVersion && <section className="update-confirmation" role="alertdialog" aria-labelledby={title}>
       <h3 id={title}>{s("Install unified update?")} · {confirmVersion}</h3>
       <p>{s("This updates Desktop, CLI, Server and Runner together. Finish active work first. Local services may stop, and Desktop will close after the system installer starts. Your operating system may request administrator authorization.")}</p>
       <div className="shell-actions">
-        <button type="button" className="primary-button" disabled={updates.actionBusy || !ready || !update?.can_install || version !== confirmVersion} onClick={() => {
+        <button type="button" className="primary-button" disabled={updates.actionBusy || recovery || !ready || !update?.can_install || version !== confirmVersion} onClick={() => {
           const target = confirmVersion; setConfirmVersion(null); void updates.install(target);
         }}>{s("Install and close WebCodex")}</button>
         <button type="button" className="secondary-button" onClick={() => setConfirmVersion(null)}>{s("Not now")}</button>

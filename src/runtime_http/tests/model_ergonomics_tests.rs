@@ -45,7 +45,7 @@ async fn api_model_ergonomics_success_is_exact_and_queryable() {
     assert_eq!(body["success"], true);
 
     let telemetry = single_model_ergonomics(&db, "ergonomics-success", "tool_manifest");
-    assert_eq!(telemetry["schema_version"], 12);
+    assert_eq!(telemetry["schema_version"], 13);
     assert_eq!(telemetry["tool_name"], "tool_manifest");
     assert_eq!(telemetry["tool_category"], "runtime");
     assert_eq!(telemetry["success"], true);
@@ -213,7 +213,7 @@ async fn api_work_on_project_preferences_persist_as_privacy_bounded_action_audit
     assert_eq!(body["success"], true, "{body}");
 
     let telemetry = single_model_ergonomics(&db, "ergonomics-work-on-project", "work_on_project");
-    assert_eq!(telemetry["schema_version"], 12);
+    assert_eq!(telemetry["schema_version"], 13);
     let facts = &telemetry["work_on_project"];
     assert_eq!(facts["resume_requested"], false);
     assert_eq!(facts["source"], "project");
@@ -356,4 +356,103 @@ async fn api_edit_compaction_preserves_canonical_action_audit_and_telemetry() {
         &crate::tool_runtime::registry::output_schema_for_tool("edit_project_files"),
     )
     .unwrap();
+}
+
+#[tokio::test]
+async fn api_execution_compaction_preserves_canonical_action_audit_and_telemetry() {
+    use crate::runner_protocol::{
+        RunnerCapabilities, RunnerPollRequest, RunnerResultPayload, RunnerResultRequest,
+        ShellCommandExecutionState,
+    };
+    for tool in ["run_process", "run_shell"] {
+        let config = super::test_config(Some("secret"));
+        let (_db_tmp, db) = super::test_db();
+        let project_tmp = tempfile::tempdir().unwrap();
+        let (runtime, registry) = super::register_import_agent_with_capabilities(
+            project_tmp.path(),
+            Some(RunnerCapabilities {
+                structured_process_argv: true,
+                shell: true,
+                ..Default::default()
+            }),
+        )
+        .await;
+        let service = Service::new(super::build_projects_router(config, db.clone(), runtime));
+        let runner = async {
+            let request = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    if let Some(request) = registry
+                        .poll(RunnerPollRequest {
+                            client_id: "importer".into(),
+                            runner_instance_id: "inst-import".into(),
+                        })
+                        .await
+                        .unwrap()
+                    {
+                        break request;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("execution request before deadline");
+            assert_eq!(request.process.is_some(), tool == "run_process");
+            registry
+                .complete(RunnerResultPayload {
+                    result: RunnerResultRequest {
+                        client_id: "importer".into(),
+                        runner_instance_id: "inst-import".into(),
+                        request_id: request.request_id,
+                        exit_code: Some(0),
+                        stdout: Some("PRIVATE_STDOUT".into()),
+                        stderr: Some("PRIVATE_STDERR".into()),
+                        stdout_truncated: false,
+                        stderr_truncated: false,
+                        duration_ms: Some(1),
+                        error: None,
+                    },
+                    command_execution_state: Some(ShellCommandExecutionState::Completed),
+                    mcp_gateway: None,
+                    plugin_gateway: None,
+                    coding_agent: None,
+                })
+                .await
+                .unwrap();
+        };
+        let request = TestClient::post("http://localhost/api/tools/call")
+        .bearer_auth("secret")
+        .add_header("x-action-session-id", "execution-compaction", true)
+        .json(
+            &json!({"tool":tool, "params": if tool == "run_process" {
+                json!({"project":"agent:importer:demo", "executable":"private-command", "args":[], "timeout_secs":30, "sync_wait_secs":30})
+            } else {
+                json!({"project":"agent:importer:demo", "command":"echo PRIVATE_COMMAND", "timeout_secs":30, "sync_wait_secs":30})
+            }}),
+        );
+        let (mut response, ()) = tokio::join!(request.send(&service), runner);
+        let body: Value = response.take_json().await.unwrap();
+        assert_eq!(body["success"], true, "{body}");
+        assert!(body["output"].get("dry_run").is_none());
+        assert!(body["output"].get("execution_state").is_none());
+        let events = db.list_action_events("execution-compaction", 20).unwrap();
+        assert_eq!(events.len(), 1);
+        let summary: Value = serde_json::from_str(&events[0].summary_json).unwrap();
+        assert_eq!(summary["output"]["execution_state"], "completed");
+        assert_eq!(summary["output"]["command_started"], true);
+        assert_eq!(summary["output"]["command_completed"], true);
+        assert_eq!(summary["output"]["command_ok"], true);
+        assert!(!summary.to_string().contains("PRIVATE"));
+        assert_eq!(body["output"]["stdout_tail"], "PRIVATE_STDOUT");
+        assert_eq!(body["output"]["stderr_tail"], "PRIVATE_STDERR");
+        assert_eq!(summary["model_ergonomics"]["execution_state"], "completed");
+        assert_eq!(
+            summary["model_ergonomics"]["serialized_result_bytes"],
+            serde_json::to_vec(&body).unwrap().len()
+        );
+        crate::tool_runtime::startup_brief::validate_schema_instance_for_test(
+            &body,
+            &crate::tool_runtime::registry::output_schema_for_tool(tool),
+        )
+        .unwrap();
+    }
 }

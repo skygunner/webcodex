@@ -16,12 +16,19 @@ mod agent_attention;
 mod agent_task;
 mod agent_wait;
 mod agent_wake;
+mod artifact_handoff;
 mod audit;
+mod trace_query;
+pub use trace_query::{ToolTraceCallRecord, ToolTraceQueryFilter};
 mod communication;
 mod connection_observation;
+mod history_budget;
+pub use history_budget::HistoryReadBudget;
+
 mod external_observations;
 #[cfg(test)]
 mod external_observations_tests;
+mod optional_projection;
 pub use external_observations::{
     ExternalObservation, ExternalObservationError, MAX_EXTERNAL_OBSERVATIONS_PER_SESSION,
 };
@@ -49,6 +56,8 @@ mod project_reference;
 mod schema;
 mod server_instance;
 mod window_activity;
+mod window_inventory;
+pub use window_inventory::{WindowInventoryPage, WindowInventoryQuery, WindowInventoryRow};
 
 pub use self::admin_project_lifecycle::{AdminProjectAudit, AdminProjectIdempotencyRecord};
 pub use self::agent_continuation_reference::AgentContinuationReferenceRecord;
@@ -76,6 +85,15 @@ pub use self::agent_wake::{
     AgentWakeAttemptState, AgentWakeBootstrapSummary, AgentWakeClaim, AgentWakeConsumeResult,
     AgentWakeEnvelope, AgentWakeExplicitActivation, AgentWakePrepared, AgentWakeRecord,
     AgentWakeState, AGENT_WAKE_CONSUME_TOKEN_PREFIX, AGENT_WAKE_ID_PREFIX,
+};
+pub use self::artifact_handoff::{
+    ArtifactHandoffAcceptance, ArtifactHandoffAcceptanceClaim, ArtifactHandoffAcceptanceOutcome,
+    ArtifactHandoffAcceptanceState, ArtifactHandoffGrant, ArtifactHandoffGrantState,
+    ArtifactHandoffImportRequest, ArtifactHandoffOperation, ArtifactHandoffPrincipal,
+    ArtifactHandoffSourceSnapshot, ArtifactHandoffStoreError, NewArtifactHandoffGrant,
+    ARTIFACT_HANDOFF_ACCEPTANCE_ID_PREFIX, ARTIFACT_HANDOFF_GRANT_ID_PREFIX,
+    DEFAULT_ARTIFACT_HANDOFF_TTL_MS, MAX_ARTIFACT_HANDOFF_IDEMPOTENCY_KEY_CHARS,
+    MAX_ARTIFACT_HANDOFF_TTL_MS,
 };
 pub use self::communication::{
     AgentEndpointLifecycle, AgentEndpointMutation, AgentEndpointRecord, AgentIdentityMutation,
@@ -133,6 +151,13 @@ pub use self::window_activity::{MAX_WINDOW_ACTIVITY_LIMIT, MAX_WINDOW_LINK_LIMIT
 
 pub struct Database {
     conn: Mutex<Connection>,
+    // Exactly one additional, read-only WAL connection for potentially long history.
+    // Fast authority/reference/receipt reads stay on the canonical writer lane.
+    history_reader: std::sync::OnceLock<Mutex<Connection>>,
+    #[cfg(any(test, feature = "root-test-support"))]
+    window_history_reads: std::sync::atomic::AtomicUsize,
+    #[cfg(any(test, feature = "root-test-support"))]
+    window_inventory_reads: std::sync::atomic::AtomicUsize,
     connection_observer: Arc<dyn StoreConnectionObserver>,
     state_path: PathBuf,
 }
@@ -141,6 +166,11 @@ impl Database {
     fn from_connection(conn: Connection, state_path: PathBuf) -> Self {
         Self {
             conn: Mutex::new(conn),
+            history_reader: std::sync::OnceLock::new(),
+            #[cfg(any(test, feature = "root-test-support"))]
+            window_history_reads: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(any(test, feature = "root-test-support"))]
+            window_inventory_reads: std::sync::atomic::AtomicUsize::new(0),
             connection_observer: Arc::new(TracingStoreConnectionObserver),
             state_path,
         }
@@ -148,6 +178,29 @@ impl Database {
 
     pub(crate) fn lock_connection(&self, domain: StoreDomain) -> StoreConnectionGuard<'_> {
         observed_lock_connection(&self.conn, self.connection_observer.as_ref(), domain)
+    }
+
+    pub(crate) fn open_history_reader(&self) -> anyhow::Result<()> {
+        let connection = Connection::open_with_flags(
+            &self.state_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        connection.execute_batch("PRAGMA query_only=ON; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA cache_size=-2048;")?;
+        self.history_reader
+            .set(Mutex::new(connection))
+            .map_err(|_| anyhow::anyhow!("history reader already initialized"))
+    }
+
+    pub(crate) fn lock_history_connection(
+        &self,
+        domain: StoreDomain,
+    ) -> anyhow::Result<history_budget::HistoryConnectionGuard<'_>> {
+        self.history_connection(
+            self.history_reader
+                .get()
+                .expect("history reader initialized before Database::open returns"),
+            domain,
+        )
     }
 
     pub(crate) fn state_path(&self) -> &Path {
@@ -168,6 +221,14 @@ pub enum PairingConsumeResult {
 impl Database {
     /// Test-only access to the underlying connection so tests can assert on
     /// raw storage (e.g. that a plaintext token is never stored as `key_hash`).
+    pub fn window_read_counts_for_test(&self) -> (usize, usize) {
+        use std::sync::atomic::Ordering::Relaxed;
+        (
+            self.window_history_reads.load(Relaxed),
+            self.window_inventory_reads.load(Relaxed),
+        )
+    }
+
     pub fn conn_for_tests(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.conn.lock().unwrap()
     }
@@ -187,6 +248,8 @@ mod agent_wait_tests;
 mod agent_wake_recovery_tests;
 #[cfg(test)]
 mod agent_wake_tests;
+#[cfg(test)]
+mod artifact_handoff_tests;
 #[cfg(test)]
 mod communication_tests;
 #[cfg(test)]

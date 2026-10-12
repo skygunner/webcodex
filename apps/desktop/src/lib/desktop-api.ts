@@ -8,6 +8,7 @@ import type {
   RunnerSettings,
   ComputerPermissions,
   DesktopState,
+  ProjectInspection,
   ProjectSelection,
   TunnelProxyMode,
 } from "../models/topology";
@@ -16,6 +17,10 @@ import type { McpProviderRequest, TunnelProfileAction, TunnelProfileRequest } fr
 import type { CodingAgentRequest, SshRegisterRequest, SshResourcesSnapshot, SshMutationResult, RunnerCapabilityAuthorizationSnapshot } from "../models/runner-capabilities";
 
 export const desktopApi = {
+  setDesktopLocale: (locale: import("../i18n/locale").Locale) => invoke<void>("set_desktop_locale", { locale }),
+  managedInstructionsRead: () => invoke<import("../models/managed-instructions").ManagedInstructionsSnapshot>("managed_instructions_read"),
+  managedInstructionsSave: (expected_revision: string, content: string) => invoke<import("../models/managed-instructions").ManagedInstructionsSnapshot>("managed_instructions_save", { request: { expected_revision, content } }),
+  managedInstructionsEnable: (target: SettingsTarget, expected: RunnerPaths, expected_revision: string) => invoke<DesktopState>("managed_instructions_enable", { request: { target, expected, expected_revision } }),
   prepareProjectUnregister: (project: string) => invoke<import("../models/workspace").UnregisterObservation>("prepare_project_unregister", { project }),
   unregisterProject: ({ target, project, expected_revision }: import("../models/workspace").UnregisterObservation) => invoke<DesktopState>("unregister_project", { request: { target, project, expected_revision, confirmed: true } }),
   desktopBuildInfo: () => invoke<MachineBuildInfo>("get_desktop_build_info"),
@@ -70,6 +75,7 @@ export const desktopApi = {
   refresh: () => invoke<DesktopState>("refresh_runtime_status"),
   observeChatgptActivity: () => invoke<DesktopState>("observe_chatgpt_activity"),
   resumeSavedRuntime: () => invoke<DesktopState>("resume_saved_runtime"),
+  resumeSavedConnections: () => invoke<DesktopState>("resume_saved_connections"),
   updateTunnelProxy: (mode: TunnelProxyMode, customUrl?: string | null) =>
     invoke<DesktopState>("update_tunnel_proxy", {
       request: { mode, customUrl: customUrl ?? null },
@@ -78,11 +84,16 @@ export const desktopApi = {
     invoke<ProjectSelection>("inspect_project", {
       request: { projectPath },
     }),
+  inspectProjectAccess: (projectPath: string) =>
+    invoke<ProjectInspection>("inspect_project_access", {
+      request: { projectPath },
+    }),
   configureLocal: (projectPath?: string) =>
     invoke<DesktopState>("configure_local_setup", {
       request: { projectPath: projectPath ?? null },
     }),
   configureEnvironment: (request: {
+    serviceScope?: "user" | "system";
     mode: "create" | "join";
     serverUrl?: string | null;
     projectPath?: string | null;

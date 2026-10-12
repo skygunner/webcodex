@@ -59,7 +59,7 @@ impl Database {
         status: Option<&str>,
         limit: usize,
     ) -> anyhow::Result<Vec<ActionSessionRecord>> {
-        let conn = self.lock_connection(crate::StoreDomain::Audit);
+        let conn = self.lock_history_connection(crate::StoreDomain::Audit)?;
         let limit = limit.clamp(1, 200) as i64;
         let sql = match status {
             Some(_) => {
@@ -153,8 +153,12 @@ impl Database {
     }
 
     pub fn insert_action_event(&self, event: &ActionEventRecord) -> anyhow::Result<()> {
-        let conn = self.lock_connection(crate::StoreDomain::Audit);
-        insert_action_event_on_conn(&conn, event)?;
+        let mut conn = self.lock_connection(crate::StoreDomain::Audit);
+        let tx = conn.transaction()?;
+        crate::window_inventory::repair_dirty_for_event(&tx, event.client_window_key.as_deref())?;
+        insert_action_event_on_conn(&tx, event)?;
+        crate::window_inventory::index_appended_event(&tx, &event.event_id)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -163,7 +167,7 @@ impl Database {
         session_id: &str,
         limit: usize,
     ) -> anyhow::Result<Vec<ActionEventRecord>> {
-        let conn = self.lock_connection(crate::StoreDomain::Audit);
+        let conn = self.lock_history_connection(crate::StoreDomain::Audit)?;
         list_action_events_on_conn(&conn, session_id, limit)
     }
 
@@ -174,7 +178,7 @@ impl Database {
         session_id: &str,
         limit: usize,
     ) -> anyhow::Result<(usize, Vec<ActionEventRecord>)> {
-        let mut conn = self.lock_connection(crate::StoreDomain::Audit);
+        let mut conn = self.lock_history_connection(crate::StoreDomain::Audit)?;
         let tx = conn.transaction()?;
         let count = count_action_events_on_conn(&tx, session_id)?;
         let events = list_action_events_on_conn(&tx, session_id, limit)?;
@@ -196,6 +200,7 @@ impl Database {
     ) -> anyhow::Result<()> {
         let mut conn = self.lock_connection(crate::StoreDomain::Audit);
         let tx = conn.transaction()?;
+        crate::window_inventory::repair_dirty_for_event(&tx, event.client_window_key.as_deref())?;
         insert_action_event_on_conn(&tx, event)?;
         for link in workflow_links {
             tx.execute(
@@ -211,6 +216,7 @@ impl Database {
                 ],
             )?;
         }
+        crate::window_inventory::index_appended_event(&tx, &event.event_id)?;
         tx.execute(
             "UPDATE action_sessions
              SET updated_at = ?2,

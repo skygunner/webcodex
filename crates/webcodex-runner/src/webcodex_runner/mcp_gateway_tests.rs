@@ -97,7 +97,7 @@ impl Fixture {
         cwd: Option<String>,
         env_from_env: BTreeMap<String, String>,
     ) -> Self {
-        let temp = crate::tests::executable_tempdir();
+        let temp = tempfile::tempdir().unwrap();
         let marker = temp.path().join("marker.log");
         let fake = fake_binary();
         let mut args = vec![scenario.to_string(), marker.to_string_lossy().to_string()];
@@ -180,6 +180,170 @@ fn provider_state(response: McpGatewayResponse) -> McpGatewayProviderState {
         panic!("provider status payload missing: {:?}", response.error);
     };
     state
+}
+
+#[test]
+fn concurrent_provider_call_waits_for_existing_connection() {
+    let fixture = Fixture::new("normal", 2);
+    let provider = fixture.provider();
+    assert!(fixture.list(&provider).error.is_none());
+    let entry = {
+        let state = fixture.manager.state.read().unwrap();
+        Arc::clone(state.providers.get("fake").unwrap())
+    };
+    let occupied = entry.session.lock().unwrap();
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (result_tx, result_rx) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            started_tx.send(()).unwrap();
+            result_tx.send(fixture.call(&provider)).unwrap();
+        });
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let early = result_rx.recv_timeout(Duration::from_millis(50));
+        drop(occupied);
+        assert!(
+            matches!(early, Err(std::sync::mpsc::RecvTimeoutError::Timeout)),
+            "overlapping call must wait, got {early:?}"
+        );
+        let completed = result_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(completed.error.is_none(), "{completed:?}");
+        assert_eq!(completed.dispatch_state, McpGatewayDispatchState::Completed);
+    });
+    assert_eq!(fixture.marker_count("call"), 1);
+    assert_eq!(fixture.marker_count("start"), 1);
+}
+
+#[test]
+fn provider_admission_timeout_preserves_connection_and_does_not_dispatch() {
+    let fixture = Fixture::new("normal", 2);
+    let provider = fixture.provider();
+    assert!(fixture.list(&provider).error.is_none());
+    let entry = {
+        let state = fixture.manager.state.read().unwrap();
+        Arc::clone(state.providers.get("fake").unwrap())
+    };
+    let occupied = entry.session.lock().unwrap();
+    std::thread::scope(|scope| {
+        let result = scope
+            .spawn(|| {
+                entry.with_connection(
+                    Duration::from_millis(35),
+                    || Ok(()),
+                    |_, _| -> Result<(), ProviderFailure> { panic!("must not dispatch") },
+                )
+            })
+            .join()
+            .unwrap();
+        let error = result.unwrap_err();
+        assert_eq!(error.code, "provider_busy");
+        assert_eq!(error.dispatch_state, McpGatewayDispatchState::NotStarted);
+        assert!(!error.fatal);
+        let response = provider_failure_response(error);
+        assert_eq!(response.error.unwrap().code, "provider_busy");
+    });
+    assert!(occupied.is_some());
+    drop(occupied);
+    assert_eq!(fixture.marker_count("call"), 0);
+    assert!(fixture.call(&provider).error.is_none());
+    assert_eq!(fixture.marker_count("call"), 1);
+    assert_eq!(fixture.marker_count("start"), 1);
+}
+
+#[test]
+fn queued_provider_call_does_not_dispatch_after_replacement_or_stop() {
+    for replace in [true, false] {
+        let fixture = Fixture::new("normal", 2);
+        let provider = fixture.provider();
+        assert!(fixture.list(&provider).error.is_none());
+        let entry = {
+            let state = fixture.manager.state.read().unwrap();
+            Arc::clone(state.providers.get("fake").unwrap())
+        };
+        let occupied = entry.session.lock().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| tx.send(fixture.call(&provider)).unwrap());
+            assert!(matches!(
+                rx.recv_timeout(Duration::from_millis(50)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ));
+            if replace {
+                fixture
+                    .manager
+                    .apply_config_candidate(&replacement_config(
+                        &fixture,
+                        "fake",
+                        "Replacement",
+                        "normal",
+                        2,
+                    ))
+                    .unwrap();
+            } else {
+                fixture.manager.stopping.store(true, Ordering::SeqCst);
+            }
+            let response = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+            assert_eq!(response.dispatch_state, McpGatewayDispatchState::NotStarted);
+            assert_eq!(
+                response.error.unwrap().code,
+                if replace {
+                    "stale_provider"
+                } else {
+                    "runner_stopping"
+                }
+            );
+            drop(occupied);
+        });
+        assert_eq!(fixture.marker_count("call"), 0);
+        assert_eq!(fixture.marker_count("start"), 1);
+    }
+}
+
+#[test]
+fn provider_effect_is_fenced_when_replaced_or_stopped_during_schema_preflight() {
+    for replace in [true, false] {
+        let fixture = Fixture::new("slow_second_list", 2);
+        let provider = fixture.provider();
+        assert!(fixture.list(&provider).error.is_none());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| tx.send(fixture.call(&provider)).unwrap());
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while fixture.marker_count("preflight-wait") == 0 {
+                assert!(
+                    Instant::now() < deadline,
+                    "provider call never entered schema preflight"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            if replace {
+                fixture
+                    .manager
+                    .apply_config_candidate(&replacement_config(
+                        &fixture,
+                        "fake",
+                        "Replacement",
+                        "normal",
+                        2,
+                    ))
+                    .unwrap();
+            } else {
+                fixture.manager.stopping.store(true, Ordering::SeqCst);
+            }
+            let response = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert_eq!(response.dispatch_state, McpGatewayDispatchState::NotStarted);
+            assert_eq!(
+                response.error.unwrap().code,
+                if replace {
+                    "stale_provider"
+                } else {
+                    "runner_stopping"
+                }
+            );
+        });
+        assert_eq!(fixture.marker_count("call"), 0);
+        assert_eq!(fixture.marker_count("start"), 1);
+    }
 }
 
 #[test]
@@ -598,76 +762,77 @@ fn tools_call_sends_only_gateway_owned_name_and_arguments() {
 
 #[test]
 fn provider_execution_context_is_explicit_cleared_and_private() {
-    let _guard = crate::tests::test_env_lock();
-    let _env = crate::tests::EnvGuard::new()
+    crate::tests::IsolatedEnv::new()
         .set("GITHUB_TOKEN", "github-provider-secret-value")
         .set("WEBCODEX_MCP_MAPPED_SOURCE", "mapped-provider-secret-value")
-        .set("WEBCODEX_MCP_UNLISTED", "must-not-reach-provider");
-    let cwd = crate::tests::executable_tempdir();
-    let fixture = Fixture::with_execution_context(
-        "execution_context",
-        TEST_PARALLEL_TIMEOUT_FLOOR_SECS,
-        None,
-        Some(cwd.path().to_string_lossy().into_owned()),
-        BTreeMap::from([
-            ("GITHUB_TOKEN".to_string(), "GITHUB_TOKEN".to_string()),
-            (
-                "WEBCODEX_MCP_MAPPED_CHILD".to_string(),
-                "WEBCODEX_MCP_MAPPED_SOURCE".to_string(),
-            ),
-        ]),
-    );
-    let provider = fixture.provider();
-    let inventory = serde_json::to_string(&fixture.manager.provider_inventory()).unwrap();
-    assert!(!inventory.contains("github-provider-secret-value"));
-    assert!(!inventory.contains("mapped-provider-secret-value"));
+        .set("WEBCODEX_MCP_UNLISTED", "must-not-reach-provider")
+        .run("inherited", || {
+            let cwd = tempfile::tempdir().unwrap();
+            let fixture = Fixture::with_execution_context(
+                "execution_context",
+                TEST_PARALLEL_TIMEOUT_FLOOR_SECS,
+                None,
+                Some(cwd.path().to_string_lossy().into_owned()),
+                BTreeMap::from([
+                    ("GITHUB_TOKEN".to_string(), "GITHUB_TOKEN".to_string()),
+                    (
+                        "WEBCODEX_MCP_MAPPED_CHILD".to_string(),
+                        "WEBCODEX_MCP_MAPPED_SOURCE".to_string(),
+                    ),
+                ]),
+            );
+            let provider = fixture.provider();
+            let inventory = serde_json::to_string(&fixture.manager.provider_inventory()).unwrap();
+            assert!(!inventory.contains("github-provider-secret-value"));
+            assert!(!inventory.contains("mapped-provider-secret-value"));
 
-    let response = fixture.list(&provider);
-    assert!(response.error.is_none(), "{:?}", response.error);
-    for marker in [
-        "github-env-ok",
-        "mapped-env-ok",
-        "unlisted-env-cleared",
-        "path-cleared",
-        "cwd-ok",
-    ] {
-        assert_eq!(fixture.marker_count(marker), 1, "missing marker {marker}");
-    }
-    #[cfg(windows)]
-    assert_eq!(
-        fixture.marker_count("systemroot-bootstrap-ok"),
-        1,
-        "Windows MCP providers need the minimal SYSTEMROOT bootstrap after env_clear()"
-    );
-    let encoded = serde_json::to_string(&response).unwrap();
-    assert!(!encoded.contains("github-provider-secret-value"));
-    assert!(!encoded.contains("mapped-provider-secret-value"));
-    assert!(!encoded.contains("must-not-reach-provider"));
+            let response = fixture.list(&provider);
+            assert!(response.error.is_none(), "{:?}", response.error);
+            for marker in [
+                "github-env-ok",
+                "mapped-env-ok",
+                "unlisted-env-cleared",
+                "path-cleared",
+                "cwd-ok",
+            ] {
+                assert_eq!(fixture.marker_count(marker), 1, "missing marker {marker}");
+            }
+            #[cfg(windows)]
+            assert_eq!(
+                fixture.marker_count("systemroot-bootstrap-ok"),
+                1,
+                "Windows MCP providers need the minimal SYSTEMROOT bootstrap after env_clear()"
+            );
+            let encoded = serde_json::to_string(&response).unwrap();
+            assert!(!encoded.contains("github-provider-secret-value"));
+            assert!(!encoded.contains("mapped-provider-secret-value"));
+            assert!(!encoded.contains("must-not-reach-provider"));
+        });
 }
-
 #[test]
 fn missing_mapped_source_fails_before_provider_spawn() {
-    let _guard = crate::tests::test_env_lock();
-    let _env = crate::tests::EnvGuard::new().remove("WEBCODEX_MCP_TEST_MISSING_SOURCE");
-    let fixture = Fixture::with_execution_context(
-        "normal",
-        2,
-        None,
-        None,
-        BTreeMap::from([(
-            "PROVIDER_CREDENTIAL".to_string(),
-            "WEBCODEX_MCP_TEST_MISSING_SOURCE".to_string(),
-        )]),
-    );
-    let response = fixture.list(&fixture.provider());
-    assert_eq!(response.dispatch_state, McpGatewayDispatchState::NotStarted);
-    assert_eq!(
-        response.error.as_ref().unwrap().code,
-        "provider_env_missing"
-    );
-    assert_eq!(fixture.marker_count("start"), 0);
+    crate::tests::IsolatedEnv::new()
+        .remove("WEBCODEX_MCP_TEST_MISSING_SOURCE")
+        .run("inherited", || {
+            let fixture = Fixture::with_execution_context(
+                "normal",
+                2,
+                None,
+                None,
+                BTreeMap::from([(
+                    "PROVIDER_CREDENTIAL".to_string(),
+                    "WEBCODEX_MCP_TEST_MISSING_SOURCE".to_string(),
+                )]),
+            );
+            let response = fixture.list(&fixture.provider());
+            assert_eq!(response.dispatch_state, McpGatewayDispatchState::NotStarted);
+            assert_eq!(
+                response.error.as_ref().unwrap().code,
+                "provider_env_missing"
+            );
+            assert_eq!(fixture.marker_count("start"), 0);
+        });
 }
-
 #[test]
 fn sensitive_runner_env_mapping_is_blocked_before_provider_spawn() {
     let fixture = Fixture::with_execution_context(
@@ -694,7 +859,7 @@ fn sensitive_runner_env_mapping_is_blocked_before_provider_spawn() {
 
 #[test]
 fn unavailable_provider_cwd_fails_before_provider_spawn() {
-    let cwd_parent = crate::tests::executable_tempdir();
+    let cwd_parent = tempfile::tempdir().unwrap();
     let missing = cwd_parent.path().join("missing-provider-cwd");
     let fixture = Fixture::with_execution_context(
         "normal",

@@ -29,6 +29,7 @@ import { useWindowWorkspace } from "../state/useWindowWorkspace.js";
 import { WorkSurfaceSwitch, type WorkSurface } from "./GoalWorkbench.js";
 import { WindowCollaboration } from "./WindowCollaboration.js";
 import { WindowActivityFeed } from "./WindowActivityFeed.js";
+import { TraceSearch } from "./TraceSearch.js";
 
 
 type Props = {
@@ -62,15 +63,15 @@ function windowObservedAt(window: WindowSummary): number {
   return window.last_seen_at_ms || window.last_tool_call_at_ms || window.last_meaningful_activity_at_ms || 0;
 }
 
-function projectFor(projects: ProjectRow[], id?: string): ProjectRow | undefined {
-  return id ? projects.find((project) => project.id === id) : undefined;
+function projectFor(index: ReadonlyMap<string, ProjectRow>, id?: string): ProjectRow | undefined {
+  return id ? index.get(id) : undefined;
 }
 
 function peerId(windowKey: string): string {
   return windowKey.length >= 32 ? "wc_peer_" + windowKey.slice(0, 32) : windowKey;
 }
 
-function buildProjectFamilies(projects: ProjectRow[], windows: WindowSummary[]): ProjectFamily[] {
+function buildProjectFamilies(projects: ProjectRow[], projectIndex: ReadonlyMap<string, ProjectRow>, windows: WindowSummary[]): ProjectFamily[] {
   const groups = new Map<string, ProjectRow[]>();
   for (const project of projects) {
     const id = projectFamilyId(project);
@@ -79,10 +80,10 @@ function buildProjectFamilies(projects: ProjectRow[], windows: WindowSummary[]):
     groups.set(id, rows);
   }
   const families = [...groups.entries()].map(([id, rows]) => {
-    const representative = rows.find((row) => row.id === id) || rows[0];
+    const representative = projectIndex.get(id) || rows[0];
     return {
       id,
-      label: projectFamilyName(representative, projects),
+      label: projectFamilyName(representative, projectIndex),
       runner: representative.client_id,
       projectIds: new Set(rows.map((row) => row.id)),
       windowCount: 0,
@@ -92,7 +93,7 @@ function buildProjectFamilies(projects: ProjectRow[], windows: WindowSummary[]):
   });
   const byId = new Map(families.map((family) => [family.id, family]));
   for (const window of windows) {
-    const project = projectFor(projects, window.last_project);
+    const project = projectFor(projectIndex, window.last_project);
     if (!project) continue;
     const family = byId.get(projectFamilyId(project));
     if (!family) continue;
@@ -120,25 +121,39 @@ export function WindowWorkbench({
   onRequestedWindowConsumed,
 }: Props) {
   const t = (value: string) => translate(value, language);
-  const windows = useWindowWorkspace(client, true, onUnauthorized, { refreshMs: 3_000, loadDetail: true, initialWindowKey: requestedWindowKey });
+  const projectIndex = useMemo(() => new Map(projects.map(project => [project.id, project])), [projects]);
+  const [projectFamily, setProjectFamily] = useState("");
+  const selectedProjects = useMemo(() => projectFamily ? projects.filter(project => projectFamilyId(project) === projectFamily).map(project => project.id) : undefined, [projects, projectFamily]);
+  const windows = useWindowWorkspace(client, !selectedProjects || selectedProjects.length > 0, onUnauthorized, { refreshMs: 3_000, loadDetail: true, initialWindowKey: requestedWindowKey, projects: selectedProjects });
   const listRef = useRef<HTMLDivElement | null>(null);
   const selectedRowRef = useRef<HTMLButtonElement | null>(null);
   const [search, setSearch] = useState("");
-  const [projectFamily, setProjectFamily] = useState("");
   const [centerTab, setCenterTab] = useState<"window" | "collaboration">("window");
   const [selectedSessionId, setSelectedSessionId] = useState("");
-  const families = useMemo(() => buildProjectFamilies(projects, windows.windows), [projects, windows.windows]);
+  const historicalFamilies = useMemo(() => buildProjectFamilies(projects, projectIndex, windows.historicalWindows), [projects, projectIndex, windows.historicalWindows]);
+  const familyById = useMemo(() => new Map(historicalFamilies.map(family => [family.id, family])), [historicalFamilies]);
+  const families = useMemo(() => {
+    const active = new Map<string, number>();
+    for (const window of windows.windows) {
+      const project = projectFor(projectIndex, window.last_project);
+      if (project && window.active_count > 0) {
+        const id = projectFamilyId(project); active.set(id, (active.get(id) || 0) + 1);
+      }
+    }
+    return historicalFamilies.map(family => ({ ...family, activeWindowCount: active.get(family.id) || 0 }));
+  }, [historicalFamilies, projectIndex, windows.windows]);
+  const windowIndex = useMemo(() => new Map(windows.windows.map(window => [window.client_window_key, window])), [windows.windows]);
 
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
-    const family = families.find((row) => row.id === projectFamily);
+    const family = familyById.get(projectFamily);
     return windows.windows
       .filter((window) => {
         if (family && (!window.last_project || !family.projectIds.has(window.last_project))) return false;
         if (!query) return true;
-        const project = projectFor(projects, window.last_project);
+        const project = projectFor(projectIndex, window.last_project);
         const sourceId = project ? sourceProjectRuntimeId(project) : undefined;
-        const source = projectFor(projects, sourceId);
+        const source = projectFor(projectIndex, sourceId);
         const values = [
           window.client_window_key,
           peerId(window.client_window_key),
@@ -159,7 +174,7 @@ export function WindowWorkbench({
         Number(b.active_count > 0) - Number(a.active_count > 0) ||
         windowObservedAt(b) - windowObservedAt(a) ||
         a.client_window_key.localeCompare(b.client_window_key));
-  }, [families, projectFamily, projects, search, windows.windows]);
+  }, [familyById, projectFamily, projectIndex, search, windows.windows]);
 
   const detail = windows.detail;
   useEffect(() => {
@@ -179,11 +194,11 @@ export function WindowWorkbench({
     setSelectedSessionId(requestedSessionId || "");
     onRequestedWindowConsumed?.();
   }, [onRequestedWindowConsumed, requestedWindowKey, requestedSessionId, windows.selectedKey, windows.select]);
-  const selectedSummary = windows.windows.find((row) => row.client_window_key === windows.selectedKey);
+  const selectedSummary = windowIndex.get(windows.selectedKey);
   const activeRequest = detail?.active_requests.slice().sort((a, b) => b.started_at_ms - a.started_at_ms)[0];
   const currentProjectId = activeRequest?.project || selectedSummary?.last_project || detail?.activity[0]?.project;
-  const currentProject = projectFor(projects, currentProjectId);
-  const sourceProject = currentProject ? projectFor(projects, sourceProjectRuntimeId(currentProject)) : undefined;
+  const currentProject = projectFor(projectIndex, currentProjectId);
+  const sourceProject = currentProject ? projectFor(projectIndex, sourceProjectRuntimeId(currentProject)) : undefined;
   const currentActivity = activeRequest?.tool_name ||
     selectedSummary?.last_activity_name ||
     detail?.activity[0]?.tool_name ||
@@ -192,14 +207,14 @@ export function WindowWorkbench({
   const firstObservedAt = detail?.first_seen_at_ms || selectedSummary?.first_seen_at_ms;
   const isActive = (detail?.active_count ?? selectedSummary?.active_count ?? 0) > 0;
   const currentProjectName = currentProject
-    ? projectFamilyName(sourceProject || currentProject, projects)
+    ? projectFamilyName(sourceProject || currentProject, projectIndex)
     : undefined;
   const currentWorkspaceName = currentProject?.lineage
     ? projectVariantLabel(currentProject)
     : currentProjectName;
   const currentMachine = currentProject?.client_id;
   const currentDirectory = displayProjectPath(currentProject?.path);
-  const currentProjectAddress = currentProject?.id;
+  const currentProjectAddress = currentProjectId;
   const hasSelectedWindow = Boolean(selectedSummary || detail);
   const visibleActiveCount = detail?.active_count ?? selectedSummary?.active_count ?? 0;
   const visibleActivityCount = (detail?.activity_returned || 0) + visibleActiveCount;
@@ -228,12 +243,12 @@ export function WindowWorkbench({
   }, [windows.selectedKey, selectedIsPinned, Boolean(selectedNavigationRow)]);
 
   const renderWindow = (window: WindowNavigationRow) => {
-    const project = projectFor(projects, window.last_project);
-    const source = project ? projectFor(projects, sourceProjectRuntimeId(project)) : undefined;
+    const project = projectFor(projectIndex, window.last_project);
+    const source = project ? projectFor(projectIndex, sourceProjectRuntimeId(project)) : undefined;
     const activity = window.last_activity_name || t("Observed Window");
     const observedAt = window.last_meaningful_activity_at_ms || window.last_seen_at_ms;
     const projectLabel = project
-      ? projectFamilyName(source || project, projects)
+      ? projectFamilyName(source || project, projectIndex)
       : window.last_project || t("Project information unavailable");
     const workspaceLabel = project?.lineage ? projectVariantLabel(project) : projectLabel;
     return (
@@ -305,6 +320,7 @@ export function WindowWorkbench({
           />
         </div>
         <div className="work-list-scroll" ref={listRef}>
+          <TraceSearch client={client} language={language} onSelectWindow={windows.select} />
           {selectedIsPinned && <div className="window-current-selection">
             <div className="window-list-summary"><span>{t("Current Window")}</span></div>
             {selectedNavigationRow ? renderWindow(selectedNavigationRow) : (
@@ -328,7 +344,7 @@ export function WindowWorkbench({
           {windows.availability === "stale" && <div className="inventory-note">{t("Window activity refresh failed; showing previous observations.")}</div>}
           {(windows.availability === "error" || windows.availability === "denied") && <div className="empty-inline">{t("Window activity unavailable")}</div>}
           {windows.availability === "available" && !filtered.length && <div className="empty-panel"><Monitor size={18} /><strong>{t("No matching Windows")}</strong></div>}
-          {windows.truncated && <div className="inventory-note">{t("Window inventory is bounded; not all observed Windows are loaded.")}</div>}
+          {windows.truncated && <div className="inventory-note">{t("Window inventory is bounded; not all observed Windows are loaded.")} <button type="button" className="text-button" disabled={windows.loadingMore} onClick={windows.loadMore}>{t("Load more")} · {windows.windows.length} / {windows.total}</button></div>}
         </div>
       </aside>
 
@@ -345,47 +361,6 @@ export function WindowWorkbench({
                   )}
                 </div>
                 <h2>{currentWorkspaceName || currentActivity || t("Window")}</h2>
-                <div className="window-header-facts">
-                  <span className="window-header-fact" title={windows.selectedKey} data-testid="current-window-identity">
-                    <Monitor size={14} /><small>{t("Window")}</small>
-                    <CopyIdentity key={windows.selectedKey} value={windows.selectedKey} label={t("Window")} language={language} />
-                  </span>
-                  {currentMachine && (
-                    <span className="window-header-fact" title={currentMachine}>
-                      <Server size={14} />
-                      <small>{t("Machine")}</small>
-                      <strong>{currentMachine}</strong>
-                    </span>
-                  )}
-                  {currentDirectory && (
-                    <span className="window-header-fact" title={currentDirectory}>
-                      <FolderOpen size={14} />
-                      <small>{t("Directory")}</small>
-                      <strong>{currentDirectory}</strong>
-                    </span>
-                  )}
-                  {currentProjectAddress && (
-                    <span className="window-header-fact" title={currentProjectAddress}>
-                      <Box size={14} />
-                      <small>{t("Project address")}</small>
-                      <strong>{currentProjectAddress}</strong>
-                    </span>
-                  )}
-                  {firstObservedAt && (
-                    <span className="window-header-fact" title={absoluteTime(firstObservedAt)}>
-                      <Clock3 size={14} />
-                      <small>{t("First active")}</small>
-                      <strong>{absoluteTime(firstObservedAt)}</strong>
-                    </span>
-                  )}
-                  {currentActivity && (
-                    <span className="window-header-fact window-header-activity">
-                      <CircleDot size={12} />
-                      <small>{t("Latest activity")}</small>
-                      <strong>{currentActivity}{lastObservedAt ? " · " + clockTime(lastObservedAt) : ""}</strong>
-                    </span>
-                  )}
-                </div>
               </div>
               <span className={"quiet-pill " + (isActive ? "running" : "")}>
                 <CircleDot size={11} />
@@ -393,6 +368,50 @@ export function WindowWorkbench({
                   ? visibleActiveCount + " " + t("active")
                   : t("Idle") + " · " + relativeTime(lastObservedAt)}
               </span>
+              <div className="window-header-facts">
+                <span className="window-header-fact" title={windows.selectedKey} data-testid="current-window-identity">
+                  <Monitor size={14} /><small>{t("Window")}</small>
+                  <CopyIdentity key={windows.selectedKey} value={windows.selectedKey} label={t("Window")} language={language} />
+                </span>
+                {currentMachine && (
+                  <span className="window-header-fact" title={currentMachine}>
+                    <Server size={14} />
+                    <small>{t("Machine")}</small>
+                    <CopyIdentity key={currentMachine} value={currentMachine} label={t("Machine")} language={language} />
+                  </span>
+                )}
+                {currentDirectory && (
+                  <span className="window-header-fact" title={currentDirectory}>
+                    <FolderOpen size={14} />
+                    <small>{t("Directory")}</small>
+                    <CopyIdentity key={currentDirectory} value={currentDirectory} label={t("Directory")} language={language} />
+                  </span>
+                )}
+                {currentProjectAddress && (
+                  <span className="window-header-fact" title={currentProjectAddress}>
+                    <Box size={14} />
+                    <small>{t("Project address")}</small>
+                    <CopyIdentity key={currentProjectAddress} value={currentProjectAddress} label={t("Project address")} language={language} />
+                  </span>
+                )}
+              </div>
+              <div className="window-header-timeline">
+                {firstObservedAt && (
+                  <span className="window-header-event" title={absoluteTime(firstObservedAt)}>
+                    <Clock3 size={14} />
+                    <small>{t("First active")}</small>
+                    <time>{absoluteTime(firstObservedAt)}</time>
+                  </span>
+                )}
+                {currentActivity && (
+                  <span className="window-header-event">
+                    <CircleDot size={12} />
+                    <small>{t("Latest activity")}</small>
+                    <strong>{currentActivity}</strong>
+                    {lastObservedAt && <time title={absoluteTime(lastObservedAt)}>{clockTime(lastObservedAt)}</time>}
+                  </span>
+                )}
+              </div>
             </header>
 
             <div className="session-view-tabs window-center-tabs" role="tablist" aria-label={t("Window views")}>
@@ -436,6 +455,7 @@ export function WindowWorkbench({
               )}
               {detail ? (
                 <WindowActivityFeed
+                  client={client}
                   key={detail.client_window_key}
                   detail={detail}
                   projects={projects}

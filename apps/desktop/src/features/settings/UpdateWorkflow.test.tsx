@@ -132,6 +132,26 @@ describe("verified update presentation", () => {
     expect(screen.queryByText(/installed successfully/i)).not.toBeInTheDocument();
   });
 
+  it.each([false, true])("shows recovery without a pending record despite a snoozed or absent release: %s", hasRelease => {
+    const value = updates(download({ phase: "failed", version: null, error_kind: "recovery_required" }));
+    value.status!.update_available = false; value.status!.show_banner = false;
+    if (!hasRelease) value.status!.latest = null;
+    const view = render(wrap(<UpdateBanner updates={value} />));
+    expect(screen.getByText(/previous installation needs attention/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Install update" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Download update" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Remind me later" })).not.toBeInTheDocument();
+    view.rerender(wrap(<AboutPanel state={{ binaries: null } as unknown as DesktopState} updates={value} />));
+    expect(screen.getByText(/previous installation needs attention/)).toBeInTheDocument();
+    expect(value.status!.download.pending_install).toBe(false);
+  });
+
+  it("recovery never offers installation even if a prior ready projection remains", () => {
+    render(wrap(<UpdateWorkflow updates={updates(download({ phase: "ready_to_install", can_install: true, error_kind: "recovery_required" }))} />));
+    expect(screen.getByText(/previous installation needs attention/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Install update" })).not.toBeInTheDocument();
+  });
+
   it("About exposes the existing persisted auto-download preference without opting into installation", () => {
     const value = updates();
     render(wrap(<AboutPanel state={{ binaries: null } as unknown as DesktopState} updates={value} />));
@@ -156,4 +176,22 @@ it("background discovery and verified progress never invoke the installer; only 
   expect(api.installVerifiedUpdate).not.toHaveBeenCalled();
   await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Install and close WebCodex" })); });
   expect(api.installVerifiedUpdate).toHaveBeenCalledExactlyOnceWith("0.5.0", true);
+});
+
+it("reports a failed preference save when no newer release is available", async () => {
+  vi.useFakeTimers();
+  const current = status(download({ phase: "idle", version: null }));
+  current.state = "up_to_date"; current.update_available = false; current.show_banner = false;
+  api.checkForUpdates.mockResolvedValue(current); api.updateDownloadState.mockResolvedValue(current.download);
+  api.setAutomaticUpdateDownload.mockRejectedValue(new Error("disk unavailable"));
+  function Harness() {
+    const value = useRuntimeUpdates(true);
+    return <AboutPanel state={{ binaries: null } as unknown as DesktopState} updates={value} />;
+  }
+  render(wrap(<Harness />));
+  await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+  await act(async () => { fireEvent.click(screen.getByRole("checkbox", { name: "Automatically download stable updates" })); });
+  expect(screen.getByText("The update action could not be completed. Review the update status.")).toBeInTheDocument();
+  expect(screen.getByRole("checkbox", { name: "Automatically download stable updates" })).toBeChecked();
+  expect(api.installVerifiedUpdate).not.toHaveBeenCalled();
 });

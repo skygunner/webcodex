@@ -5,9 +5,11 @@ mod connection_id;
 mod connections;
 mod deadline;
 mod desktop_data_dir;
+mod desktop_locale;
 mod desktop_shell;
 mod diagnostics;
 mod error;
+mod managed_instructions;
 mod mcp_providers;
 mod models;
 mod operation;
@@ -57,6 +59,9 @@ pub fn run() {
                 }
             );
             let resource_dir = app.path().resource_dir()?;
+            app.manage(desktop_locale::DesktopLocaleState::load(
+                &data_dir.effective,
+            ));
             app.manage(AppState::new_resolved(data_dir, resource_dir)?);
             app.manage(desktop_shell::DesktopShellState::default());
             app.manage(tray::TrayPresentationCache::default());
@@ -71,6 +76,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_desktop_state,
+            commands::set_desktop_locale,
             commands::get_runtime_settings,
             commands::get_desktop_build_info,
             commands::check_for_updates,
@@ -95,6 +101,9 @@ pub fn run() {
             commands::get_computer_permissions,
             commands::request_computer_permission,
             commands::get_runner_settings,
+            commands::managed_instructions_read,
+            commands::managed_instructions_save,
+            commands::managed_instructions_enable,
             commands::add_runner_plugin,
             commands::update_runner_settings,
             commands::update_runner_allowed_roots,
@@ -105,6 +114,7 @@ pub fn run() {
             commands::refresh_runtime_status,
             commands::observe_chatgpt_activity,
             commands::resume_saved_runtime,
+            commands::resume_saved_connections,
             commands::update_tunnel_proxy,
             commands::update_tunnel_config,
             commands::save_tunnel_profile,
@@ -119,6 +129,7 @@ pub fn run() {
             commands::runner_capability_authorization,
             commands::tunnel_profile_action,
             commands::inspect_project,
+            commands::inspect_project_access,
             commands::configure_local_setup,
             commands::configure_environment,
             commands::environment_service_action,

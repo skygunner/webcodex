@@ -180,12 +180,29 @@ pub fn structured_validation_target_identity(
                 return None;
             }
             let packages = normalized_go_test_target_packages(obj.get("packages"))?;
-            serde_json::json!({
+            if obj.get("filter_present").and_then(Value::as_bool) == Some(true)
+                && obj.get("filter").is_none()
+            {
+                return None;
+            }
+            let filter = match obj.get("filter") {
+                None | Some(Value::Null) => None,
+                Some(value) => {
+                    crate::runner_protocol::normalize_go_test_filter(value.as_str()?).ok()?
+                }
+            };
+            let mut semantic = serde_json::json!({
                 "tool": tool_name,
                 "kind": "test",
                 "cwd": cwd,
                 "packages": packages,
-            })
+            });
+            // Preserve all unfiltered identities exactly, including omitted or
+            // empty filters. Count postconditions never change executable target.
+            if let Some(filter) = filter {
+                semantic["filter"] = Value::String(filter);
+            }
+            semantic
         }
         ToolValidationIdentityKind::GoVet => {
             if obj.get("packages_present").and_then(Value::as_bool) == Some(true)
@@ -219,6 +236,45 @@ pub fn structured_validation_target_identity(
     // hashing while preserving the existing sorted-key identity contract.
     let encoded = serde_json::to_vec(&canonicalize_json_value(semantic)).ok()?;
     let digest = format!("{:x}", Sha256::digest(encoded));
+    Some(format!(
+        "{STRUCTURED_VALIDATION_TARGET_PREFIX}{}",
+        &digest[..VALIDATION_IDENTITY_HEX_LEN]
+    ))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StructuredValidationExecutionContext {
+    GoProjectSingleModuleV1,
+    ProjectDependencyLockedV1,
+}
+
+impl StructuredValidationExecutionContext {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::GoProjectSingleModuleV1 => "go_project_single_module_v1",
+            Self::ProjectDependencyLockedV1 => "project_dependency_locked_v1",
+        }
+    }
+}
+
+/// Derive a distinct durable target identity when the same structured argv
+/// executes under materially different Runner-owned semantics. Existing target
+/// identities remain byte-for-byte unchanged when no context is applied.
+pub fn contextualize_structured_validation_target_identity(
+    identity: &str,
+    context: StructuredValidationExecutionContext,
+) -> Option<String> {
+    if !is_structured_validation_target_identity(identity) {
+        return None;
+    }
+    let context = context.as_str();
+    let mut hasher = Sha256::new();
+    hasher.update(b"webcodex-validation-target-context-v1\0");
+    hasher.update((identity.len() as u64).to_le_bytes());
+    hasher.update(identity.as_bytes());
+    hasher.update((context.len() as u64).to_le_bytes());
+    hasher.update(context.as_bytes());
+    let digest = format!("{:x}", hasher.finalize());
     Some(format!(
         "{STRUCTURED_VALIDATION_TARGET_PREFIX}{}",
         &digest[..VALIDATION_IDENTITY_HEX_LEN]
@@ -365,6 +421,43 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn execution_context_derives_a_distinct_stable_target_identity() {
+        let base = structured_validation_target_identity(
+            ToolValidationIdentityKind::GoTest,
+            &serde_json::json!({"cwd": ".", "packages": ["./..."]}),
+        )
+        .unwrap();
+        assert_eq!(base, "target:53578a0709b0ce549e125eb7");
+        let contextual = contextualize_structured_validation_target_identity(
+            &base,
+            StructuredValidationExecutionContext::GoProjectSingleModuleV1,
+        )
+        .unwrap();
+        assert_eq!(contextual, "target:44a5798459663307bb9b3ea8");
+        assert_ne!(contextual, base);
+        let dependency_locked = contextualize_structured_validation_target_identity(
+            &base,
+            StructuredValidationExecutionContext::ProjectDependencyLockedV1,
+        )
+        .unwrap();
+        assert_ne!(dependency_locked, base);
+        assert_ne!(dependency_locked, contextual);
+        assert_eq!(
+            dependency_locked,
+            contextualize_structured_validation_target_identity(
+                &base,
+                StructuredValidationExecutionContext::ProjectDependencyLockedV1,
+            )
+            .unwrap()
+        );
+        assert!(contextualize_structured_validation_target_identity(
+            "target:short",
+            StructuredValidationExecutionContext::GoProjectSingleModuleV1,
+        )
+        .is_none());
     }
 
     #[test]

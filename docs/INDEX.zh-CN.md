@@ -11,6 +11,7 @@
 - [完整使用指南](PERSONAL_SETUP.zh-CN.md) —— CLI、已有 Server、Linux 与高级普通 Server + Runner 配置
 - [AI 辅助接入](AI_ONBOARDING.zh-CN.md) —— 让 AI 帮你按普通用户语言完成配置
 - [MCP](MCP.zh-CN.md) —— ChatGPT、Claude 与其他 MCP 客户端
+- [任务接续](SESSION_CONTINUITY.zh-CN.md) —— 保存上下文、跨账号或窗口继续，以及委派 API 模型评审
 
 ## 我只想先试几分钟
 
@@ -45,6 +46,7 @@
 ## 我想参与开发或发布
 
 - [Desktop 开发与打包](DESKTOP_DEVELOPMENT.zh-CN.md) —— 从源码运行 Desktop，并本地构建/验证 Windows 与 macOS 原生安装包
+- [赞助与项目支持](SPONSORSHIP.zh-CN.md) —— 社区赞助、基础设施支持、项目合作与展示原则
 
 下面 `docs/agent/` 中的页面属于 maintainer/internal contract。它们会有意保留
 protocol field、兼容名称和实现 invariant；普通用户不需要为了使用 WebCodex 而学习

@@ -20,8 +20,9 @@ use webcodex_runner::{cwd_allowed, PreparedShellProfileCache};
 use runner_operation::RunnerFileOperation;
 #[cfg(test)]
 use runner_operation::RunnerOperation;
+use webcodex_build_info as build_info;
 use webcodex_core::{
-    apply_edits_shared, apply_patch_shared, artifact_policy, build_info, lsp_bridge, mcp_gateway,
+    apply_edits_shared, apply_patch_shared, artifact_policy, lsp_bridge, mcp_gateway,
     runner_operation, runner_protocol, validation_bridge,
 };
 use webcodex_runner_config as runner_config;
@@ -108,6 +109,9 @@ enum RunnerCliAction {
         stop_on_stdin_eof: bool,
         computer_session_dir: Option<PathBuf>,
     },
+    CheckConfig {
+        config_path: PathBuf,
+    },
     ComputerSessionHelper {
         session_state_dir: PathBuf,
     },
@@ -124,6 +128,7 @@ fn usage() -> &'static str {
        -h, --help                 Print help and exit\n\
        -V, --version              Print version and exit\n\
        -c, --config PATH          Runner config path for normal runtime\n\
+       --check-config            Validate configuration without starting a Runner\n\
        --profile NAME             Client config profile for default config path\n\
        --once                     Complete one successful poll, then exit (polling transport)\n\
        --stop-on-stdin-eof        Stop when the invoking parent closes stdin\n\n\
@@ -220,6 +225,7 @@ where
     let legacy_agent_config_env = std::env::var("WEBCODEX_AGENT_CONFIG").ok();
     let mut config_path: Option<PathBuf> = None;
     let mut profile: Option<String> = None;
+    let mut check_config = false;
     let mut once = false;
     let mut stop_on_stdin_eof = false;
     let mut computer_session_dir = None;
@@ -240,6 +246,7 @@ where
                     stderr: String::new(),
                 });
             }
+            "--check-config" => check_config = true,
             "--once" => once = true,
             "--stop-on-stdin-eof" => stop_on_stdin_eof = true,
             "--computer-session-dir" => {
@@ -292,6 +299,12 @@ where
                 .unwrap_or_else(default_config_path)?
         }
     };
+    if check_config {
+        if once || stop_on_stdin_eof || computer_session_dir.is_some() {
+            return Err("--check-config cannot be combined with runtime-only options".into());
+        }
+        return Ok(RunnerCliAction::CheckConfig { config_path });
+    }
     Ok(RunnerCliAction::Run {
         config_path,
         once,
@@ -1537,9 +1550,15 @@ fn runner_register_capabilities(cfg: &RunnerConfig) -> RunnerCapabilities {
     // infer this from generic structured validation support.
     capabilities.set(RunnerCapabilityId::StructuredGoTestJson, true);
     capabilities.set(RunnerCapabilityId::ProjectValidation, true);
+    capabilities.set(RunnerCapabilityId::ProjectBuild, true);
+    capabilities.set(RunnerCapabilityId::ProjectDependencyPolicy, true);
+    // Go project gateways pin GO111MODULE=on and GOWORK=off after prepared shell/profile env is
+    // applied. Keep this independent for mixed Server/Runner rolling upgrades.
+    capabilities.set(RunnerCapabilityId::ProjectGoSingleModule, true);
     // Portable package scope is additive to project_validation_v1 so mixed
     // Server/Runner deployments fail closed before sending the expanded request.
     capabilities.set(RunnerCapabilityId::ProjectValidationPackageScope, true);
+    capabilities.set(RunnerCapabilityId::ProjectValidationTestOptions, true);
     // This binary also understands the first-class go_test durable metadata
     // identity. Keep this independent from JSON parsing so an old Runner that
     // supported Connector Go evidence cannot be mistaken for a first-class
@@ -1561,6 +1580,7 @@ fn runner_register_capabilities(cfg: &RunnerConfig) -> RunnerCapabilities {
     capabilities.set(RunnerCapabilityId::StructuredScriptPython, true);
     capabilities.set(RunnerCapabilityId::InternalPosixScript, true);
     capabilities.set(RunnerCapabilityId::StructuredExecutionJobs, true);
+    capabilities.set(RunnerCapabilityId::JobProcessInput, true);
     // Detached process ownership is an independent additive authority. Until
     // each native backend is implemented and dogfooded it must fail closed
     // rather than being inferred from structured process + durable Jobs.
@@ -1611,6 +1631,7 @@ fn runner_register_capabilities(cfg: &RunnerConfig) -> RunnerCapabilities {
         RunnerCapabilityId::BrowserElementActionAdmission,
         browser_available,
     );
+    capabilities.set(RunnerCapabilityId::BrowserBatch, browser_available);
     capabilities.set(RunnerCapabilityId::BrowserLaunch, browser_available);
     // Native read-only desktop observation is implemented only on macOS and
     // Windows. Unsupported platforms advertise false and fail closed.
@@ -2713,6 +2734,16 @@ fn main() {
             stop_on_stdin_eof,
             computer_session_dir,
         } => (config_path, once, stop_on_stdin_eof, computer_session_dir),
+        RunnerCliAction::CheckConfig { config_path } => {
+            // Use exactly the native loader, before logs, providers or network
+            // startup. Parse errors can quote secret TOML values: do not echo them.
+            if load_config(&config_path).is_err() {
+                eprintln!("Runner configuration invalid or unreadable. Check the current configuration contract; use project_registry_dir, not projects_dir. No Runner was started.");
+                std::process::exit(2);
+            }
+            println!("WebCodex Runner configuration valid");
+            return;
+        }
         RunnerCliAction::ComputerSessionHelper { session_state_dir } => {
             if let Err(error) = webcodex_runner::computer_session::run_helper(&session_state_dir) {
                 eprintln!("{error}");

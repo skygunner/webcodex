@@ -41,11 +41,37 @@ not a silently auto-drained cursor or a background request for every Project.
 Rows remain usable during ordinary refresh. Credential/filter changes clear the
 old selection and stale responses cannot overwrite the current one.
 
-`useVisibleRefresh` owns visibility, event coalescing and timer cleanup for the
-Overview, Projects and Project Sessions hooks. Hidden tabs do not issue timed
-inventory requests; focus/online/visibility events coalesce. Each consumer still
-owns its exact request fence and single-flight guard. Null/failed Session reads
-release that guard instead of permanently wedging subsequent refreshes.
+`useVisibleRefresh` owns visibility, event coalescing and timer cleanup for
+Overview, Projects, Project Sessions, Goal/Session workspaces, Agent inventory
+and Window collaboration. Hidden tabs do not issue periodic observation reads;
+focus/online/visibility events coalesce into one 150 ms resume. Window collaboration
+also cancels an in-flight read when paused; an already-pending send is unaffected.
+
+Goal and Session resources use `ObservationRequest` slots for cancellation,
+null/error completion, stale-response fencing and single-flight release. List,
+detail and message resources progress independently. Periodic refresh skips a
+busy resource; an explicit refresh queues at most one follow-up behind it instead
+of canceling slow work. A canceled old read cannot release a newer slot or revive
+its queued callback. These slots are not used for mutations or lease renewal.
+Agent Endpoint renewal retains its own schedule while the page is hidden; only
+its inventory observation timer follows document visibility.
+
+## Exact Session Job state
+
+Work Result v13 retains an explicitly supplied business `session_id` on its normal
+state refresh. With that exact authorized Session and Project, `jobs` projects up
+to eight caller-visible Server registry snapshots, active Jobs first, then recent
+terminals. `active` covers the selected Session even when items are truncated.
+Only Job identity, tool, lifecycle, outcome and recovery state reach the card;
+commands, logs, output, observation tokens and Runner payloads stay out.
+
+Without an explicit Session, `jobs.available=false`; Window-linked Session
+activity does not select Job inventory. Snapshot reads neither poll Runner nor
+consume passive model attention, register wakes or create Session events. A
+terminal transition changes `state_version` and appears on the existing next
+refresh without a model turn. Unchanged terminal history is stable state, not a
+new event. Active Jobs reuse the same visibility/backoff timer; hidden and
+teardown fences remain unchanged.
 
 ## File lists and immutable source ownership
 
@@ -81,6 +107,19 @@ not silently rewrite a diff the user is reading. Old page/diff completions canno
 retarget a refreshed view. Git capture uses the existing private index and safe
 configuration path; it does not change the real index, refs or working tree,
 though unreachable observation blobs/trees can be written to Git's object store.
+
+### Independent snapshot retention quotas
+
+Each Runtime's registry retains at most 32 sealed final results / 8 per caller,
+and independently 8 live inspection snapshots / 2 per caller. Runtime clones
+share these budgets; independently constructed runtimes do not share entries or
+quotas. Both classes share identity checks and diff implementation, but an
+insertion may only evict its own class. The combined hard cap is 40 snapshots
+per Runtime, not a process-wide cap across independently constructed runtimes.
+The existing 24-hour expiry and replay-without-TTL-extension remain; 24 hours is
+a maximum age, not guaranteed retention under same-class pressure. Dropping the
+last Runtime clone or restarting the Server drops these in-memory snapshots. This separation
+changes no App request/schema/resource URI and requires no Host schema refresh.
 
 ## Mounted-card request budget
 

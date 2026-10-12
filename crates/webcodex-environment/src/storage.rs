@@ -19,11 +19,21 @@ pub fn default_environment_dir() -> SetupResultValue<PathBuf> {
         })
 }
 
+#[derive(Clone)]
 pub struct EnvironmentStore {
     root: PathBuf,
 }
 pub struct EnvironmentLock {
     _file: File,
+}
+
+impl Drop for EnvironmentLock {
+    fn drop(&mut self) {
+        // Closing this descriptor alone need not release a flock while a child
+        // still holds the same open-file description between fork and exec.
+        // End the logical owner's lease explicitly before closing its handle.
+        let _ = FileExt::unlock(&self._file);
+    }
 }
 
 impl EnvironmentStore {
@@ -142,6 +152,26 @@ pub(crate) fn ensure_private_directory(path: &Path) -> SetupResultValue<()> {
 mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
+
+    #[test]
+    fn environment_lock_drop_releases_inherited_file_description() {
+        let temp = crate::test_tempdir().unwrap();
+        let store = EnvironmentStore::open(temp.path().join("environment")).unwrap();
+        let lock = store.lock().unwrap();
+        // Model the shared open-file description inherited between fork and
+        // exec without a scheduler-dependent child process or sleep.
+        let inherited = lock._file.try_clone().unwrap();
+        assert!(matches!(store.lock(), Err(error) if error.code == "setup_busy"));
+        drop(lock);
+        let next = store
+            .lock()
+            .expect("the completed owner must release its lock");
+        assert!(matches!(store.lock(), Err(error) if error.code == "setup_busy"));
+        drop(inherited);
+        assert!(matches!(store.lock(), Err(error) if error.code == "setup_busy"));
+        drop(next);
+        assert!(store.lock().is_ok());
+    }
 
     #[test]
     fn private_store_still_rejects_symlinked_ancestors() {
@@ -293,7 +323,7 @@ pub(crate) fn atomic_private_write(path: &Path, bytes: &[u8]) -> SetupResultValu
 }
 
 #[cfg(windows)]
-fn secure_windows_path(path: &Path) -> SetupResultValue<()> {
+pub(crate) fn secure_windows_path(path: &Path) -> SetupResultValue<()> {
     // The native ACL implementation is shared with service identity validation.
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Security::Authorization::{

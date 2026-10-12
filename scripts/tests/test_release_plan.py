@@ -22,6 +22,7 @@ def _state(root: Path, *, phase: str) -> dict:
     now = 1_900_000_000
     return {
         "schema_version": plan.STATE_SCHEMA_VERSION,
+        "require_unified_installers": True,
         "kind": plan.KIND,
         "repo": "yyjeqhc/webcodex",
         "version": VERSION,
@@ -68,11 +69,38 @@ class ReleasePlanStateTests(unittest.TestCase):
             state = _state(root, phase=plan.PHASE_PREFLIGHT)
             state["schema_version"] = plan.LEGACY_STATE_SCHEMA_VERSION
             state.pop("source_ref")
+            state.pop("require_unified_installers")
             state_path = root / "legacy.json"
             plan._write_state(state_path, state)
             loaded = plan._load_state(state_path)
             self.assertEqual(loaded["schema_version"], plan.STATE_SCHEMA_VERSION)
             self.assertEqual(loaded["source_ref"], "main")
+
+    def test_schema_two_retains_legacy_requirement_and_schema_three_rejects_missing_or_nonboolean(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            path = root / "state.json"
+            state = _state(root, phase=plan.PHASE_PREFLIGHT)
+            state["schema_version"] = 2
+            state.pop("require_unified_installers")
+            plan._write_state(path, state)
+            self.assertFalse(plan._load_state(path)["require_unified_installers"])
+            state["schema_version"] = plan.STATE_SCHEMA_VERSION
+            plan._write_state(path, state)
+            with self.assertRaises(plan.ReleasePlanError):
+                plan._load_state(path)
+            state["require_unified_installers"] = "true"
+            plan._write_state(path, state)
+            with self.assertRaises(plan.ReleasePlanError):
+                plan._load_state(path)
+
+    def test_schema_three_preserves_explicit_false_for_operator_owned_plan(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); path = root / "state.json"
+            state = _state(root, phase=plan.PHASE_PREFLIGHT)
+            state["require_unified_installers"] = False
+            plan._write_state(path, state)
+            self.assertFalse(plan._load_state(path)["require_unified_installers"])
 
     def test_init_runs_preflight_once_and_records_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -95,6 +123,7 @@ class ReleasePlanStateTests(unittest.TestCase):
             self.assertEqual(loaded["phase"], plan.PHASE_PREFLIGHT)
             self.assertEqual(Path(loaded["work_dir"]), work.absolute())
             self.assertEqual(summary["status"], "ready")
+            self.assertTrue(loaded["require_unified_installers"])
             self.assertEqual(summary["source_ref"], SOURCE_REF)
             self.assertEqual(preflight.call_args.kwargs["source_ref"], SOURCE_REF)
 
@@ -206,13 +235,16 @@ class ReleasePlanResumeTests(unittest.TestCase):
                     publication,
                     "verify_draft_assets",
                     side_effect=publication.PublicationError(f"GitHub draft Release was not found for tag: {TAG}"),
-                ),
+                ) as draft,
             ):
                 summary, code = plan.resume_plan(state_file=state_path, timeout=30.0, wait_secs=0)
             self.assertEqual(code, 3)
             self.assertEqual(summary["phase"], plan.PHASE_AWAIT_DRAFT)
             collect.assert_called_once()
             stage.assert_called_once()
+            self.assertTrue(collect.call_args.kwargs["require_unified_installers"])
+            self.assertTrue(stage.call_args.kwargs["require_unified_installers"])
+            self.assertTrue(draft.call_args.kwargs["require_unified_installers"])
 
     def test_unrecorded_existing_stage_fails_closed_for_reconciliation(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

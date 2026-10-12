@@ -95,6 +95,70 @@ fn settings_preserve_credentials_policy_plugins_and_comments() {
 }
 
 #[test]
+fn managed_instruction_activation_appends_preserves_and_rolls_back_exact_candidate() {
+    let f = Fixture::new();
+    let custom = f.dir.join("company.md").to_string_lossy().into_owned();
+    let skills = f.dir.join("skills").to_string_lossy().into_owned();
+    let expected = RunnerPaths {
+        instruction_files: vec![custom.clone()],
+        skill_roots: vec![skills.clone()],
+    };
+    update(
+        &f.runtime,
+        SettingsUpdate {
+            target: target(&f.runtime).unwrap(),
+            expected: empty(),
+            paths: expected.clone(),
+        },
+    )
+    .unwrap();
+    let before = read(f.runtime.runner_config.as_ref().unwrap()).unwrap();
+    let managed = f.dir.join("instructions/AGENTS.md");
+    let edit = stage_managed_instructions(
+        &f.runtime,
+        target(&f.runtime).unwrap(),
+        expected.clone(),
+        &managed,
+    )
+    .unwrap();
+    let after = inspect(&f.runtime, false).unwrap();
+    assert_eq!(
+        after.paths.instruction_files,
+        vec![custom, managed.to_string_lossy().into_owned()]
+    );
+    assert_eq!(after.paths.skill_roots, vec![skills]);
+    let duplicate = stage_managed_instructions(
+        &f.runtime,
+        target(&f.runtime).unwrap(),
+        after.paths.clone(),
+        &managed,
+    )
+    .unwrap();
+    assert!(duplicate.candidate_unchanged().unwrap());
+    assert_eq!(
+        inspect(&f.runtime, false)
+            .unwrap()
+            .paths
+            .instruction_files
+            .len(),
+        2
+    );
+    assert!(edit.rollback_if_unchanged().unwrap());
+    assert_eq!(
+        read(f.runtime.runner_config.as_ref().unwrap()).unwrap(),
+        before
+    );
+    let edit =
+        stage_managed_instructions(&f.runtime, target(&f.runtime).unwrap(), expected, &managed)
+            .unwrap();
+    let path = f.runtime.runner_config.as_ref().unwrap();
+    let changed = format!("{}\n# concurrent operator edit\n", read(path).unwrap());
+    std::fs::write(path, &changed).unwrap();
+    assert!(!edit.rollback_if_unchanged().unwrap());
+    assert_eq!(read(path).unwrap(), changed);
+}
+
+#[test]
 fn file_access_reports_configured_and_effective_roots_and_preserves_unrelated_config() {
     let f = Fixture::new();
     let before = read(f.runtime.runner_config.as_ref().unwrap()).unwrap();
@@ -164,6 +228,43 @@ fn file_access_empty_configuration_reports_home_default_and_rejects_missing_root
     )
     .is_err());
     assert_eq!(read(path).unwrap(), before);
+}
+
+#[test]
+fn file_access_can_remove_stale_roots_one_at_a_time() {
+    let f = Fixture::new();
+    let path = f.runtime.runner_config.as_ref().unwrap();
+    let stale_a = f.dir.join("removed-a").to_string_lossy().into_owned();
+    let stale_b = f.dir.join("removed-b").to_string_lossy().into_owned();
+
+    let original = read(path).unwrap();
+    let mut doc = original.parse::<DocumentMut>().unwrap();
+    doc["policy"]["allowed_roots"] = toml_edit::value(
+        vec![stale_a.clone(), stale_b.clone()]
+            .into_iter()
+            .collect::<Array>(),
+    );
+    let seeded = doc.to_string();
+    persist_text(path, &original, &seeded).unwrap();
+
+    let projection = inspect(&f.runtime, false).unwrap();
+    assert_eq!(
+        projection.file_access.configured_roots,
+        vec![stale_a.clone(), stale_b.clone()]
+    );
+
+    stage_allowed_roots_update(
+        &f.runtime,
+        AllowedRootsUpdate {
+            target: target(&f.runtime).unwrap(),
+            expected: vec![stale_a, stale_b.clone()],
+            roots: vec![stale_b.clone()],
+        },
+    )
+    .expect("removing one stale root must not revalidate an unchanged stale survivor");
+
+    let projection = inspect(&f.runtime, false).unwrap();
+    assert_eq!(projection.file_access.configured_roots, vec![stale_b]);
 }
 
 #[cfg(windows)]

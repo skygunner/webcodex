@@ -20,6 +20,26 @@ pub(super) fn store() -> DesktopResult<EnvironmentStore> {
     EnvironmentStore::open(default_environment_dir().map_err(desktop_error)?).map_err(desktop_error)
 }
 
+/// Read the canonical saved scope, rather than offering account-password
+/// recovery for every Windows Runner (interactive user tasks have no password).
+/// Unknown/mismatched environment identity leaves this UI capability disabled.
+pub(super) fn runner_uses_system_service(environment_id: &str) -> bool {
+    let observed = || -> Option<bool> {
+        let root = default_environment_dir().ok()?;
+        if !root.is_dir() {
+            return None;
+        }
+        let store = EnvironmentStore::open(root).ok()?;
+        let record = store.load_environment().ok()??;
+        Some(
+            record.environment_id == environment_id
+                && record.request.local_runner()
+                && record.request.service_scope.is_system(),
+        )
+    };
+    observed() == Some(true)
+}
+
 impl AppState {
     pub async fn repair_environment_user_credential(
         &self,
@@ -92,6 +112,12 @@ impl AppState {
                     ))
                 }
             };
+            if matches!(action, ServiceOperation::Start | ServiceOperation::Restart) {
+                core.preflight_providers()?;
+                if component == Component::Runner {
+                    core.reconcile_saved_providers().await?;
+                }
+            }
             NativeEnvironment::new()
                 .map_err(desktop_error)?
                 .control_service_for_environment(
@@ -325,6 +351,7 @@ impl DesktopCore {
         cancellation: &CancellationContext,
     ) -> DesktopResult<DesktopStateSnapshot> {
         cancellation.check()?;
+        self.preflight_providers()?;
         let legacy = self
             .config
             .topology
@@ -435,6 +462,14 @@ impl DesktopCore {
         crate::runtime_selection::verify_resolved_files(&binaries).await?;
         self.snapshot.binaries = Some(binaries.info());
         let request = SetupRequest {
+            // Desktop-owned processes are not historical SCM services. A new
+            // handoff uses the same user-session default as fresh setup; an
+            // interrupted handoff must retain its journal's exact manager.
+            service_scope: webcodex_environment::resolve_service_scope(
+                &store()?,
+                input.service_scope,
+            )
+            .map_err(desktop_error)?,
             runner: input.runner.or_else(|| {
                 self.config
                     .topology
@@ -498,6 +533,7 @@ impl DesktopCore {
                     "Use the explicit local service controls in Settings.",
                 ));
             }
+            self.reconcile_saved_providers().await?;
             let result = if request.local_runner() && saved.runner_client_id.is_none() {
                 setup
                     .enable_runner(
@@ -541,6 +577,8 @@ impl DesktopCore {
         cancellation: &CancellationContext,
     ) -> DesktopResult<DesktopStateSnapshot> {
         cancellation.check()?;
+        self.preflight_providers()?;
+        self.reconcile_saved_providers().await?;
         let store = store()?;
         let mut setup = EnvironmentSetup::new(NativeEnvironment::new().map_err(desktop_error)?);
         let result = setup
@@ -815,12 +853,16 @@ impl DesktopCore {
         cancellation: &CancellationContext,
     ) -> DesktopResult<DesktopStateSnapshot> {
         cancellation.check()?;
+        self.preflight_providers()?;
+        self.reconcile_saved_providers().await?;
         let store = store()?;
         let native = NativeEnvironment::new().map_err(desktop_error)?;
         native
             .control_service(&store, Component::Runner, ServiceOperation::Restart)
             .await
             .map_err(desktop_error)?;
+        self.mcp_applied_revision = Some(self.mcp_providers.revision());
+        self.coding_agents_applied_revision = Some(self.coding_agents.revision());
         self.refresh_environment_status(cancellation).await
     }
 

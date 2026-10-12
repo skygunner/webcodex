@@ -93,6 +93,49 @@ impl RunnerRegistry {
             let Some(request_id) = request_id else {
                 return Ok(None);
             };
+            let stale_input = inner.pending_by_id.get(&request_id).and_then(|pending| {
+                super::job_input::dispatch_rejection(&inner, &pending.operation, &body.client_id)
+            });
+            if let Some(code) = stale_input {
+                let Some(mut pending) = inner.pending_by_id.remove(&request_id) else {
+                    continue;
+                };
+                if let Some(id) = pending.job_id.as_deref() {
+                    inner.request_to_job.remove(&request_id);
+                    if let Some(job) = inner.jobs_by_id.get_mut(id) {
+                        let now = now_ts();
+                        job.lifecycle = JobLifecycleState::Failed;
+                        job.ended_at = Some(now);
+                        job.activity = None;
+                        job.command_execution_state = Some(ShellCommandExecutionState::NotStarted);
+                        job.error = Some(code.into());
+                        observe_job_terminal(job, now);
+                        super::jobs::notify_job_update(job);
+                    }
+                    self.telemetry.runner_job_finalized(Some(&request_id), id);
+                } else {
+                    self.telemetry.runner_result_finalized(&request_id);
+                }
+                if let Some(waiter) = pending.waiter.take() {
+                    let _ = waiter.send(ShellRunResponse {
+                        success: false,
+                        request_id: request_id.clone(),
+                        client_id: body.client_id.clone(),
+                        cwd: None,
+                        command_preview: String::new(),
+                        exit_code: None,
+                        stdout: None,
+                        stderr: None,
+                        stdout_truncated: false,
+                        stderr_truncated: false,
+                        duration_ms: None,
+                        error: Some(code.into()),
+                        request_dispatched: Some(false),
+                        command_execution_state: Some(ShellCommandExecutionState::NotStarted),
+                    });
+                }
+                continue;
+            }
             let stale_instruction_error =
                 inner.pending_by_id.get(&request_id).and_then(|pending| {
                     match (
@@ -699,12 +742,9 @@ impl RunnerRegistry {
                     if job.lifecycle == JobLifecycleState::Queued {
                         job.lifecycle = JobLifecycleState::RunnerQueued;
                         // Dispatch proves only that the Runner accepted the
-                        // Job request. A typed structured Job becomes started
-                        // only when the Runner reports `running` after a
-                        // successful child spawn.
-                        if job.structured_execution.is_none() {
-                            job.started_at = Some(now_ts());
-                        }
+                        // Job request. The command becomes started only when the
+                        // Runner reports running or a terminal execution outcome;
+                        // a pre-spawn rejection must remain NotStarted.
                         super::jobs::notify_job_update(job);
                     }
                 }

@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { NativeSelect } from "@mantine/core";
+import { useServiceScopeText } from "../../i18n/service-scope";
 import { FolderOpen, Globe2, Share2 } from "lucide-react";
 import { desktopApi } from "../../lib/desktop-api";
 import { useLocale, type MessageKey } from "../../i18n/locale";
@@ -42,6 +44,8 @@ interface FirstRunProps {
 
 export function FirstRun({ state, onState, chooseModeFirst = false, onComplete }: FirstRunProps) {
   const { t } = useLocale();
+  const scopeText = useServiceScopeText();
+  const [serviceScope, setServiceScope] = useState<"user" | "system">("user");
   const savedMode = state.topology?.experience === "full"
     ? state.topology.server.kind === "local" ? "create" : "join" : null;
   const [mode, setMode] = useState<SetupMode | null>(chooseModeFirst ? null : savedMode);
@@ -53,6 +57,7 @@ export function FirstRun({ state, onState, chooseModeFirst = false, onComplete }
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<DesktopError | null>(null);
   const mutationBusy = busy || Boolean(state.current_operation);
+  const canChooseServiceScope = !state.persistent_environment && (chooseModeFirst || !savedMode);
   const origin = serverOrigin(serverUrl);
   const sameServer = mode === "join" && origin !== null && state.topology?.experience === "full"
     && state.topology.server.kind === "remote" && origin === serverOrigin(state.topology.server.url);
@@ -78,6 +83,7 @@ export function FirstRun({ state, onState, chooseModeFirst = false, onComplete }
     setPairingCode(""); setUserToken("");
     try {
       const next = await desktopApi.configureEnvironment({
+        ...(canChooseServiceScope ? { serviceScope } : {}),
         mode, serverUrl: mode === "join" ? origin : null,
         // Preserve a legacy migration's recorded display project, but never
         // require or register a new default project during normal setup.
@@ -129,6 +135,7 @@ export function FirstRun({ state, onState, chooseModeFirst = false, onComplete }
       <div className="eyebrow">{mode === "create" ? t("setup.localLabel") : t("setup.remoteLabel")}</div>
       <h1 id="setup-title">{mode === "create" ? t("setup.localTitle") : t("setup.remoteTitle")}</h1>
       <p className="lede">{mode === "create" ? t("setup.localDescription") : t("setup.remoteDescription")}</p>
+      {savedMode && !state.persistent_environment && <p className="workspace-notice" role="note">{scopeText("migrationHelp")}</p>}
       <div className="form-card">
         <label className="checkbox-row"><input type="checkbox" checked={runner}
           disabled={mutationBusy || Boolean(savedMode && state.topology?.runner.kind === "local")}
@@ -157,7 +164,17 @@ export function FirstRun({ state, onState, chooseModeFirst = false, onComplete }
         </div> : <div className="field-help"><strong>{t(runner ? "setup.reuseEnrollment" : "setup.reuseViewerCredential")}</strong>
           <p>{t(runner ? "setup.reuseRunnerRegistrationHelp" : "setup.reuseViewerCredentialHelp")}</p></div>}
       </div>}
-      {(runner || mode === "create") && <p className="field-help">{t("setup.serviceConsent")}</p>}
+      {(runner || mode === "create") && (canChooseServiceScope
+        ? <div className="form-card">
+            <strong>{scopeText(serviceScope)}</strong>
+            <p className="field-help">{scopeText(serviceScope === "user" ? "userHelp" : "systemHelp")}</p>
+            <details><summary>{scopeText("advanced")}</summary>
+              <NativeSelect label={scopeText("title")} value={serviceScope} disabled={mutationBusy}
+                data={[{value:"user",label:scopeText("user")},{value:"system",label:scopeText("system")}]}
+                onChange={event => { const value=event.currentTarget.value; if (value === "user" || value === "system") setServiceScope(value); }} />
+            </details>
+          </div>
+        : <p className="field-help">{t("setup.serviceConsent")}</p>)}
       {error && <div className="error-card" role="alert" id="setup-error">
         <strong>{presentation?.title}</strong><span>{presentation?.action}</span>
         <details><summary>{t("common.details")}</summary><code>{error.code}</code><p>{error.message}</p></details>

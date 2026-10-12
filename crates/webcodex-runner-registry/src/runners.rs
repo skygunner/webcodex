@@ -301,6 +301,7 @@ impl RunnerRegistry {
         let record = RunnerRecord {
             client_id: client_id.clone(),
             runner_instance_id: runner_instance_id.clone(),
+            registration_observation_epoch: uuid::Uuid::new_v4().to_string(),
             display_name: trim_string(body.display_name),
             owner: trim_string(body.owner),
             hostname: trim_string(body.hostname),
@@ -1286,22 +1287,10 @@ impl RunnerRegistry {
         project: &str,
     ) -> bool {
         let now = now_ts();
-        let inner = self.inner.lock().await;
+        let inner = self.inner.read().await;
         inner.runners.values().any(|runner| {
-            if !runner_visible_to_access(auth, runner) {
+            if !self.runner_visible_for_snapshot(auth, &inner, runner, now) {
                 return false;
-            }
-            if matches!(runner.auth_group, Some(RunnerAccessGroup::SharedKey(_))) {
-                let connected = inner.notifiers.contains_key(&runner.client_id);
-                let recently_seen =
-                    now.saturating_sub(runner.last_seen) <= RUNNER_ONLINE_WINDOW_SECS;
-                let offline_since = runner.disconnected_at.unwrap_or(runner.last_seen);
-                if !connected
-                    && !recently_seen
-                    && now.saturating_sub(offline_since) > self.shared_key_limits.offline_ttl_secs
-                {
-                    return false;
-                }
             }
             runner
                 .projects
@@ -1557,6 +1546,14 @@ impl RunnerRegistry {
     }
 
     fn runner_view_locked(inner: &RunnerRegistryInner, client_id: &str) -> Option<RunnerView> {
+        Self::runner_view_with_projects_locked(inner, client_id, true)
+    }
+
+    pub(crate) fn runner_view_with_projects_locked(
+        inner: &RunnerRegistryInner,
+        client_id: &str,
+        include_projects: bool,
+    ) -> Option<RunnerView> {
         let runner = inner.runners.get(client_id)?;
         let pending_requests = inner
             .queues_by_runner
@@ -1580,7 +1577,11 @@ impl RunnerRegistry {
             coding_agent_providers: (!runner.coding_agent_providers.is_empty())
                 .then(|| runner.coding_agent_providers.clone()),
             pending_requests,
-            projects: runner.projects.clone(),
+            projects: if include_projects {
+                runner.projects.clone()
+            } else {
+                Vec::new()
+            },
             project_inventory: Some(runner.project_inventory.status.clone()),
             runner_protocol_generation: runner.accepted_protocol.generation(),
             transport: runner.transport.as_str().to_string(),

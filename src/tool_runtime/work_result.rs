@@ -8,7 +8,7 @@ use crate::json_digest::update_sha256_with_json;
 
 use super::handoff::review_evidence_summary_for_session;
 use super::session_context::{
-    session_project_mismatch_result, unknown_session_result, SessionProjectMismatch,
+    absent_workflow_session_result, session_project_mismatch_result, SessionProjectMismatch,
 };
 use super::validation_events::{
     current_validation_evidence_for_session, validation_summary_from_events,
@@ -16,6 +16,7 @@ use super::validation_events::{
 use super::{ToolResult, ToolRuntime};
 use webcodex_workflow_session::SessionSummary;
 
+const WORK_RESULT_JOB_LIMIT: usize = 8;
 const WORK_RESULT_SESSION_EVENT_LIMIT: usize = 200;
 const WORK_RESULT_VALIDATION_LIMIT: usize = 20;
 const WORK_RESULT_ACTIVITY_LIMIT: usize = 24;
@@ -47,8 +48,15 @@ impl ToolRuntime {
         auth: Option<&AuthContext>,
         window: Option<&ClientWindow>,
     ) -> ToolResult {
-        self.exact_work_result(project, session_id, "present_work_result", auth, window)
-            .await
+        self.exact_work_result(
+            project,
+            session_id,
+            "present_work_result",
+            auth,
+            window,
+            false,
+        )
+        .await
     }
 
     #[cfg(test)]
@@ -62,6 +70,7 @@ impl ToolRuntime {
             .await
     }
 
+    #[cfg(test)]
     pub(crate) async fn work_result_state_for_window(
         &self,
         project: String,
@@ -69,8 +78,27 @@ impl ToolRuntime {
         auth: Option<&AuthContext>,
         window: Option<&ClientWindow>,
     ) -> ToolResult {
-        self.exact_work_result(project, session_id, "work_result_state", auth, window)
+        self.work_result_state_for_window_with_refresh(project, session_id, auth, window, false)
             .await
+    }
+
+    pub(crate) async fn work_result_state_for_window_with_refresh(
+        &self,
+        project: String,
+        session_id: Option<String>,
+        auth: Option<&AuthContext>,
+        window: Option<&ClientWindow>,
+        automatic: bool,
+    ) -> ToolResult {
+        self.exact_work_result(
+            project,
+            session_id,
+            "work_result_state",
+            auth,
+            window,
+            automatic,
+        )
+        .await
     }
 
     pub(crate) async fn work_result_activity_detail(
@@ -184,7 +212,7 @@ impl ToolRuntime {
         .await
     }
 
-    async fn authorize_work_result_project(
+    pub(super) async fn authorize_work_result_project(
         &self,
         project: &str,
         auth: Option<&AuthContext>,
@@ -193,9 +221,18 @@ impl ToolRuntime {
             .resolve_project_input_for_auth(project, auth)
             .await
             .map_err(|error| error.into_tool_result())?;
-        if project.trim() != resolved.resolved_id {
+        let issued_ref = matches!(
+            webcodex_core::model_reference::parse_model_reference(
+                project.trim(),
+                webcodex_core::model_reference::ModelReferenceKind::Project,
+            ),
+            Some(Ok(_))
+        );
+        // Resolution already checked principal, exact root fingerprint and
+        // current authority. Never generalize this to ambiguous friendly names.
+        if project.trim() != resolved.resolved_id && !issued_ref {
             return Err(ToolResult::err_with_output(
-                "Work Result requires the exact complete runtime project id",
+                "Work Result requires an exact runtime project id or issued project_ref",
                 json!({
                     "error_kind": "work_result_project_not_exact",
                     "failure_kind": "invalid_arguments",
@@ -224,7 +261,11 @@ impl ToolRuntime {
             .sessions
             .summary(session_id, Some(WORK_RESULT_SESSION_EVENT_LIMIT))
         else {
-            return Err(unknown_session_result(session_id));
+            return Err(absent_workflow_session_result(
+                &self.sessions,
+                session_id,
+                auth,
+            ));
         };
         if summary.project.as_deref() != Some(resolved_project.as_str()) {
             let mismatch = SessionProjectMismatch {
@@ -250,6 +291,7 @@ impl ToolRuntime {
         tool_name: &'static str,
         auth: Option<&AuthContext>,
         window: Option<&ClientWindow>,
+        automatic: bool,
     ) -> ToolResult {
         let resolved_project = match self.authorize_work_result_project(&project, auth).await {
             Ok(project) => project,
@@ -292,8 +334,12 @@ impl ToolRuntime {
 
         // The Results pane uses current Project changes and, when linked, Session
         // check/review evidence separately from sealed final task changes.
-        let workspace_result = self
-            .workspace_metadata_for_presentation(resolved_project.clone())
+        let automatic = automatic
+            && summary.as_ref().is_none_or(|summary| {
+                summary.lifecycle == super::sessions::SessionLifecycle::Active
+            });
+        let (workspace_result, workspace_reused) = self
+            .work_result_workspace_observation(&resolved_project, auth, automatic)
             .await;
         let mut projection = if let Some(summary) = summary.as_ref() {
             let projection_summary = self.refresh_validation_source_summary(summary);
@@ -319,6 +365,9 @@ impl ToolRuntime {
             );
             projection["session"] = work_result_session(summary);
             projection["session_id"] = json!(summary.session_id);
+            if let Some(outputs) = super::task_outputs::retained_task_outputs(summary) {
+                projection["task_outputs"] = outputs;
+            }
             if let Some(detail) = self.workflow_session_console_detail(
                 &resolved_project,
                 &summary.session_id,
@@ -328,10 +377,10 @@ impl ToolRuntime {
                     "activity": detail.activity.iter().map(|item| {
                         json!({
                             "label": match item.kind.as_str() {
-                                "Read" => "Read project files",
+                                "Read" => "Read files",
                                 "Searched" => "Searched the project",
                                 "Navigated" | "Explored" => "Explored the project",
-                                "Edited" => "Edited code",
+                                "Edited" => "Edited files",
                                 "Tested" => "Ran checks",
                                 "Reviewed" => "Reviewed changes",
                                 "Ran" => "Ran a command",
@@ -388,7 +437,19 @@ impl ToolRuntime {
         );
         projection["window_activity"] = work_result_window_activity_projection(&observed);
         projection["activity"] = work_result_activity_projection(&observed, summary.as_ref());
+        // Only the exact business Session supplied to this call selects Jobs.
+        // Window correlation may enrich activity but is never Job inventory authority.
+        projection["jobs"] = self
+            .work_result_jobs(&resolved_project, session_id.as_deref(), auth)
+            .await;
         projection["state_version"] = json!(work_result_state_version(&projection));
+        // Observation provenance is not content revision: it must not restart the
+        // App's idle clock or turn a reused snapshot into fresh execution evidence.
+        projection["workspace_observation"] = json!({
+            "reused": workspace_reused,
+            "max_reuse_ms": super::work_result_workspace::REUSE_LEASE.as_millis() as u64,
+            "semantics": "bounded_snapshot_not_filesystem_freshness",
+        });
 
         if let Some(summary) = summary.as_ref() {
             match self.sealed_work_result_changes(&resolved_project, summary, auth) {
@@ -398,6 +459,65 @@ impl ToolRuntime {
             }
         }
         ToolResult::ok(json!({"work_result": projection}))
+    }
+
+    pub(crate) async fn work_result_jobs(
+        &self,
+        project: &str,
+        session_id: Option<&str>,
+        auth: Option<&AuthContext>,
+    ) -> Value {
+        let Some(session_id) = session_id else {
+            return json!({"available": false});
+        };
+        if auth.is_some_and(|auth| !auth.has_scope(SCOPE_RUNTIME_READ)) {
+            return json!({"available": false});
+        }
+        // This bounded snapshot reads Server records only: no lifecycle refresh,
+        // Runner request, attention cursor, terminal wake or Session event write.
+        let snapshots = self
+            .runner_registry
+            .snapshot_jobs_for_auth_filtered(
+                crate::runner_http::runner_access_from_auth(auth).as_ref(),
+                project,
+                session_id,
+                WORK_RESULT_JOB_LIMIT + 1,
+                WORK_RESULT_JOB_LIMIT + 1,
+            )
+            .await;
+        let active = snapshots
+            .iter()
+            .any(|snapshot| !super::jobs::is_terminal_job_status(&snapshot.job.status));
+        let items: Vec<Value> = snapshots
+            .iter()
+            .take(WORK_RESULT_JOB_LIMIT)
+            .map(|snapshot| self.work_result_job(snapshot))
+            .collect();
+        json!({"available": true, "active": active, "items": items, "truncated": snapshots.len() > WORK_RESULT_JOB_LIMIT})
+    }
+
+    pub(crate) fn work_result_job(
+        &self,
+        snapshot: &webcodex_runner_registry::JobAttentionSnapshot,
+    ) -> Value {
+        let summary = self.passive_job_attention_item(snapshot);
+        let mut item = json!({
+            "job_id": snapshot.job.job_id,
+            "tool": summary["tool"],
+            "status": snapshot.job.status,
+            "state": if super::jobs::is_terminal_job_status(&snapshot.job.status) { "terminal" } else { "active" },
+        });
+        for key in ["outcome", "recovery_state"] {
+            if let Some(value) = summary.get(key) {
+                item[key] = value.clone();
+            }
+        }
+        if summary["outcome"] == "passed"
+            && summary.pointer("/validation/passed") == Some(&Value::Bool(false))
+        {
+            item["outcome"] = json!("failed");
+        }
+        item
     }
 }
 
@@ -741,9 +861,9 @@ fn semantic_activity_label(tool: &str, current: bool) -> &'static str {
     {
         Some("read") => {
             if current {
-                "Reading project files"
+                "Reading files"
             } else {
-                "Read project files"
+                "Read files"
             }
         }
         Some("search") => {
@@ -762,9 +882,9 @@ fn semantic_activity_label(tool: &str, current: bool) -> &'static str {
         }
         Some("edit") => {
             if current {
-                "Editing code"
+                "Editing files"
             } else {
-                "Edited code"
+                "Edited files"
             }
         }
         Some("run") => {

@@ -2,6 +2,8 @@
 
 [English](desktop-install.md) | [简体中文](desktop-install.zh-CN.md)
 
+Desktop 界面支持简体中文、繁體中文（`zh-TW`）、English、日本語、한국어、Deutsch 和 Français。可在设置中切换，选择会保存，活动时间也按所选语言格式显示。繁体中文使用独立翻译；系统托盘菜单跟随所选语言，后台启动时也会恢复上次选择；原始后端诊断仍为英文，文件选择器跟随操作系统语言。
+
 对于普通 Windows / macOS 个人用户，**最推荐的路径是 WebCodex Desktop +
 官方 OpenAI Secure Tunnel**。WebCodex Desktop 在本机运行 Server 和 Runner；
 真正向 AI 发送编程请求的界面是 **ChatGPT 网页版**。第一次使用不需要配置
@@ -68,7 +70,7 @@ WebCodex 可以在已注册的项目范围内读取和修改文件、执行命�
 - **Windows：**按主机架构选择 x64 或 ARM64 installer；Windows ARM64 Desktop 从 v0.4.2+ release build path 开始提供。
 - **macOS：**按 Mac 架构选择 Intel 或 Apple Silicon DMG。
 
-当前 macOS 构建使用 ad-hoc 签名且没有 notarization。如果 Gatekeeper 拦截新下载构建的首次启动，进入**系统设置 → 隐私与安全 → 仍要打开**，再确认**打开**；不要全局关闭 Gatekeeper。
+macOS 签名明确分为三种模式：`self-signed` 是当前 public release 和长期 dogfood 的持久 fallback；Apple 凭据可用时可显式选择 `developer-id`，使用 Developer ID Application 并完成 notarization/stapling；`adhoc` 仅用于一次性 CI/本地验证，不承诺 TCC 升级连续性。必须跨 build/upgrade 长期保留**同一张 self-signed certificate 及其 private key**；同名重建证书也会改变身份。Desktop（`dev.webcodex.desktop`）和 bundled Runner（`dev.webcodex.runner`）都使用不含 binary cdhash 的证书锚定 designated requirement，并在 Tauri nested signing 后验证最终 app/DMG。历史 ad-hoc 授权不会因此自动迁移，首次改用持久身份时可能需要重新授权。Self-signed 不等同于 Apple notarization；如 Gatekeeper 要求，请使用**系统设置 → 隐私与安全 → 仍要打开**，不要全局关闭 Gatekeeper。
 
 安装完成后启动 WebCodex Desktop。
 
@@ -196,6 +198,8 @@ Windows 用户可以设置当前用户的持久环境变量。macOS 从 Finder /
 保存需要的调整后，继续第 6 步。
 
 ## 6. 启动官方 OpenAI Secure Tunnel
+
+连接配置中的**自动启动**控制重开 Desktop 时是否恢复该连接。使用桌面管理的本机 Runtime 时，Runtime 就绪后会恢复已启用且允许自动启动的连接；这也适用于 Runtime 本身关闭了自动启动、但已经在运行的情况。点击**停止**会停用该连接，重开不会再次启动它。持久环境中的 Tunnel 由系统服务管理，打开 Desktop 会读取实际服务状态，不会重启已停止的服务。
 
 进入 **连接**，选择 **OpenAI Secure Tunnel**，再点击 **启动安全隧道**。仅选择连接方式不会启动或停止进程。已有隧道报错时，先点击停止，再重新启动；失败后页面会保留错误和重试入口。运行成功后，Desktop 会显示类似：
 

@@ -23,16 +23,20 @@ mod legacy_cli;
 mod legacy_system_server;
 #[cfg(target_os = "linux")]
 mod legacy_systemd;
+mod local_status;
 mod migration;
 mod native;
 mod privilege;
 mod process;
+mod runner_preflight;
+pub use runner_preflight::preflight_runner_configuration;
 pub mod runtime_entry;
 pub mod service;
 pub mod session_service;
 mod storage;
 mod tunnel;
 mod types;
+pub use local_status::{ComponentObservation, LocalEnvironmentStatus};
 pub use upgrade::{upgrade_observation, UpgradeObservation, UpgradeOutcome};
 pub mod unified_update;
 mod upgrade;
@@ -44,11 +48,11 @@ pub use migration::{
     LegacyProcess, LegacyTunnelProfile, MigrationJournal, MigrationPhase,
 };
 pub use native::{
-    canonical_server_url, current_account, read_secret, service_spec, validate_request,
-    NativeEnvironment,
+    canonical_server_url, current_account, read_secret, resolve_service_scope, service_spec,
+    validate_request, NativeEnvironment,
 };
 pub use privilege::run_privileged_service_request;
-pub use storage::{default_environment_dir, EnvironmentStore};
+pub use storage::{default_environment_dir, EnvironmentLock, EnvironmentStore};
 pub use types::*;
 
 pub use installer_authorization::{
@@ -62,6 +66,7 @@ pub use layout::installed_desktop_runtime_directory;
 pub use legacy_cli::{migrate_legacy_cli_user_runner, LegacyCliRunnerInput};
 #[cfg(target_os = "linux")]
 pub use legacy_system_server::{migrate_legacy_cli_system_server, LegacyCliServerInput};
+pub use upgrade::windows_legacy;
 pub use upgrade::{
     ensure_upgrade_idle_under_lock, verify_prepared_installation, verify_same_installed_package,
     verify_upgrade_candidate, CandidateArtifact, CandidateDesktop, PreparedInstallationReceipt,

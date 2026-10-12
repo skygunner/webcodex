@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 --dmg <path> --version <version> --source-sha <40hex> --built-at <unix> --platform <darwin-x64|darwin-arm64> --stage-metadata <path> --signing-mode <adhoc|developer-id> [--evidence <path>]" >&2
+  echo "usage: $0 --dmg <path> --version <version> --source-sha <40hex> --built-at <unix> --platform <darwin-x64|darwin-arm64> --stage-metadata <path> --signing-mode <adhoc|self-signed|developer-id> [--evidence <path>]" >&2
   exit 2
 }
 
@@ -37,7 +37,7 @@ case "$platform" in
   darwin-arm64) expected_host=arm64; expected_arch=arm64 ;;
   *) echo "unsupported Desktop platform: $platform" >&2; exit 1 ;;
 esac
-case "$signing_mode" in adhoc|developer-id) ;; *) echo "invalid signing mode" >&2; exit 1 ;; esac
+case "$signing_mode" in adhoc|self-signed|developer-id) ;; *) echo "invalid signing mode" >&2; exit 1 ;; esac
 [ "$(uname -m)" = "$expected_host" ] || { echo "Desktop smoke requires native $expected_host host" >&2; exit 1; }
 [ -f "$dmg" ] && [ ! -L "$dmg" ] || { echo "DMG is missing or not a regular file: $dmg" >&2; exit 1; }
 [ -f "$stage_metadata" ] && [ ! -L "$stage_metadata" ] || { echo "stage metadata is missing: $stage_metadata" >&2; exit 1; }
@@ -70,41 +70,41 @@ from pathlib import Path
 path, version, source, built_at, platform, signing_mode = sys.argv[1:]
 value = json.loads(Path(path).read_text(encoding="utf-8"))
 required = {"schema_version", "platform", "version", "source_sha", "built_at", "signing_mode", "resource_dir", "provenance", "files"}
-if set(value) != required or value.get("schema_version") != 2:
+if set(value) != required or value.get("schema_version") != 3:
     raise SystemExit("unexpected Desktop staging metadata schema")
 if value.get("version") != version or value.get("source_sha") != source.lower():
     raise SystemExit("Desktop staging metadata release identity mismatch")
 if value.get("built_at") != int(built_at) or value.get("platform") != platform or value.get("signing_mode") != signing_mode:
     raise SystemExit("Desktop staging metadata platform/signing identity mismatch")
-if value.get("provenance") != "same_unsigned_runtime_input_before_platform_signing":
+if value.get("provenance") != "same_runtime_input_before_bundle_signing":
     raise SystemExit("Desktop staging metadata provenance mismatch")
 files = value.get("files")
 if not isinstance(files, dict) or set(files) != {"webcodex", "webcodex-server", "webcodex-runner"}:
     raise SystemExit("Desktop staging metadata runtime set mismatch")
 for name, item in files.items():
-    if not isinstance(item, dict) or set(item) != {"filename", "size", "source_sha256", "staged_unsigned_sha256"}:
+    if not isinstance(item, dict) or set(item) != {"filename", "size", "source_sha256", "staged_input_sha256"}:
         raise SystemExit(f"malformed staged runtime metadata: {name}")
     if item["filename"] != name or not isinstance(item["size"], int) or item["size"] <= 0:
         raise SystemExit(f"invalid staged runtime file metadata: {name}")
-    for key in ("source_sha256", "staged_unsigned_sha256"):
+    for key in ("source_sha256", "staged_input_sha256"):
         if not isinstance(item[key], str) or not re.fullmatch(r"[0-9a-f]{64}", item[key]):
             raise SystemExit(f"invalid staged runtime digest: {name}")
-    if item["source_sha256"] != item["staged_unsigned_sha256"]:
-        raise SystemExit(f"unsigned source/staged digest mismatch: {name}")
+    if item["source_sha256"] != item["staged_input_sha256"]:
+        raise SystemExit(f"source/staged input digest mismatch: {name}")
 PY
 
-short_source="$(printf '%s' "${source_sha:0:12}" | tr '[:upper:]' '[:lower:]')"
+source_identity="$(printf '%s' "$source_sha" | tr '[:upper:]' '[:lower:]')"
 for name in webcodex webcodex-server webcodex-runner; do
   binary="$runtime_dir/$name"
   [ -f "$binary" ] && [ ! -L "$binary" ] && [ -x "$binary" ] || { echo "bundled runtime missing: $name" >&2; exit 1; }
   actual="$("$binary" --version | head -n 1)"
-  expected="$name $version (commit $short_source, dirty=false, built_at=$built_at)"
+  expected="$name $version (commit $source_identity, dirty=false, built_at=$built_at)"
   [ "$actual" = "$expected" ] || { echo "unexpected bundled runtime identity for $name" >&2; exit 1; }
   actual_arch="$(/usr/bin/lipo -archs "$binary")"
   [ "$actual_arch" = "$expected_arch" ] || { echo "unexpected bundled runtime architecture for $name: $actual_arch" >&2; exit 1; }
 done
 
-codesign --verify --deep --strict --verbose=2 "$app"
+bash "$(dirname "$0")/verify_macos_desktop_identity.sh" "$app" "$signing_mode"
 notarized=false
 if [ "$signing_mode" = developer-id ]; then
   spctl --assess --type execute --verbose=2 "$app"
@@ -135,7 +135,7 @@ files = {}
 for name, staged in metadata["files"].items():
     bundled = runtime / name
     files[name] = {
-        "unsigned_input_sha256": staged["staged_unsigned_sha256"],
+        "runtime_input_sha256": staged["staged_input_sha256"],
         "bundled_signed_sha256": digest(bundled),
     }
 payload = {

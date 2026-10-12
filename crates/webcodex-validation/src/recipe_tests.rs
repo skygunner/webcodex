@@ -149,6 +149,14 @@ fn recipe_resolution_fails_closed_for_ambiguity_mismatch_and_missing_marker() {
     )
     .unwrap_err();
     assert_eq!(mismatch.code, "validation_recipe_mismatch");
+    assert_eq!(
+        mismatch.details.as_ref().unwrap(),
+        &serde_json::json!({
+            "recipe_root": ".",
+            "candidate_recipes": ["node", "go"],
+            "detected_markers": ["package.json", "go.mod"],
+        })
+    );
 
     let empty = tempfile::tempdir().unwrap();
     let missing = resolve(empty.path(), None, None, &[SemanticCheck::Check], None).unwrap_err();
@@ -507,6 +515,115 @@ fn package_scope_is_rejected_for_non_portable_backends() {
 }
 
 #[test]
+fn project_recipe_filtered_execution_is_deterministic_without_repeating_arg_builders() {
+    for (marker, backend, filter) in [
+        ("Cargo.toml", RecipeId::Rust, " selected "),
+        ("go.mod", RecipeId::Go, "^TestA/Sub$"),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        write(root.path(), marker, "");
+        let plain = resolve(
+            root.path(),
+            None,
+            Some(backend),
+            &[SemanticCheck::Test],
+            None,
+        )
+        .unwrap();
+        let selected = resolve(
+            root.path(),
+            None,
+            Some(backend),
+            &[SemanticCheck::Test],
+            Some(filter),
+        )
+        .unwrap();
+        let expected =
+            crate::project_validation_operation(backend.as_str(), SemanticCheck::Test, None)
+                .unwrap()
+                .with_test_filter(Some(filter))
+                .unwrap()
+                .build_readonly_plan()
+                .unwrap();
+        assert_eq!(selected.steps, vec![expected.structured_step]);
+        assert_eq!(selected.manifest_digest, plain.manifest_digest);
+        assert_ne!(selected.invocation_digest, plain.invocation_digest);
+        assert_eq!(
+            resolve(
+                root.path(),
+                None,
+                Some(backend),
+                &[SemanticCheck::Test],
+                Some("")
+            )
+            .unwrap()
+            .invocation_digest,
+            plain.invocation_digest
+        );
+    }
+}
+
+#[test]
+fn rust_member_manifest_digest_tracks_workspace_root_inputs() {
+    let temp = tempfile::tempdir().unwrap();
+    write(
+        temp.path(),
+        "Cargo.toml",
+        "[workspace]\nmembers=['member']\nresolver='2'\n",
+    );
+    write(temp.path(), "Cargo.lock", "version = 4\n");
+    write(
+        temp.path(),
+        "member/Cargo.toml",
+        "[package]\nname='member'\nversion='0.1.0'\nedition='2021'\n",
+    );
+
+    let resolve_member = || {
+        resolve(
+            temp.path(),
+            Some("member"),
+            Some(RecipeId::Rust),
+            &[SemanticCheck::Check],
+            None,
+        )
+        .unwrap()
+    };
+    let original = resolve_member();
+    assert_eq!(original.recipe_root_relative, "member");
+    assert_eq!(original.steps[0].args, ["check", "--all-targets"]);
+
+    write(
+        temp.path(),
+        "member/src/lib.rs",
+        "pub fn value() -> u8 { 1 }\n",
+    );
+    let source_only = resolve_member();
+    assert_eq!(source_only.manifest_digest, original.manifest_digest);
+    assert_eq!(source_only.invocation_digest, original.invocation_digest);
+
+    write(temp.path(), "Cargo.lock", "version = 3\n");
+    let lock_changed = resolve_member();
+    assert_ne!(lock_changed.manifest_digest, original.manifest_digest);
+    assert_eq!(lock_changed.invocation_digest, original.invocation_digest);
+
+    write(temp.path(), "Cargo.lock", "version = 4\n");
+    write(
+        temp.path(),
+        "Cargo.toml",
+        "[workspace]\nmembers=['member']\nresolver='2'\n[profile.dev]\nopt-level=1\n",
+    );
+    let workspace_manifest_changed = resolve_member();
+    assert_ne!(
+        workspace_manifest_changed.manifest_digest,
+        original.manifest_digest
+    );
+    assert_eq!(
+        workspace_manifest_changed.invocation_digest,
+        original.invocation_digest
+    );
+}
+
+#[test]
 fn unavailable_checks_and_unsupported_filters_fail_before_execution() {
     let go = tempfile::tempdir().unwrap();
     write(go.path(), "go.mod", "module example.test/fixture\n");
@@ -627,6 +744,31 @@ fn rust_filter_contract_normalizes_rejects_and_binds_identity() {
         "test_filter_unsupported"
     );
     assert!(!outside.path().join("target").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn marker_symlink_escape_remains_a_manifest_error_after_recipe_detection() {
+    use std::os::unix::fs::symlink;
+
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    write(
+        outside.path(),
+        "Cargo.toml",
+        "[package]\nname='outside'\nversion='0.1.0'\n",
+    );
+    symlink(
+        outside.path().join("Cargo.toml"),
+        root.path().join("Cargo.toml"),
+    )
+    .unwrap();
+    assert_eq!(
+        resolve(root.path(), None, None, &[SemanticCheck::Check], None)
+            .unwrap_err()
+            .code,
+        "validation_manifest_invalid"
+    );
 }
 
 #[cfg(unix)]

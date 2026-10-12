@@ -355,7 +355,7 @@ fn goal_schemas_are_bounded_private_and_existing_coding_tools_do_not_accept_goal
     let prepare = spec("prepare_goal_workflow");
     assert_eq!(
         prepare.input_schema["properties"]["session_id"]["pattern"],
-        "^wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})$"
+        "^(wc_sess_([A-Za-z0-9_-]{16}|[0-9a-f]{32})|~s[1-9][0-9]{0,18})$"
     );
     assert_eq!(
         prepare.input_schema["properties"]["title"]["maxLength"],
@@ -970,6 +970,7 @@ async fn prepare_goal_workflow_reauthorizes_session_project_controller_and_stays
         .list_goals(
             &communication_principal(Some(&owner)).unwrap(),
             None,
+            None,
             0,
             100,
         )
@@ -986,6 +987,7 @@ async fn prepare_goal_workflow_reauthorizes_session_project_controller_and_stays
     assert_eq!(
         db.list_goals(
             &communication_principal(Some(&owner)).unwrap(),
+            None,
             None,
             0,
             100,
@@ -1019,6 +1021,7 @@ async fn prepare_goal_workflow_reauthorizes_session_project_controller_and_stays
     assert_eq!(
         db.list_goals(
             &communication_principal(Some(&owner)).unwrap(),
+            None,
             None,
             0,
             100,
@@ -1927,6 +1930,7 @@ async fn workflow_session_link_is_identity_only_and_finish_coding_task_does_not_
             runtime
                 .dispatch_with_auth(
                     ToolCall::FinishCodingTask {
+                        outputs: Vec::new(),
                         project,
                         session_id,
                         summary_only: true,

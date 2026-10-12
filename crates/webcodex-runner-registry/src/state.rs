@@ -53,6 +53,9 @@ pub(super) struct RunnerRecord {
     /// hand-off: once changed, the previous instance can no longer poll or
     /// submit results/job_updates.
     pub(super) runner_instance_id: String,
+    /// Renewed on every accepted registration, including same-instance reconnects.
+    /// This private presentation fence is not Runner execution authority.
+    pub(super) registration_observation_epoch: String,
     pub(super) display_name: Option<String>,
     pub(super) owner: Option<String>,
     pub(super) hostname: Option<String>,
@@ -553,7 +556,7 @@ pub(super) struct RunnerRegistryInner {
     pub(super) coding_agent_waiters: HashMap<String, oneshot::Sender<CodingAgentResponse>>,
     pub(super) coding_agent_fences: HashMap<String, CodingAgentDispatchFence>,
     pub(super) queues_by_runner: HashMap<String, VecDeque<String>>,
-    pub(super) jobs_by_id: HashMap<String, ShellJobRecord>,
+    pub(super) jobs_by_id: crate::job_index::JobRecords,
     pub(super) request_to_job: HashMap<String, String>,
     /// Bounded stale-instance tombstones prevent a replaced runner process
     /// from reclaiming the same runner lease after the replacement later

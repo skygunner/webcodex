@@ -43,6 +43,65 @@ class UpdaterPublicationTests(unittest.TestCase):
             verifier.verify_public_installer_manifest(self.assets, self.sums, self.manifest, VERSION, 5)
         fetch.assert_called_once_with(self.assets["manifest.json"]["browser_download_url"], 256 * 1024, 5)
 
+    def test_strict_public_verifier_rejects_entirely_missing_unified_assets_before_download(self):
+        legacy = dict(self.release, assets=[a for a in self.release["assets"]
+                      if not a["name"].startswith(("webcodex-unified-", "webcodex-source-"))
+                      and a["name"] != "manifest.json"])
+        verifier.validate_github_assets(legacy, VERSION)
+        npm = {"name": verifier.PACKAGE, "version": VERSION,
+               "dist": {"tarball": "https://registry.npmjs.org/fixture.tgz"}}
+        with mock.patch.object(verifier, "fetch_json", side_effect=[npm, legacy]), \
+             mock.patch.object(verifier, "download_file") as download:
+            with self.assertRaises(verifier.VerificationError):
+                verifier.verify_public_release(VERSION, 5, require_unified_installers=True)
+        download.assert_not_called()
+
+    def test_present_null_npm_installers_is_not_a_legacy_manifest(self):
+        self.assertEqual(verifier.validate_public_installers({"version": VERSION}, VERSION), {})
+        with self.assertRaises(verifier.VerificationError):
+            verifier.validate_public_installers({"version": VERSION, "installers": None}, VERSION)
+
+    def test_strict_staging_and_draft_check_refuse_legacy_before_effects(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _write_bundle(root, f"v{VERSION}", "release")
+            self.assertNotIn("installer_artifacts", publication.verify_bundle(root, verifier.REPO))
+            with mock.patch.object(collector, "resolve_github_token") as token, \
+                 mock.patch.object(publication, "_run_checked") as execute:
+                with self.assertRaisesRegex(publication.PublicationError, "required unified installer"):
+                    publication.verify_draft_assets(repo=verifier.REPO, bundle_dir=root,
+                                                    timeout=5, require_unified_installers=True)
+                with self.assertRaisesRegex(publication.PublicationError, "required unified installer"):
+                    publication.stage_npm(repo=verifier.REPO, bundle_dir=root, source_root=root,
+                                          output_dir=root / "stage", require_unified_installers=True)
+            token.assert_not_called(); execute.assert_not_called()
+            self.assertFalse((root / "stage").exists())
+
+    def test_workflow_gate_accepts_release_and_verification_but_rejects_total_absence(self):
+        import os, subprocess, textwrap
+        repository = Path(__file__).resolve().parents[2]
+        workflow = (repository / ".github/workflows/release-build.yml").read_text()
+        step = workflow.split("      - name: Verify complete unified bundle", 1)[1].split(
+            "      - name: Upload assembled candidate set", 1)[0]
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1])
+        for kind, unified in (("release", True), ("verification", True), ("release", False), ("verification", False)):
+            with self.subTest(kind=kind, unified=unified), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp); bundle = root / "release-bundle"; bundle.mkdir()
+                tag = f"v{VERSION}" if kind == "release" else "release-build-test-updater"
+                stem, _ = _write_bundle(bundle, tag, kind, unified=unified)
+                if kind == "verification":
+                    self.assertFalse((bundle / "manifest.json").exists())
+                env = {**os.environ, "PYTHONPATH": str(repository),
+                       "GITHUB_REPOSITORY": verifier.REPO, "GITHUB_RUN_ID": str(RUN_ID),
+                       "SOURCE_SHA": SOURCE_SHA, "INPUT_TAG": tag, "ARCHIVE_STEM": stem}
+                result = subprocess.run(["bash", "-euc", script], cwd=root, env=env,
+                                        capture_output=True, text=True, input="", timeout=30)
+                if unified:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("required unified installer contract is missing", result.stderr)
+
     def test_public_manifest_is_checksummed_and_matches_npm(self):
         self.assertIn("manifest.json", verifier.validate_github_assets(self.release, VERSION))
         self.verify()

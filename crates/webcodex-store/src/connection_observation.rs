@@ -16,6 +16,7 @@ pub(crate) enum StoreDomain {
     AgentTask,
     AgentWait,
     AgentWake,
+    ArtifactHandoff,
     Audit,
     Communication,
     Core,
@@ -32,13 +33,14 @@ pub(crate) enum StoreDomain {
 
 impl StoreDomain {
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 18] = [
+    pub(crate) const ALL: [Self; 19] = [
         Self::Accounts,
         Self::Activity,
         Self::AdminProjectLifecycle,
         Self::AgentTask,
         Self::AgentWait,
         Self::AgentWake,
+        Self::ArtifactHandoff,
         Self::Audit,
         Self::Communication,
         Self::Core,
@@ -61,6 +63,7 @@ impl StoreDomain {
             Self::AgentTask => "agent_task",
             Self::AgentWait => "agent_wait",
             Self::AgentWake => "agent_wake",
+            Self::ArtifactHandoff => "artifact_handoff",
             Self::Audit => "audit",
             Self::Communication => "communication",
             Self::Core => "core",
@@ -144,6 +147,24 @@ pub(crate) fn lock_connection<'a>(
     }
 }
 
+/// Optional projections never wait behind a busy Store lane. Required callers
+/// retain lock_connection and its original poison/error semantics.
+pub(crate) fn try_lock_connection<'a>(
+    connection: &'a Mutex<Connection>,
+    observer: &'a dyn StoreConnectionObserver,
+    domain: StoreDomain,
+) -> Option<StoreConnectionGuard<'a>> {
+    let acquired_at = Instant::now();
+    let guard = connection.try_lock().ok()?;
+    Some(StoreConnectionGuard {
+        guard: Some(guard),
+        observer,
+        domain,
+        wait: acquired_at.elapsed(),
+        acquired_at,
+    })
+}
+
 impl Deref for StoreConnectionGuard<'_> {
     type Target = Connection;
 
@@ -171,6 +192,9 @@ impl Drop for StoreConnectionGuard<'_> {
         drop(self.guard.take());
         observe_fail_open(|| self.observer.record_acquisition(self.domain, self.wait));
         observe_fail_open(|| self.observer.record_hold(self.domain, hold));
+        tracing::debug!(target: "webcodex_store::connection", domain=self.domain.as_str(),
+            wait_ms=self.wait.as_secs_f64()*1000.0, hold_ms=hold.as_secs_f64()*1000.0,
+            "store wait and hold phase");
     }
 }
 

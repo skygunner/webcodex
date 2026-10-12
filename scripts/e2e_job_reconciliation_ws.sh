@@ -677,7 +677,10 @@ PY
 # longer than the 10s synchronous grace window so the SAME execution is handed
 # off rather than restarted.
 JOB_BODY_C="$(run_process_call "scenario-c.py" 120)"
+# Handoff receipts: legacy builds expose output.job_id; current builds return the
+# compact pending receipt whose only job_id is continuation.arguments.items[0].
 JOB_ID_C="$(json_get "$JOB_BODY_C" output.job_id)"
+[ -n "$JOB_ID_C" ] || JOB_ID_C="$(json_get "$JOB_BODY_C" output.continuation.arguments.items.0.job_id)"
 assert_nonempty "scenario C: structured process handed off with job_id" "$JOB_ID_C"
 BODY_C_RUNNING="$(wait_for_job_status "$JOB_ID_C" running)" || { fail "scenario C: structured process did not reach running"; dump_logs; exit 1; }
 C_BASELINE="$(job_log_call "$JOB_ID_C")"
@@ -740,7 +743,9 @@ log "scenario D: cargo_check validation handoff across server restart"
 D_MARKER_FILE="$TEST_REPO/scenario-d-count.txt"
 rm -f -- "$D_MARKER_FILE"
 JOB_BODY_D="$(tool_call "cargo_check" "{\"project\":\"${RUNTIME_PROJECT_ID}\",\"timeout_secs\":180}" 120)"
+# Same compact pending-handoff receipt as scenario C; accept either projection.
 JOB_ID_D="$(json_get "$JOB_BODY_D" output.job_id)"
+[ -n "$JOB_ID_D" ] || JOB_ID_D="$(json_get "$JOB_BODY_D" output.continuation.arguments.items.0.job_id)"
 assert_nonempty "scenario D: cargo_check handed off with job_id" "$JOB_ID_D"
 BODY_D_RUNNING="$(wait_for_job_status "$JOB_ID_D" running)" || { fail "scenario D: cargo_check did not remain running after handoff"; dump_logs; exit 1; }
 D_BASELINE="$(job_log_call "$JOB_ID_D")"

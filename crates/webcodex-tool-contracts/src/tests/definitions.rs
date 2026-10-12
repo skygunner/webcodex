@@ -575,7 +575,9 @@ fn every_runtime_tool_has_an_explicit_fail_closed_audit_contract() {
                 "{} Session context policy must declare at least one bounded field",
                 definition.name
             ),
-            ToolAuditContextPolicy::Omit | ToolAuditContextPolicy::WorkingTreeStatus => {}
+            ToolAuditContextPolicy::Omit
+            | ToolAuditContextPolicy::WorkingTreeStatus
+            | ToolAuditContextPolicy::TaskOutputs => {}
         }
         if definition.audit_policy().execution.detail == ToolAuditExecutionDetail::Omit {
             assert_eq!(
@@ -670,14 +672,12 @@ fn stop_job_preserves_one_canonical_effect() {
 
 #[test]
 fn agent_continuation_setup_descriptions_are_self_guiding_without_direct_expansion() {
-    let specs = registered_tool_specs();
     let description = |name: &str| {
-        specs
-            .iter()
-            .find(|spec| spec.name == name)
-            .unwrap_or_else(|| panic!("missing ToolSpec {name}"))
+        lookup_tool_definition(name)
+            .unwrap_or_else(|| panic!("missing ToolDefinition {name}"))
+            .model_spec
+            .expect("retained domain description")
             .description
-            .as_str()
     };
     let create = description("create_agent_identity");
     assert!(create.contains("first setup step"));
@@ -706,7 +706,7 @@ fn agent_continuation_setup_descriptions_are_self_guiding_without_direct_expansi
         lookup_tool_definition("present_agent_continuation")
             .unwrap()
             .adaptive_runtime_direct_rank(),
-        Some(18)
+        None
     );
     assert_eq!(
         lookup_tool_definition("rotate_agent_continuation_endpoint")
@@ -714,24 +714,200 @@ fn agent_continuation_setup_descriptions_are_self_guiding_without_direct_expansi
             .adaptive_runtime_direct_rank(),
         None
     );
+    #[cfg(feature = "legacy-gpt-actions")]
     assert_eq!(
         lookup_tool_definition("attach_agent_endpoint")
             .unwrap()
             .adaptive_runtime_direct_rank(),
         None,
-        "compatibility alias must not become a second canonical Direct entry"
+        "frozen legacy exception must not become a second Direct entry"
     );
+}
+
+#[test]
+fn endpoint_name_alias_exists_only_for_the_frozen_legacy_feature() {
+    let legacy_enabled = cfg!(feature = "legacy-gpt-actions");
+    assert_eq!(
+        lookup_tool_definition("attach_agent_endpoint").is_some(),
+        legacy_enabled
+    );
+    assert_eq!(
+        known_tool_names().any(|name| name == "attach_agent_endpoint"),
+        legacy_enabled
+    );
+    assert_eq!(
+        registered_tool_specs()
+            .iter()
+            .any(|spec| spec.name == "attach_agent_endpoint"),
+        legacy_enabled
+    );
+    assert_eq!(
+        gpt_action_tool_supported("attach_agent_endpoint"),
+        legacy_enabled
+    );
+    let canonical = lookup_tool_definition("rotate_agent_continuation_endpoint").unwrap();
+    assert!(canonical.visibility.is_model_visible());
+    assert_eq!(canonical.adaptive_runtime_direct, None);
+    #[cfg(feature = "legacy-gpt-actions")]
+    {
+        let legacy = lookup_tool_definition("attach_agent_endpoint").unwrap();
+        assert_eq!(legacy.category, canonical.category);
+        assert_eq!(legacy.metadata.effect, canonical.metadata.effect);
+        assert_eq!(legacy.metadata.risk, canonical.metadata.risk);
+        assert_eq!(legacy.metadata.authority, canonical.metadata.authority);
+        assert_eq!(legacy.metadata.idempotency, canonical.metadata.idempotency);
+        assert_eq!(legacy.policy, canonical.policy);
+        assert_eq!(legacy.adaptive_runtime_direct, None);
+    }
+}
+
+#[test]
+fn inactive_continuation_surface_preserves_domain_definitions() {
+    for (name, visible, category, effect) in [
+        (
+            "wait_for_agent_events",
+            true,
+            TOOL_CATEGORY_AGENT_WAIT,
+            ToolEffect::Mutate,
+        ),
+        (
+            "wait_for_job_terminal",
+            true,
+            TOOL_CATEGORY_JOB,
+            ToolEffect::Mutate,
+        ),
+        (
+            "present_agent_continuation",
+            false,
+            TOOL_CATEGORY_COMMUNICATION,
+            ToolEffect::Observe,
+        ),
+        (
+            "present_job_terminal_continuation",
+            false,
+            TOOL_CATEGORY_JOB,
+            ToolEffect::Observe,
+        ),
+    ] {
+        let definition = lookup_tool_definition(name).expect("retained continuation definition");
+        assert_eq!(definition.visibility.is_model_visible(), visible, "{name}");
+        assert_eq!(definition.adaptive_runtime_direct, None, "{name}");
+        assert_eq!(definition.category, category, "{name}");
+        assert_eq!(definition.metadata.effect, effect, "{name}");
+        assert!(
+            definition.model_spec.is_some(),
+            "{name} keeps its domain specification"
+        );
+        assert_eq!(
+            registered_tool_specs().iter().any(|spec| spec.name == name),
+            visible,
+            "{name}"
+        );
+        assert_eq!(
+            definition.metadata.idempotency,
+            if visible {
+                ToolIdempotency::Keyed
+            } else {
+                ToolIdempotency::PureRead
+            },
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn adaptive_direct_reason_is_independent_of_domain_and_authority() {
+    use crate::tool_definition::{ToolAdaptiveDirectPolicy, ToolDirectReason};
+
+    for (name, reason) in [
+        ("read_files", ToolDirectReason::CoreWorkflow),
+        ("project_artifact", ToolDirectReason::CoreWorkflow),
+        (
+            "import_conversation_files_to_project",
+            ToolDirectReason::HostIntegration,
+        ),
+        ("present_work_result", ToolDirectReason::Presentation),
+        ("present_goal_plan", ToolDirectReason::Presentation),
+    ] {
+        let definition = lookup_tool_definition(name).unwrap();
+        assert_eq!(
+            definition.adaptive_runtime_direct_reason(),
+            Some(reason),
+            "{name}"
+        );
+    }
+    assert_eq!(
+        lookup_tool_definition("project_artifact").unwrap().category,
+        lookup_tool_definition("import_conversation_files_to_project")
+            .unwrap()
+            .category
+    );
+    for original in tool_definitions() {
+        for reason in [
+            ToolDirectReason::CoreWorkflow,
+            ToolDirectReason::HostIntegration,
+            ToolDirectReason::Presentation,
+            ToolDirectReason::Continuation,
+        ] {
+            let mut changed = *original;
+            // Only change an existing policy; never admit a hidden/gateway tool.
+            changed.adaptive_runtime_direct =
+                original
+                    .adaptive_runtime_direct
+                    .map(|policy| ToolAdaptiveDirectPolicy {
+                        rank: policy.rank,
+                        reason,
+                    });
+            assert_eq!(changed.category, original.category);
+            assert_eq!(changed.visibility, original.visibility);
+            assert_eq!(changed.runner_capability, original.runner_capability);
+            assert_eq!(changed.policy, original.policy);
+            assert_eq!(changed.audit, original.audit);
+            assert_eq!(changed.effect_annotations(), original.effect_annotations());
+            assert_eq!(changed.metadata.effect, original.metadata.effect);
+            assert_eq!(changed.metadata.risk, original.metadata.risk);
+            assert_eq!(changed.metadata.authority, original.metadata.authority);
+            assert_eq!(changed.metadata.approval, original.metadata.approval);
+            assert_eq!(changed.metadata.idempotency, original.metadata.idempotency);
+            assert_eq!(
+                changed.adaptive_runtime_direct_rank(),
+                original.adaptive_runtime_direct_rank()
+            );
+        }
+    }
+    let model_specs = serde_json::to_string(&registered_tool_specs()).unwrap();
+    for internal_key in [
+        "\"adaptive_runtime_direct\"",
+        "\"adaptive_runtime_direct_reason\"",
+        "\"ToolDirectReason\"",
+    ] {
+        assert!(!model_specs.contains(internal_key), "{internal_key}");
+    }
 }
 
 #[test]
 fn adaptive_runtime_direct_declarations_are_visible_ranked_and_unique() {
     let mut seen_ranks = std::collections::BTreeMap::new();
     for definition in tool_definitions() {
-        let Some(rank) = definition.adaptive_runtime_direct_rank() else {
+        if definition.visibility.is_model_hidden() {
+            assert_eq!(
+                definition.adaptive_runtime_direct, None,
+                "{}",
+                definition.name
+            );
+        }
+        let Some(policy) = definition.adaptive_runtime_direct else {
+            assert_eq!(definition.adaptive_runtime_direct_rank(), None);
+            assert_eq!(definition.adaptive_runtime_direct_reason(), None);
             continue;
         };
+        assert_eq!(definition.adaptive_runtime_direct_rank(), Some(policy.rank));
+        assert_eq!(
+            definition.adaptive_runtime_direct_reason(),
+            Some(policy.reason)
+        );
         assert!(definition.visibility.is_model_visible());
-        assert!(seen_ranks.insert(rank, definition.name).is_none());
+        assert!(seen_ranks.insert(policy.rank, definition.name).is_none());
     }
 
     let derived = adaptive_runtime_direct_tool_definitions();
@@ -757,6 +933,7 @@ fn adaptive_runtime_direct_declarations_are_visible_ranked_and_unique() {
     for (name, expected_rank) in [
         ("import_conversation_files_to_project", 55),
         ("project_artifact", 56),
+        ("job_write_input", 71),
         ("run_script", 74),
         ("run_shell", 75),
         ("observe_jobs", 80),
@@ -790,6 +967,7 @@ fn adaptive_runtime_direct_declarations_are_visible_ranked_and_unique() {
         "session_shell_exec",
         "session_shell_status",
         "close_session_shell",
+        #[cfg(feature = "legacy-gpt-actions")]
         "attach_agent_endpoint",
         "save_project_artifact",
         "read_project_artifact",
@@ -953,7 +1131,7 @@ fn turn_economy_descriptors_stay_converged_and_bounded() {
         for phrase in [
             "continue independent work",
             "observe_jobs only for",
-            "wait_for_job_terminal only when",
+            "bounded wait_for_job_readiness",
         ] {
             assert!(spec.description.contains(phrase), "{name}: {phrase}");
         }
@@ -1013,10 +1191,12 @@ fn turn_economy_descriptors_stay_converged_and_bounded() {
     let wait = spec_named(&specs, "wait_for_job_terminal");
     assert!(wait
         .description
-        .contains("only when no independent work remains"));
+        .contains("explicitly selected continuation workflow"));
+    assert!(wait.description.contains("not a blocking wait"));
+    assert!(wait.description.contains("never starts a model turn"));
     assert!(wait
         .description
-        .contains("explicit logs/details or recovery"));
+        .contains("wait_for_job_readiness in the current turn"));
     let list = spec_named(&specs, "list_jobs");
     assert!(list
         .description
@@ -1037,11 +1217,11 @@ fn turn_economy_descriptors_stay_converged_and_bounded() {
         "expected_read_revision",
         "Exact edits fail closed on ambiguity",
         "replace_range",
-        "same original snapshot",
-        "preflighted transactionally",
+        "from that snapshot",
+        "preflight transactionally",
         "dry_run",
-        "show_changes",
-        "structured validation",
+        "review_changes when Git review is useful",
+        "task-appropriate validation",
         "outcome_unknown",
     ] {
         assert!(
@@ -1346,7 +1526,8 @@ fn readiness_tool_is_sequential_outer_only_and_does_not_expand_legacy() {
         "do not mechanically repeat the same-set wait",
         "largest safe remaining Host activation budget",
         "no fixed 10/15/20s slice",
-        "logs/details/recovery use observe_jobs",
+        "Logs/details/recovery use observe_jobs",
+        "No automatic next turn",
     ] {
         assert!(description.contains(phrase), "{phrase}: {description}");
     }
@@ -1411,4 +1592,33 @@ fn readiness_tool_is_sequential_outer_only_and_does_not_expand_legacy() {
             "nested {forbidden}"
         );
     }
+}
+
+#[test]
+fn project_build_is_gateway_visible_but_not_adaptive_direct() {
+    let definition = lookup_tool_definition("project_build").expect("project_build definition");
+    assert!(definition.visibility.is_model_visible());
+    assert_eq!(definition.category, TOOL_CATEGORY_EXECUTION);
+    assert_eq!(definition.adaptive_runtime_direct_rank(), None);
+    assert!(!is_adaptive_runtime_direct_tool("project_build"));
+    let requirement = runtime_tool_runner_capability("project_build")
+        .expect("project_build must require its typed Runner capability");
+    assert_eq!(requirement, RunnerCapabilityRequirement::ProjectBuild);
+    assert_eq!(requirement.label(), "project_build_v1");
+    assert_eq!(requirement.registry_capabilities(), &["project_build_v1"]);
+    assert_eq!(
+        runtime_tool_execution_contract("project_build").map(|contract| contract.form),
+        Some(ToolExecutionForm::ProjectBuild)
+    );
+    assert_eq!(
+        definition.audit_policy().execution,
+        ToolAuditExecutionPolicy::DIRECT_ARGV_TEXT
+    );
+    #[cfg(feature = "legacy-gpt-actions")]
+    assert!(
+        !gpt_action_direct_tool_definitions()
+            .iter()
+            .any(|definition| definition.name == "project_build"),
+        "project_build must remain gateway-only on the legacy GPT Actions surface"
+    );
 }

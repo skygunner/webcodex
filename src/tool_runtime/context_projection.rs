@@ -201,6 +201,7 @@ impl ToolRuntime {
             capabilities,
             CodingGuidanceProfile::default(),
             None,
+            None,
         )
         .await;
     }
@@ -214,6 +215,7 @@ impl ToolRuntime {
         capabilities: ContextMaterialCapabilities,
         guidance_profile: CodingGuidanceProfile,
         window: Option<&crate::client_window::ClientWindow>,
+        instructions: Option<&super::project_instructions::ProjectInstructionsSnapshot>,
     ) {
         if requested.is_empty() {
             return;
@@ -222,13 +224,20 @@ impl ToolRuntime {
         let mut seen = HashSet::new();
         let mut materials = Vec::new();
         let mut truncated = false;
-        for key in requested
+        let requested: Vec<_> = requested
             .iter()
             .map(|key| key.trim())
             .filter(|key| !key.is_empty())
             .filter(|key| seen.insert((*key).to_string()))
             .take(MAX_CONTEXT_REQUEST_ITEMS)
-        {
+            .collect();
+        // Reserve the canonical public workflow before shortening an earlier
+        // instruction body; never reorder, reload, or silently discard rules.
+        let workflow = requested.contains(&"webcodex.workflow").then(|| json!({
+            "key":"webcodex.workflow", "status":"available",
+            "projection":builtin_coding_workflow_projection_with_policy(guidance_profile, self.model_workflow_policy),
+        }));
+        for (index, key) in requested.iter().copied().enumerate() {
             let material = if let Some(spec) = context_material_spec(key) {
                 if !context_material_surface_available(spec.surface, capabilities) {
                     unavailable(key, "context_material_surface_unavailable")
@@ -241,8 +250,16 @@ impl ToolRuntime {
                         "project.instructions" => {
                             let project =
                                 resolved_project.expect("registry requires project target");
-                            let snapshot =
-                                self.load_effective_coding_instructions(project, auth).await;
+                            let loaded;
+                            let snapshot = match instructions {
+                                Some(snapshot) => snapshot,
+                                None => {
+                                    loaded = self
+                                        .load_effective_coding_instructions(project, auth)
+                                        .await;
+                                    &loaded
+                                }
+                            };
                             let mut material = if snapshot.scan_complete {
                                 json!({"key": key, "status": "available", "projection": null})
                             } else {
@@ -255,16 +272,26 @@ impl ToolRuntime {
                             };
                             // Measure the complete prospective envelope, including
                             // earlier materials and the unavailable-reason overhead.
+                            let previous_len = materials.len();
                             materials.push(material.clone());
+                            for later in &requested[index + 1..] {
+                                // Exact public workflow bytes; only an omission
+                                // receipt for other providers. No speculative I/O.
+                                materials.push(if *later == "webcodex.workflow" {
+                                    workflow.as_ref().expect("requested workflow").clone()
+                                } else {
+                                    unavailable(later, "context_projection_budget_exceeded")
+                                });
+                            }
                             let reserved = serialized_json_len(&ContextProjectionMeasure {
                                 materials: &materials,
                                 truncated,
                             })
                             .unwrap_or(usize::MAX)
                             .saturating_sub(4); // Replace the literal JSON null.
-                            materials.pop();
+                            materials.truncate(previous_len);
                             material["projection"] = project_instructions_context_projection(
-                                &snapshot,
+                                snapshot,
                                 MAX_CONTEXT_PROJECTION_BYTES.saturating_sub(reserved),
                             );
                             material
@@ -336,13 +363,9 @@ impl ToolRuntime {
                                 Err(reason_code) => unavailable(key, reason_code),
                             }
                         }
-                        "webcodex.workflow" => json!({
-                            "key": key,
-                            "status": "available",
-                            "projection": builtin_coding_workflow_projection_with_policy(
-                                guidance_profile, self.model_workflow_policy
-                            ),
-                        }),
+                        "webcodex.workflow" => {
+                            workflow.as_ref().expect("requested workflow").clone()
+                        }
                         crate::model_workflow::GOAL_WORKFLOW_CONTEXT_KEY => json!({
                             "key": key,
                             "status": "available",
@@ -474,6 +497,9 @@ impl ToolRuntime {
             });
             if let Some(session_ref) = session_ref {
                 candidate["session_ref"] = json!(session_ref);
+            }
+            if let Some(project_ref) = self.project_reference_for_resolved(&resolved, auth) {
+                candidate["project_ref"] = json!(project_ref);
             }
             candidates.push(candidate);
         }

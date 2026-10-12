@@ -1,11 +1,29 @@
 use crate::activity::ActivityEntry;
 use crate::desktop_shell;
 use crate::error::{DesktopError, DesktopResult};
-use crate::models::{DesktopStateSnapshot, ProjectSelection, TunnelProxyMode};
+use crate::models::{DesktopStateSnapshot, ProjectInspection, ProjectSelection, TunnelProxyMode};
 use crate::state::AppState;
 use crate::tray;
 use serde::Deserialize;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
+
+#[tauri::command]
+pub fn set_desktop_locale(
+    app: AppHandle,
+    state: State<'_, crate::desktop_locale::DesktopLocaleState>,
+    locale: crate::desktop_locale::DesktopLocale,
+) -> DesktopResult<()> {
+    let result = state.set(locale);
+    let snapshot = app.state::<AppState>().get_state();
+    tray::refresh_from_snapshot(&app, &snapshot);
+    result.map_err(|_| {
+        DesktopError::new(
+            "desktop_locale_save_failed",
+            "The Desktop language preference could not be saved for background startup",
+            "Check that the Desktop data directory is writable.",
+        )
+    })
+}
 
 #[tauri::command]
 pub async fn authorize_runner_capabilities(
@@ -109,6 +127,30 @@ pub async fn update_tunnel_config(
     request: crate::tunnel_config::TunnelConfigRequest,
 ) -> Result<DesktopStateSnapshot, DesktopError> {
     project_state_result(&app, state.update_tunnel_config(request).await)
+}
+
+#[tauri::command]
+pub async fn managed_instructions_read(
+    state: State<'_, AppState>,
+) -> DesktopResult<crate::managed_instructions::Snapshot> {
+    state.managed_instructions_read().await
+}
+
+#[tauri::command]
+pub async fn managed_instructions_save(
+    state: State<'_, AppState>,
+    request: crate::managed_instructions::SaveRequest,
+) -> DesktopResult<crate::managed_instructions::Snapshot> {
+    state.managed_instructions_save(request).await
+}
+
+#[tauri::command]
+pub async fn managed_instructions_enable(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: crate::managed_instructions::EnableRequest,
+) -> DesktopResult<DesktopStateSnapshot> {
+    project_state_result(&app, state.managed_instructions_enable(request).await)
 }
 
 #[derive(Deserialize)]
@@ -241,6 +283,14 @@ pub async fn resume_saved_runtime(
 }
 
 #[tauri::command]
+pub async fn resume_saved_connections(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<DesktopStateSnapshot, DesktopError> {
+    project_state_result(&app, state.resume_saved_connections().await)
+}
+
+#[tauri::command]
 pub async fn update_tunnel_proxy(
     request: TunnelProxyRequest,
     app: AppHandle,
@@ -258,6 +308,14 @@ pub async fn inspect_project(
     state: State<'_, AppState>,
 ) -> Result<ProjectSelection, DesktopError> {
     state.inspect_project(&request.project_path).await
+}
+
+#[tauri::command]
+pub async fn inspect_project_access(
+    request: ProjectRequest,
+    state: State<'_, AppState>,
+) -> Result<ProjectInspection, DesktopError> {
+    state.inspect_project_access(&request.project_path).await
 }
 
 #[tauri::command]
@@ -636,7 +694,7 @@ pub async fn open_latest_release(state: State<'_, AppState>) -> DesktopResult<()
 
 #[tauri::command]
 pub fn get_desktop_build_info() -> webcodex_core::desktop_runtime_contract::MachineBuildInfo {
-    let mut info = webcodex_core::build_info::machine_build_info("webcodex-desktop");
+    let mut info = webcodex_build_info::machine_build_info("webcodex-desktop");
     info.version = env!("CARGO_PKG_VERSION").to_string();
     info
 }

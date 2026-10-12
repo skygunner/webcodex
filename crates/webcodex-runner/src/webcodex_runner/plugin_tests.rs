@@ -66,7 +66,7 @@ struct Fixture {
 
 impl Fixture {
     fn new(scenario: &str, timeout_secs: u64) -> Self {
-        let temp = crate::tests::executable_tempdir();
+        let temp = tempfile::tempdir().unwrap();
         let marker = temp.path().join("marker.log");
         let fake = fake_binary();
         let provider = PluginProviderConfig {
@@ -219,7 +219,7 @@ fn runner_config(
 
 #[test]
 fn project_affine_catalog_uses_exact_committed_cwd_without_process_side_effects() {
-    let temp = crate::tests::executable_tempdir();
+    let temp = tempfile::tempdir().unwrap();
     let project_root = temp.path().join("repo");
     let other_root = temp.path().join("tmp");
     let project_registry_dir = temp.path().join("project-registry");
@@ -359,7 +359,7 @@ fn project_catalog_bounds_aggregate_wire_response_without_losing_total() {
 
 #[test]
 fn project_affine_catalog_excludes_absent_cwd_and_retired_provider() {
-    let temp = crate::tests::executable_tempdir();
+    let temp = tempfile::tempdir().unwrap();
     let project_root = temp.path().join("repo");
     fs::create_dir_all(&project_root).unwrap();
     let marker = temp.path().join("marker.log");
@@ -417,7 +417,7 @@ fn project_affine_catalog_excludes_absent_cwd_and_retired_provider() {
 
 #[test]
 fn project_affine_catalog_revision_changes_when_provider_is_replaced() {
-    let temp = crate::tests::executable_tempdir();
+    let temp = tempfile::tempdir().unwrap();
     let marker = temp.path().join("marker.log");
     let fake = fake_binary();
     let config_path = temp.path().join("runner.toml");
@@ -825,63 +825,63 @@ fn provider_busy_is_not_started() {
 fn prepared_environment_reuses_shell_env_default_profile_and_clears_sensitive_values() {
     use super::super::config::ShellProfileConfig;
     use std::collections::BTreeMap;
-    let _guard = crate::tests::test_env_lock();
-    let _env = crate::tests::EnvGuard::new()
+    crate::tests::IsolatedEnv::new()
         .set("WEBCODEX_AGENT_TOKEN", "must-not-leak")
-        .set("WEBCODEX_PAT", "inherited-pat-must-not-leak");
-    let temp = crate::tests::executable_tempdir();
-    let marker = temp.path().join("marker.log");
-    let fake = fake_binary();
-    let mut shell = ShellConfig::default();
-    shell
-        .env
-        .insert("WEBCODEX_PLUGIN_TEST_ENV".to_string(), "base".to_string());
-    shell.env.insert(
-        "WEBCODEX_PAT".to_string(),
-        "shell-pat-must-not-leak".to_string(),
-    );
-    shell.default_profile = Some("plugin".to_string());
-    shell.profiles = BTreeMap::from([(
-        "plugin".to_string(),
-        ShellProfileConfig {
-            env: BTreeMap::from([
-                (
-                    "WEBCODEX_PLUGIN_TEST_ENV".to_string(),
-                    "profile-ready".to_string(),
-                ),
-                (
-                    "WEBCODEX_PAT".to_string(),
-                    "profile-pat-must-not-leak".to_string(),
-                ),
-            ]),
-            ..ShellProfileConfig::default()
-        },
-    )]);
-    let plugins = PluginConfig {
-        request_timeout_secs: 2,
-        providers: vec![PluginProviderConfig {
-            id: "fake".to_string(),
-            name: "Fake Plugin".to_string(),
-            command: fake.path.to_string_lossy().into_owned(),
-            args: vec![
-                "execution_context".to_string(),
-                marker.to_string_lossy().into_owned(),
-                temp.path().to_string_lossy().into_owned(),
-            ],
-            cwd: Some(temp.path().to_string_lossy().into_owned()),
-            profile: None,
-            timeout_secs: None,
-        }],
-    };
-    let config = runner_config(plugins, shell, temp.path());
-    let manager = PluginManager::new(&config, temp.path().join("runner.toml"));
-    assert_eq!(current_providers(&manager)[0].status, "ready");
-    let markers = fs::read_to_string(marker).unwrap();
-    assert!(markers.contains("profile-env-ok"));
-    assert!(markers.contains("sensitive-env-cleared"));
-    assert!(markers.contains("cwd-ok"));
+        .set("WEBCODEX_PAT", "inherited-pat-must-not-leak")
+        .run("inherited", || {
+            let temp = tempfile::tempdir().unwrap();
+            let marker = temp.path().join("marker.log");
+            let fake = fake_binary();
+            let mut shell = ShellConfig::default();
+            shell
+                .env
+                .insert("WEBCODEX_PLUGIN_TEST_ENV".to_string(), "base".to_string());
+            shell.env.insert(
+                "WEBCODEX_PAT".to_string(),
+                "shell-pat-must-not-leak".to_string(),
+            );
+            shell.default_profile = Some("plugin".to_string());
+            shell.profiles = BTreeMap::from([(
+                "plugin".to_string(),
+                ShellProfileConfig {
+                    env: BTreeMap::from([
+                        (
+                            "WEBCODEX_PLUGIN_TEST_ENV".to_string(),
+                            "profile-ready".to_string(),
+                        ),
+                        (
+                            "WEBCODEX_PAT".to_string(),
+                            "profile-pat-must-not-leak".to_string(),
+                        ),
+                    ]),
+                    ..ShellProfileConfig::default()
+                },
+            )]);
+            let plugins = PluginConfig {
+                request_timeout_secs: 2,
+                providers: vec![PluginProviderConfig {
+                    id: "fake".to_string(),
+                    name: "Fake Plugin".to_string(),
+                    command: fake.path.to_string_lossy().into_owned(),
+                    args: vec![
+                        "execution_context".to_string(),
+                        marker.to_string_lossy().into_owned(),
+                        temp.path().to_string_lossy().into_owned(),
+                    ],
+                    cwd: Some(temp.path().to_string_lossy().into_owned()),
+                    profile: None,
+                    timeout_secs: None,
+                }],
+            };
+            let config = runner_config(plugins, shell, temp.path());
+            let manager = PluginManager::new(&config, temp.path().join("runner.toml"));
+            assert_eq!(current_providers(&manager)[0].status, "ready");
+            let markers = fs::read_to_string(marker).unwrap();
+            assert!(markers.contains("profile-env-ok"));
+            assert!(markers.contains("sensitive-env-cleared"));
+            assert!(markers.contains("cwd-ok"));
+        });
 }
-
 #[test]
 #[cfg(feature = "runner-real-process-tests")]
 #[ignore = "manual real-process startup: provider readiness depends on host scheduling"]
@@ -946,7 +946,7 @@ fn runner_real_process_bare_plugin_command_resolves_from_prepared_path_with_expl
 #[test]
 fn plugin_profile_init_script_is_captured_into_native_child_environment() {
     use super::super::config::ShellProfileConfig;
-    let temp = crate::tests::executable_tempdir();
+    let temp = tempfile::tempdir().unwrap();
     let marker = temp.path().join("marker.log");
     let fake = fake_binary();
     let mut shell = ShellConfig::default();
@@ -982,7 +982,7 @@ fn plugin_profile_init_script_is_captured_into_native_child_environment() {
 
 #[test]
 fn reload_replaces_committed_provider_and_invalidates_old_instance() {
-    let temp = crate::tests::executable_tempdir();
+    let temp = tempfile::tempdir().unwrap();
     let marker = temp.path().join("marker.log");
     let fake = fake_binary();
     let plugins = PluginConfig {
@@ -1032,7 +1032,7 @@ fn reload_replaces_committed_provider_and_invalidates_old_instance() {
 
 #[test]
 fn explicit_reload_restarts_provider_when_config_is_unchanged() {
-    let temp = crate::tests::executable_tempdir();
+    let temp = tempfile::tempdir().unwrap();
     let marker = temp.path().join("marker.log");
     let fake = fake_binary();
     let config_path = temp.path().join("runner.toml");
@@ -1057,7 +1057,7 @@ fn explicit_reload_restarts_provider_when_config_is_unchanged() {
 
 #[test]
 fn concurrent_reload_is_busy_while_existing_calls_continue_and_later_reload_wins() {
-    let temp = crate::tests::executable_tempdir();
+    let temp = tempfile::tempdir().unwrap();
     let marker = temp.path().join("marker.log");
     let release = marker.with_extension("release");
     let fake = fake_binary();
@@ -1289,7 +1289,7 @@ fn plugin_committed_environment_ignores_unrelated_shell_runtime_controls() {
 
 #[test]
 fn shutdown_during_blocked_reload_does_not_wait_for_gate_or_allow_late_commit() {
-    let temp = crate::tests::executable_tempdir();
+    let temp = tempfile::tempdir().unwrap();
     let marker = temp.path().join("marker.log");
     let fake = fake_binary();
     let startup_plugins = PluginConfig {
@@ -1352,7 +1352,7 @@ fn shutdown_during_blocked_reload_does_not_wait_for_gate_or_allow_late_commit() 
 
 #[test]
 fn failed_candidate_keeps_previous_instance_and_removal_has_no_fallback() {
-    let temp = crate::tests::executable_tempdir();
+    let temp = tempfile::tempdir().unwrap();
     let marker = temp.path().join("marker.log");
     let fake = fake_binary();
     let plugins = PluginConfig {
@@ -1421,7 +1421,7 @@ fn failed_candidate_keeps_previous_instance_and_removal_has_no_fallback() {
 
 #[test]
 fn runner_config_reload_and_plugin_state_commit_as_one_active_generation() {
-    let temp = crate::tests::executable_tempdir();
+    let temp = tempfile::tempdir().unwrap();
     let marker = temp.path().join("marker.log");
     let fake = fake_binary();
     let config_path = temp.path().join("runner.toml");

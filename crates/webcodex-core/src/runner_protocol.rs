@@ -10,21 +10,21 @@ mod transport;
 mod tests;
 
 pub use job::{
-    normalize_cargo_packages, normalize_cargo_value, normalize_go_test_packages,
-    normalize_rust_test_filter, valid_rust_test_filter, RunnerJobLogRequest, RunnerJobLogResponse,
-    RunnerJobResult, RunnerJobStatusRequest, RunnerJobStatusResponse, RunnerJobStopRequest,
-    RunnerJobStopResponse, RunnerJobUpdateRequest, RunnerJobUpdateResponse, RunnerJobsListRequest,
-    RunnerJobsListResponse, RunnerShellJobResult, ShellJobActivity, ShellJobActivityPhase,
-    ShellJobActivitySource, ShellJobActivityState, ShellJobCodexMetadata, ShellJobContext,
-    ShellJobInfo, ShellJobInventory, ShellJobLogSnapshot, ShellJobOpRequest, ShellJobOpResponse,
-    ShellJobSnapshot, ShellJobStreamSnapshot, ShellJobStructuredExecutionMetadata,
-    ShellJobTestCountEvidence, ShellJobValidationMetadata, ShellJobValidationProgress,
-    ShellJobValidationStep, CARGO_PACKAGE_MAX_ITEMS, CARGO_TEST_MIN_TESTS_MAX,
-    CARGO_VALUE_MAX_BYTES, GO_TEST_PACKAGE_MAX_BYTES, GO_TEST_PACKAGE_MAX_ITEMS,
-    JOB_INVENTORY_MAX_ACTIVE_JOBS, JOB_INVENTORY_MAX_JOBS, JOB_INVENTORY_MAX_SERIALIZED_BYTES,
-    JOB_INVENTORY_MAX_TERMINAL_JOBS, JOB_SNAPSHOT_STREAM_MAX_BYTES, JOB_TERMINAL_RETENTION_SECS,
-    RUNNER_JOB_CONCURRENCY_MAX, RUNNER_JOB_CONCURRENCY_MIN, RUST_TEST_FILTER_MAX_BYTES,
-    VALIDATION_ASSERTION_NAME_MAX_CHARS,
+    normalize_cargo_packages, normalize_cargo_value, normalize_go_packages,
+    normalize_go_test_filter, normalize_go_test_packages, normalize_rust_test_filter,
+    valid_rust_test_filter, RunnerJobLogRequest, RunnerJobLogResponse, RunnerJobResult,
+    RunnerJobStatusRequest, RunnerJobStatusResponse, RunnerJobStopRequest, RunnerJobStopResponse,
+    RunnerJobUpdateRequest, RunnerJobUpdateResponse, RunnerJobsListRequest, RunnerJobsListResponse,
+    RunnerShellJobResult, ShellJobActivity, ShellJobActivityPhase, ShellJobActivitySource,
+    ShellJobActivityState, ShellJobCodexMetadata, ShellJobContext, ShellJobInfo, ShellJobInventory,
+    ShellJobLogSnapshot, ShellJobOpRequest, ShellJobOpResponse, ShellJobSnapshot,
+    ShellJobStreamSnapshot, ShellJobStructuredExecutionMetadata, ShellJobTestCountEvidence,
+    ShellJobValidationMetadata, ShellJobValidationProgress, ShellJobValidationStep,
+    CARGO_PACKAGE_MAX_ITEMS, CARGO_TEST_MIN_TESTS_MAX, CARGO_VALUE_MAX_BYTES,
+    GO_TEST_PACKAGE_MAX_BYTES, GO_TEST_PACKAGE_MAX_ITEMS, JOB_INVENTORY_MAX_ACTIVE_JOBS,
+    JOB_INVENTORY_MAX_JOBS, JOB_INVENTORY_MAX_SERIALIZED_BYTES, JOB_INVENTORY_MAX_TERMINAL_JOBS,
+    JOB_SNAPSHOT_STREAM_MAX_BYTES, JOB_TERMINAL_RETENTION_SECS, RUNNER_JOB_CONCURRENCY_MAX,
+    RUNNER_JOB_CONCURRENCY_MIN, RUST_TEST_FILTER_MAX_BYTES, VALIDATION_ASSERTION_NAME_MAX_CHARS,
 };
 
 pub use transport::{
@@ -528,6 +528,30 @@ runner_capabilities! {
         #[serde(default)]
         pub project_validation_v1: bool = false;
     }
+    /// Runner-owned project build planning plus typed StartBuild admission.
+    /// Missing on older Runners is false and must fail closed.
+    ProjectBuild => RUNNER_CAPABILITY_PROJECT_BUILD("project_build_v1"),
+    v2_baseline = false {
+        #[serde(default, skip_serializing_if = "is_false")]
+        pub project_build_v1: bool = false;
+    }
+    /// Additive portable dependency policy for project build/validation gateways.
+    /// Missing on older Runners is false; policy-bearing plans must fail closed.
+    ProjectDependencyPolicy => RUNNER_CAPABILITY_PROJECT_DEPENDENCY_POLICY("project_dependency_policy_v1"),
+    v2_baseline = false {
+        #[serde(default, skip_serializing_if = "is_false")]
+        pub project_dependency_policy_v1: bool = false;
+    }
+    /// Go project lifecycle gateways execute in Runner-owned single-module mode.
+    /// The Runner forces GO111MODULE=on and GOWORK=off after shell/profile environment
+    /// preparation so ambient module/workspace mode cannot change the planned graph.
+    ProjectGoSingleModule => RUNNER_CAPABILITY_PROJECT_GO_SINGLE_MODULE("project_go_single_module_v1"),
+    v2_baseline = false {
+        /// Additive project_build/project_validate Go execution semantics. Missing
+        /// on older Runners is false and must fail closed at typed Job admission.
+        #[serde(default, skip_serializing_if = "is_false")]
+        pub project_go_single_module_v1: bool = false;
+    }
     /// The Runner understands the additive portable package scope carried by
     /// project validation requests. Older project_validation_v1 Runners reject
     /// scoped requests before dispatch rather than interpreting an unknown field.
@@ -538,6 +562,13 @@ runner_capabilities! {
         /// scoped planning request is sent.
         #[serde(default, skip_serializing_if = "is_false")]
         pub project_validation_package_scope_v1: bool = false;
+    }
+    /// Additive test filtering and evidence policy on project_validate. Never
+    /// inferred from generic validation or existing package-scope support.
+    ProjectValidationTestOptions => RUNNER_CAPABILITY_PROJECT_VALIDATION_TEST_OPTIONS("project_validation_test_options_v1"),
+    v2_baseline = false {
+        #[serde(default, skip_serializing_if = "is_false")]
+        pub project_validation_test_options_v1: bool = false;
     }
     /// The Runner understands the first-class model-facing `go_test` tool identity
     /// and its durable `ShellJobValidationMetadata` contract. This is deliberately
@@ -644,9 +675,13 @@ runner_capabilities! {
         #[serde(default)]
         pub structured_execution_jobs: bool = false;
     }
-    /// Explicit authority for durable detached native-process Jobs whose payload tree is
-    /// handed off to the detached supervisor. Missing on older Runners is false and
-    /// is never inferred from structured process argv or ordinary durable Job support.
+    /// Explicit opt-in pipe-input Jobs. Never infer this additive feature from
+    /// generation 2, ordinary structured execution, or persistent shells.
+    JobProcessInput => RUNNER_CAPABILITY_JOB_PROCESS_INPUT("job_process_input_v1"),
+    v2_baseline = false {
+        #[serde(default, rename = "job_process_input_v1", skip_serializing_if = "is_false")]
+        pub job_process_input: bool = false;
+    }
     DetachedProcessJobs => RUNNER_CAPABILITY_DETACHED_PROCESS_JOBS("detached_process_jobs"),
     v2_baseline = false {
         /// Durable detached native-process ownership handoff. This is an additive
@@ -752,6 +787,12 @@ runner_capabilities! {
         /// is false and never follows from generic Browser observation/control.
         #[serde(default, skip_serializing_if = "is_false")]
         pub browser_element_action_admission: bool = false;
+    }
+    /// Bounded same-snapshot Browser batches with fail-stop partial-effect receipts.
+    BrowserBatch => RUNNER_CAPABILITY_BROWSER_BATCH("browser_batch"),
+    v2_baseline = false {
+        #[serde(default, skip_serializing_if = "is_false")]
+        pub browser_batch: bool = false;
     }
     /// Runner-owned creation of an ephemeral Chromium-family Browser runtime. Missing
     /// on older Runners is false and is never inferred from executable/platform facts.
@@ -1845,7 +1886,7 @@ pub const SCRIPT_TIMEOUT_MAX_SECS: u64 = 7 * 24 * 60 * 60;
 /// validation, shell, and Skill Job kinds retain the shared 1-hour ceiling.
 pub fn job_execution_timeout_max_secs(kind: &str) -> u64 {
     match kind {
-        "run_process" | "run_detached_process" => PROCESS_TIMEOUT_MAX_SECS,
+        "project_build" | "run_process" | "run_detached_process" => PROCESS_TIMEOUT_MAX_SECS,
         "run_script" => SCRIPT_TIMEOUT_MAX_SECS,
         _ => STRUCTURED_EXECUTION_TIMEOUT_MAX_SECS,
     }
@@ -2713,7 +2754,11 @@ mod envelope_tests {
                 structured_cargo_check_packages: true,
                 structured_go_test_json: true,
                 project_validation_v1: false,
+                project_build_v1: false,
+                project_dependency_policy_v1: false,
+                project_go_single_module_v1: false,
                 project_validation_package_scope_v1: false,
+                project_validation_test_options_v1: false,
                 structured_go_test_tool: true,
                 structured_go_test_packages: true,
                 structured_process_argv: true,
@@ -2723,6 +2768,7 @@ mod envelope_tests {
                 structured_script_python: true,
                 internal_posix_script: true,
                 structured_execution_jobs: true,
+                job_process_input: true,
                 detached_process_jobs: true,
                 lsp_read_only_navigation: false,
                 lsp_call_hierarchy: false,
@@ -2735,6 +2781,7 @@ mod envelope_tests {
                 browser_observe: false,
                 browser_control: false,
                 browser_element_action_admission: false,
+                browser_batch: false,
                 browser_launch: false,
                 computer_observe: false,
                 computer_application_discovery: false,
@@ -2898,6 +2945,7 @@ mod envelope_tests {
         assert!(legacy.browser_observe);
         assert!(legacy.browser_control);
         assert!(!legacy.browser_element_action_admission);
+        assert!(!legacy.browser_batch);
         assert!(legacy.browser_launch);
 
         let present: RunnerCapabilities =
@@ -2911,6 +2959,12 @@ mod envelope_tests {
         );
         assert!(!RUNNER_PROTOCOL_GENERATION_V2_BASELINE_CAPABILITY_NAMES
             .contains(&RUNNER_CAPABILITY_BROWSER_ELEMENT_ACTION_ADMISSION));
+        let batch: RunnerCapabilities = serde_json::from_str(r#"{"browser_batch":true}"#).unwrap();
+        assert!(batch.browser_batch);
+        assert!(!batch.browser_control);
+        assert!(RUNNER_CAPABILITY_NAMES.contains(&RUNNER_CAPABILITY_BROWSER_BATCH));
+        assert!(!RUNNER_PROTOCOL_GENERATION_V2_BASELINE_CAPABILITY_NAMES
+            .contains(&RUNNER_CAPABILITY_BROWSER_BATCH));
     }
 
     #[test]
@@ -3578,6 +3632,10 @@ mod envelope_tests {
         assert_eq!(SCRIPT_TIMEOUT_MAX_SECS, 604_800);
         assert_eq!(STRUCTURED_EXECUTION_TIMEOUT_MAX_SECS, 3_600);
         assert_eq!(STRUCTURED_EXECUTION_DIRECT_SYNC_TIMEOUT_MAX_SECS, 120);
+        assert_eq!(
+            job_execution_timeout_max_secs("project_build"),
+            PROCESS_TIMEOUT_MAX_SECS
+        );
         assert_eq!(
             job_execution_timeout_max_secs("run_process"),
             PROCESS_TIMEOUT_MAX_SECS
@@ -4371,7 +4429,15 @@ mod filter_canonical_tests {
         assert!(step(&["test", "-json", "./..."]).is_canonical());
         assert!(step(&["test", "-json", "./pkg"]).is_canonical());
         assert!(step(&["test", "-json", ".", "./pkg", "./internal/..."]).is_canonical());
-        assert!(!step(&["test", "-json", "-run", "TestOne", "./..."]).is_canonical());
+        assert!(step(&["test", "-json", "-run", "TestOne", "./..."]).is_canonical());
+        assert!(step(&["test", "-json", "-mod=readonly", "./..."]).is_canonical());
+        assert!(
+            step(&["test", "-json", "-mod=readonly", "-run", "TestOne", "./...",]).is_canonical()
+        );
+        assert!(!step(&["test", "-json", "-mod=mod", "./..."]).is_canonical());
+        assert!(
+            !step(&["test", "-json", "-mod=readonly", "-mod=readonly", "./...",]).is_canonical()
+        );
         assert!(!step(&["test", "-v", "./..."]).is_canonical());
         assert!(!step(&["run", "./..."]).is_canonical());
     }
@@ -4510,10 +4576,20 @@ mod filter_canonical_tests {
 
         let go_vet = validation_step("check", "go", &["vet", "./cmd/...", "./internal"]);
         assert!(go_vet.is_canonical());
+        let locked_cargo_test = validation_step(
+            "test",
+            "cargo",
+            &["test", "--locked", "-p", "package-a", "-p", "package-b"],
+        );
+        assert!(locked_cargo_test.is_canonical());
+        let readonly_go_vet =
+            validation_step("check", "go", &["vet", "-mod=readonly", "./internal"]);
+        assert!(readonly_go_vet.is_canonical());
 
         for rejected in [
             validation_step("check", "go", &["vet", "not-relative"]),
             validation_step("check", "go", &["vet", "./internal", "--flag"]),
+            validation_step("check", "go", &["vet", "-mod=mod", "./internal"]),
             validation_step(
                 "test",
                 "cargo",
@@ -4535,6 +4611,8 @@ mod filter_canonical_tests {
         let accepted = [
             vec!["check"],
             vec!["check", "--all-targets"],
+            vec!["check", "--locked"],
+            vec!["check", "--locked", "-p", "my-crate"],
             vec!["check", "--all-features"],
             vec!["check", "--no-default-features"],
             vec!["check", "--all-targets", "--all-features"],
@@ -4572,7 +4650,8 @@ mod filter_canonical_tests {
             vec!["check", "-p", "tab\tvalue"],
             vec!["check", "-p", "same-crate", "-p", "same-crate"],
             vec!["check", "--manifest-path", "/tmp/Cargo.toml"],
-            vec!["check", "--locked"],
+            vec!["check", "--locked", "--locked"],
+            vec!["check", "--locked=true"],
             vec!["check", "--", "--all-targets"],
         ];
         let over_long_value = "a".repeat(CARGO_VALUE_MAX_BYTES + 1);
@@ -4607,6 +4686,8 @@ mod filter_canonical_tests {
             vec!["test"],
             vec!["test", "focused"],
             vec!["test", "--all-targets"],
+            vec!["test", "--locked"],
+            vec!["test", "focused", "--locked"],
             vec!["test", "--lib"],
             vec!["test", "--lib", "--all-targets", "--no-run"],
             vec!["test", "--no-run"],
@@ -4634,6 +4715,8 @@ mod filter_canonical_tests {
             vec!["test", "--features", "nul\0byte"],
             vec!["test", "--features", "col\tumn"],
             vec!["test", "--manifest-path", "/tmp/Cargo.toml"],
+            vec!["test", "--locked", "--locked"],
+            vec!["test", "--locked=true"],
             vec!["test", "--", "--all-targets"],
         ];
         for args in rejected {

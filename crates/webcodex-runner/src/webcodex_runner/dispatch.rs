@@ -732,6 +732,11 @@ pub(crate) fn dispatch_request_with_outcome(
             sink.submit_result_with_metadata(request_id, result, config, runtime)
                 .map(|_| true)
         }
+        RunnerOperation::PlanProjectBuild(payload) => {
+            let result = super::project_build::handle(policy, project_registry_dir, &payload);
+            sink.submit_result_with_metadata(request_id, result, config, runtime)
+                .map(|_| true)
+        }
         RunnerOperation::Validation { payload, .. } => {
             let result = handle_validation_request(
                 policy,
@@ -739,6 +744,28 @@ pub(crate) fn dispatch_request_with_outcome(
                 &payload,
                 Some(runtime.shutdown_flag()),
             );
+            sink.submit_result_with_metadata(request_id, result, config, runtime)
+                .map(|_| true)
+        }
+        RunnerOperation::JobInput(input) => {
+            let result = match jobs.write_input(&input, policy, sink.runner_instance_id()) {
+                Ok(receipt) => CommandResult {
+                    exit_code: Some(0),
+                    stdout: Some(
+                        serde_json::to_string(&receipt).expect("input receipt serialization"),
+                    ),
+                    stderr: None,
+                    duration_ms: None,
+                    error: None,
+                },
+                Err(error) => CommandResult {
+                    exit_code: Some(1),
+                    stdout: None,
+                    stderr: None,
+                    duration_ms: None,
+                    error: Some(error),
+                },
+            };
             sink.submit_result_with_metadata(request_id, result, config, runtime)
                 .map(|_| true)
         }

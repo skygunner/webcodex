@@ -41,6 +41,19 @@ pub const EXACT_DISCOVERY_SPECIALIST_TOOL_NAMES: &[&str] =
 pub const ORDINARY_DISCOVERY_DEMOTED_REVIEW_TOOL_NAMES: &[&str] =
     &["git_diff_hunks", "git_review_summary", "show_changes"];
 
+/// Retain domain recipes without recommending an unavailable model operation.
+/// This projection follows static ToolDefinition visibility, never workflow
+/// guidance or environment settings. Re-admitting a descriptor restores its
+/// complete recipes without a second continuation allowlist.
+pub fn model_visible_recommended_flows() -> impl Iterator<Item = &'static ToolRecommendedFlow> {
+    TOOL_RECOMMENDED_FLOWS.iter().filter(|flow| {
+        flow.tools.iter().all(|name| {
+            lookup_tool_definition(name)
+                .is_some_and(|definition| definition.visibility.is_model_visible())
+        })
+    })
+}
+
 pub const TOOL_RECOMMENDED_FLOWS: &[ToolRecommendedFlow] = &[
     ToolRecommendedFlow {
         name: "discovery",
@@ -73,7 +86,7 @@ pub const TOOL_RECOMMENDED_FLOWS: &[ToolRecommendedFlow] = &[
     ToolRecommendedFlow {
         name: "single_window_goal_workflow",
         summary: "Optional durable Goal workflow; current webcodex.workflow guidance owns selection. Reuse an exact active Goal, or explicitly admit Goal + Session. Present/checkpoint only for established Goal work, verify/review and explicitly complete. Host continuation is separate.",
-        manifest_purpose: "Optional cross-repository workflow; consult current webcodex.workflow context for selection, not tool availability or task size alone. work_on_project may return sparse goal_context for active Goals explicitly correlated to the exact authorized Workflow Session. Reuse one exact candidate by calling get_goal and present_goal_plan; with multiple candidates, read candidate details through exact get_goal calls and explicitly choose one before present_goal_plan. Never auto-select or infer from Project, Window, title, or recency. Only after selecting durable Goal work, and without reusable active Goal context, call prepare_goal_workflow with the exact Workflow Session, bounded completion_conditions/steps and optional explicit controller Agent, then present_goal_plan. available=false is inconclusive evidence, not proof of zero active Goals. prepare_goal_workflow is durable admission only: Host carrier setup/readiness remains separate. If auto-resume is required and the chosen controller is not already production-ready, use the existing agent_continuation_setup flow. Use checkpoint_goal at recovery-worthy boundaries; finish_coding_task returns the same sparse active Goal representation as goal_follow_up. After fresh validation/review explicitly complete all steps and update_goal. Low-level create_goal and associate_goal_workflow_session remain available for advanced composition. Tiny reads/trivial edits do not require Goal setup.",
+        manifest_purpose: "Optional cross-repository workflow; consult current webcodex.workflow context for selection, not tool availability or task size alone. work_on_project may return sparse goal_context for active Goals explicitly correlated to the exact authorized Workflow Session. Reuse one exact candidate by calling get_goal and present_goal_plan; with multiple candidates, read candidate details through exact get_goal calls and explicitly choose one before present_goal_plan. Never auto-select or infer from Project, Window, title, or recency. Only after selecting durable Goal work, and without reusable active Goal context, call prepare_goal_workflow with the exact Workflow Session, bounded completion_conditions/steps and optional explicit controller Agent, then present_goal_plan. available=false is inconclusive evidence, not proof of zero active Goals. prepare_goal_workflow is durable admission only: Host carrier setup/readiness remains separate. The agent_continuation_setup flow is usable only while its dedicated presentation descriptor is advertised; when that descriptor is absent, do not repeat discovery for a Host carrier. Use checkpoint_goal at recovery-worthy boundaries; finish_coding_task returns the same sparse active Goal representation as goal_follow_up. After fresh validation/review explicitly complete all steps and update_goal. Low-level create_goal and associate_goal_workflow_session remain available for advanced composition. Tiny reads/trivial edits do not require Goal setup.",
         tools: &[
             "work_on_project", "get_goal", "prepare_goal_workflow", "present_goal_plan",
             "checkpoint_goal", "finish_coding_task", "update_goal",
@@ -180,11 +193,19 @@ pub const TOOL_RECOMMENDED_FLOWS: &[ToolRecommendedFlow] = &[
         ],
     },
     ToolRecommendedFlow {
+        name: "build",
+        summary:
+            "Build: prefer project_build for portable Rust/Go builds; use native execution only outside the canonical gateway.",
+        manifest_purpose:
+            "Use project_build for canonical Rust cargo build and Go go build with optional bounded package scope. dependency_policy.mode=locked prevents adapter-managed dependency selection updates without implying offline execution. It preserves Runner-owned recipe resolution, provenance, and same-execution Job admission. Use run_process only when the required build is outside this closed contract.",
+        tools: &["project_build", "observe_jobs", "run_process"],
+    },
+    ToolRecommendedFlow {
         name: "validate",
         summary:
             "Validate: use structured validators when their canonical diagnostics, evidence/test-count, validation identity, or same-execution Job semantics help; native execution is first-class when the command is outside or awkward for that contract.",
         manifest_purpose:
-            "For portable project validation, prefer project_validate. Use cargo_fmt/cargo_check/cargo_test/go_test for advanced ecosystem options when their canonical argv, parsed diagnostics, validation identity, test-count proof, min_tests/require_tests, bounded projection, or same-execution Job handoff materially helps. Native validation is first-class when the command is outside or awkward for that structured contract: prefer run_process for one literal-argv executable, run_shell when shell grammar/output shaping is required, and run_script for program-like supported scripts. Keep independent failure/permission boundaries separate. cargo_fmt check=false retains ensure-format mutation truth; check=true stays read-only.",
+            "For portable project validation, prefer project_validate; dependency_policy.mode=locked prevents adapter-managed dependency selection updates for check/test without implying offline execution. Use cargo_fmt/cargo_check/cargo_test/go_test for advanced ecosystem options when their canonical argv, parsed diagnostics, validation identity, test-count proof, min_tests/require_tests, bounded projection, or same-execution Job handoff materially helps. Native validation is first-class when the command is outside or awkward for that structured contract: prefer run_process for one literal-argv executable, run_shell when shell grammar/output shaping is required, and run_script for program-like supported scripts. Keep independent failure/permission boundaries separate. cargo_fmt check=false retains ensure-format mutation truth; check=true stays read-only.",
         tools: &[
             "project_validate",
     "cargo_fmt",
@@ -201,7 +222,7 @@ pub const TOOL_RECOMMENDED_FLOWS: &[ToolRecommendedFlow] = &[
     ToolRecommendedFlow {
         name: "browser",
         summary: "Browser/CDP runtime: discover Browser-capable Runners, launch an owned ephemeral Browser, use adaptive semantic snapshots and diagnostic deltas, act only through opaque identities, then re-observe after navigation or uncertain effects.",
-        manifest_purpose: "Use browser_observe for targets/browsers/pages/snapshot/screenshot/diagnostics and browser_act for launch/new_page/navigate/reload/click/input_text/select_option/set_value/upload_file/key/clear_diagnostics/close. Call an element effect only when that snapshot node lists it in actions. Snapshot auto mode reduces large pages to admitted controls and semantic choices such as native select options; diagnostics since_cursor returns only later events. Successful page effects include bounded stability observation but still require a fresh snapshot before reusing element authority. Browser/Page/Element ids are opaque; navigation stales element ids. Never retry an outcome_unknown effect blindly: follow the returned browser_observe reconciliation call.",
+        manifest_purpose: "Use browser_observe for targets/browsers/pages/snapshot/screenshot/diagnostics and browser_act for Browser effects. Use batch for 1..32 ordered input_text/select_option/set_value/click/upload_file operations admitted by one current snapshot on one Browser/page. Ordinary field effects preserve sibling element ids; navigation, document replacement and new snapshots stale prior authority. Batch checks freshness between effects, settles once, and stops on rejection, document change or uncertainty. Read completion counts and stopped certainty before observing recovery; never blindly retry outcome_unknown. Take a fresh verification snapshot after filling and after structural/page changes. Snapshot auto mode compacts large pages to admitted controls and semantic choices; diagnostics since_cursor returns only later events.",
         tools: &["browser_observe", "browser_act"],
     },
     ToolRecommendedFlow {
@@ -237,9 +258,10 @@ pub const TOOL_RECOMMENDED_FLOWS: &[ToolRecommendedFlow] = &[
     },
     ToolRecommendedFlow {
         name: "handoff",
-        summary: "Handoff/recovery only: use session_summary for lightweight ledger reads. Use session_handoff_summary only for missing task context or explicit transfer, never routine progress polling. Coordinator posts a todo; worker reads it with get_session_assignment and completes with that fence.",
-        manifest_purpose: "Coordinate independent Workflow Sessions through atomic assignment snapshots, required assignment-fenced completions, and explicit generic message-state delta observation without sharing execution history, authority, subscriptions, or automatic wake-up.",
+        summary: "Handoff/recovery only: list_sessions(project) -> choose exact Session. session_summary reads ledger; session_handoff_summary only for missing task context or transfer, never routine progress polling. Save decisions/progress. get_session_assignment -> complete_session_message with its fence.",
+        manifest_purpose: "Recover missing Session identity with caller-authorized list_sessions(project), explicitly choose a returned identity, then read session_handoff_summary; discovery never resumes work. Save explicit decisions/progress with post_session_message. Coordinate independent Workflow Sessions through atomic assignment snapshots, required assignment-fenced completions, and explicit generic message-state delta observation without sharing execution history, authority, subscriptions, or automatic wake-up.",
         tools: &[
+            "list_sessions",
             "session_summary",
             "post_session_message",
             "session_handoff_summary",
@@ -281,7 +303,8 @@ pub const CODING_INTENT_TOOL_NAMES: &[&str] = &[
     "edit_project_files",
     #[cfg(feature = "experimental-code-mode")]
     "code_mode_exec_mutating",
-    // Ordinary execution plus program-like multi-stage specialist.
+    // Portable project build plus ordinary execution specialists.
+    "project_build",
     "run_process",
     "run_script",
     "run_shell",

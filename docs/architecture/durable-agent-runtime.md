@@ -786,8 +786,12 @@ communication-principal index pinned to that tuple, including the fence and cont
 generation. It is not a credential. Lookup runs only for the caller, then the existing
 owner, lease, fence, and generation checks run again. A later takeover, expiry,
 replacement, or controller generation change leaves the old ref pinned to the old tuple.
-Heartbeat, completion, and CodingAgent dispatch still take the explicit tuple. Startup
-never selects an Endpoint. The Store records
+Endpoint continuation, heartbeat, completion, and CodingAgent dispatch all accept this
+same `attempt_ref` or the full explicit tuple, never a mixture. `start_agent_task_coding_run`
+still requires an explicit Project and provider; resolving the ref does not bypass its
+Project/provider authorization, current Attempt checks, immutable binding intent, or
+outcome-unknown replay fence. Active-turn Wake/consume proof and completion keys remain
+separate inputs, not part of the selector. Startup never selects an Endpoint. The Store records
 one concrete `wc_agent_task_endpoint_executions` row plus one durable
 `agent_task_attempt` Wake. Its Endpoint id/generation are nullable until an existing
 wake-capable carrier later claims the Wake. Attempt controller generation remains
@@ -1001,6 +1005,26 @@ associate the selected Tasks to the Goal; register the Goal-scoped `any` or `all
 those exact 1..8 Task ids; **only then** start worker execution. On resume, consume the exact
 Wake, read the Wait, read the Goal, re-read every source Task, and explicitly decide the
 next Goal action. Do not dispatch workers first and try to add the rendezvous afterward.
+
+Production auto-resume availability is carrier readiness, not a guarantee of unattended
+or zero-click continuation. An approval-gated Host should coalesce worker events behind a
+meaningful durable checkpoint and request at most one follow-up approval for that
+checkpoint, rather than prompting once per worker event. That coalescing must preserve
+each Agent's identity and the authoritative Task, Attempt, Goal, privacy, and dispatch-fence
+boundaries.
+
+An execution Host dispatch may use `ui/message` only for the exact current
+`agent_task_attempt` Wake, its authoritative TaskAttempt, and current Attempt controller
+fence. Controller-attention (`attention_event`) and Wait (`agent_wait_events`) Wakes are
+separate controller-routed sources: each dispatch must match that Wake's exact identity,
+target Agent, current carrier/controller generation, and dispatch-fence identity; neither
+source borrows or merges an execution Attempt's authority. For every Wake source, a
+`delivery_unknown` outcome must be reconciled against that same exact Wake/source,
+Agent, carrier/controller-generation, and dispatch-fence identity rather than triggering a blind
+second Host send. After a resumed turn consumes the Wake, it must re-read the authoritative
+source (the TaskAttempt for execution Wakes) and current checkpoint before continuing;
+neither Host delivery nor Wake consumption completes an Attempt or proves that reported
+work succeeded.
 
 Natural future source kinds include `deadline_reached`, Job terminal state,
 Plugin/external completion, and human approval. They should be added only when each has an

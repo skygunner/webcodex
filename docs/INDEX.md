@@ -11,6 +11,7 @@ Start with the goal that matches what you are trying to do.
 - [Full Setup](PERSONAL_SETUP.md) — CLI, existing Server, Linux, and advanced regular Server + Runner setup
 - [AI-assisted setup](AI_ONBOARDING.md) — have an AI agent configure WebCodex using ordinary user language
 - [MCP](MCP.md) — ChatGPT, Claude, and other MCP clients
+- [Session continuity](SESSION_CONTINUITY.md) — save context, continue across accounts/windows, and delegate model API reviews
 
 ## I only want to try it for a few minutes
 
@@ -46,6 +47,7 @@ Start with the goal that matches what you are trying to do.
 ## I want to contribute or release WebCodex
 
 - [Desktop development](DESKTOP_DEVELOPMENT.md) — run Desktop from source and build/test native Windows/macOS packages
+- [Sponsorship and project support](SPONSORSHIP.md) — community sponsorship, infrastructure support, partnerships, and recognition principles
 
 The `docs/agent/` pages below are maintainer/internal contracts. They intentionally
 contain protocol fields, compatibility names, and implementation invariants that

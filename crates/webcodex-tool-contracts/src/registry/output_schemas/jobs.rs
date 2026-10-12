@@ -882,6 +882,17 @@ fn observe_jobs_output_schema() -> Value {
                         "type": "integer",
                         "minimum": 1,
                         "description": "Non-zero shared wait duration; omitted when the canonical value is zero."
+                    },
+                    "reason": {
+                        "type": "string",
+                        "enum": ["immediate", "terminal", "item_error", "timeout", "meaningful_change", "heartbeat", "change"]
+                    },
+                    "wake_on": {
+                        "type": "string",
+                        "enum": ["change", "meaningful_change", "terminal", "all_terminal"]
+                    },
+                    "requested_secs": {
+                        "anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]
                     }
                 },
                 "required": ["outcome"],

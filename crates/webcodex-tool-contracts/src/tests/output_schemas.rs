@@ -353,6 +353,22 @@ fn observation_schemas_do_not_repeat_static_continuation_semantics() {
         .iter()
         .find(|variant| variant["properties"].get("suggested_call").is_some())
         .expect("observe_jobs full batch output");
+    // Both the full batch and model-facing sparse batch have closed wait
+    // objects, so newly emitted wait context must be described by both.
+    let wait_variants = variants
+        .iter()
+        .filter(|variant| variant["properties"].get("wait").is_some())
+        .collect::<Vec<_>>();
+    assert_eq!(wait_variants.len(), 2);
+    for variant in wait_variants {
+        let wait_properties = &variant["properties"]["wait"]["properties"];
+        for field in ["reason", "wake_on", "requested_secs"] {
+            assert!(
+                wait_properties.get(field).is_some(),
+                "observe_jobs wait schema must advertise {field} in every projection"
+            );
+        }
+    }
     let item_output = &full["properties"]["items"]["items"]["properties"]["output"]["anyOf"][0];
     assert!(
         item_output["properties"]

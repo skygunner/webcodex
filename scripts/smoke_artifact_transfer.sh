@@ -145,7 +145,12 @@ api_get() {
 
 api_post() {
     local path="$1"
-    local body="${2:-{}}"
+    # Avoid ${2:-{}} here: bash adds a stray '}' when $2 is non-empty.
+    # Select the default explicitly so request bodies remain valid JSON.
+    local body="${2:-}"
+    if [ -z "$body" ]; then
+        body="{}"
+    fi
     curl -sS --max-time "$TIMEOUT" \
         -H @"$AUTH_HEADER_FILE" \
         -H "Content-Type: application/json" \
@@ -196,7 +201,11 @@ PY
 
 tool_call_body() {
     local tool="$1"
-    local params_json="${2:-{}}"
+    # Avoid ${2:-{}} here: bash appends a stray '}' to non-empty JSON.
+    local params_json="${2:-}"
+    if [ -z "$params_json" ]; then
+        params_json="{}"
+    fi
     python3 - "$tool" "$params_json" <<'PY'
 import json
 import sys
@@ -209,7 +218,11 @@ PY
 
 call_tool() {
     local tool="$1"
-    local params_json="${2:-{}}"
+    # Avoid ${2:-{}} here: bash appends a stray '}' to non-empty JSON.
+    local params_json="${2:-}"
+    if [ -z "$params_json" ]; then
+        params_json="{}"
+    fi
     local body
     body="$(tool_call_body "$tool" "$params_json")"
     api_post /api/tools/call "$body"

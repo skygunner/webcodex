@@ -447,3 +447,93 @@ fn child_environment_is_cleared_and_missing_mapping_never_spawns() {
             );
         });
 }
+
+#[test]
+fn provider_diagnostics_report_only_declared_sources_not_values_or_unrelated_names() {
+    use webcodex_core::coding_agent::{
+        validate_response_for_request, CodingAgentDiagnoseRequest, CodingAgentRequest,
+        CodingAgentResponsePayload,
+    };
+
+    crate::tests::IsolatedEnv::new()
+        .set(
+            "WEBCODEX_TEST_ACP_DIAG_VISIBLE",
+            "test-secret-never-expose-817",
+        )
+        .set(
+            "WEBCODEX_TEST_ACP_DIAG_UNRELATED",
+            "unrelated-secret-never-expose-918",
+        )
+        .run("provider-diagnostic", || {
+            let temp = crate::tests::executable_tempdir();
+            let mut cfg = fake_config("not-started".into(), vec![]);
+            cfg.agents[0].env_from_env = BTreeMap::from([
+                ("PRESENT".into(), "WEBCODEX_TEST_ACP_DIAG_VISIBLE".into()),
+                ("ABSENT".into(), "WEBCODEX_TEST_ACP_DIAG_MISSING".into()),
+            ]);
+            let manager = CodingAgentManager::with_store(&cfg, temp.path().join("store")).unwrap();
+            let provider = manager.providers().remove(0);
+            let request = CodingAgentRequest::Diagnose(CodingAgentDiagnoseRequest {
+                run_id: "wc_agent_run_diag_0001".into(),
+                provider_id: provider.provider_id.clone(),
+                provider_instance_id: provider.provider_instance_id.clone(),
+            });
+            let response = manager.handle(request.clone(), temp.path());
+            assert!(response.error.is_none());
+            validate_response_for_request(&request, &response).unwrap();
+            let Some(CodingAgentResponsePayload::Diagnose { diagnostic }) = &response.payload
+            else {
+                panic!("expected only read-only ACP diagnostics");
+            };
+            assert_eq!(diagnostic.provider_id, "codex");
+            assert_eq!(diagnostic.env_sources.len(), 2);
+            assert_eq!(diagnostic.env_sources[0].destination, "ABSENT");
+            assert!(!diagnostic.env_sources[0].present);
+            assert_eq!(diagnostic.env_sources[1].destination, "PRESENT");
+            assert!(diagnostic.env_sources[1].present);
+            assert!(manager.runs.lock().unwrap().is_empty());
+            let wire = serde_json::to_string(&response).unwrap();
+            for forbidden in [
+                "test-secret-never-expose-817",
+                "unrelated-secret-never-expose-918",
+                "WEBCODEX_TEST_ACP_DIAG_UNRELATED",
+                "not-started",
+                "provider_instance_id",
+            ] {
+                assert!(
+                    !wire.contains(forbidden),
+                    "diagnostic disclosed {forbidden}"
+                );
+            }
+
+            let mut stale = request.clone();
+            let CodingAgentRequest::Diagnose(ref mut diag) = stale else {
+                unreachable!()
+            };
+            diag.provider_instance_id = "acp_stale".into();
+            let rejected = manager.handle(stale, temp.path());
+            assert_eq!(rejected.error.unwrap().code, "stale_coding_agent_provider");
+
+            let mut unknown = request;
+            let CodingAgentRequest::Diagnose(ref mut diag) = unknown else {
+                unreachable!()
+            };
+            diag.provider_id = "unknown".into();
+            let rejected = manager.handle(unknown, temp.path());
+            assert_eq!(
+                rejected.error.unwrap().code,
+                "coding_agent_provider_unavailable"
+            );
+
+            manager.stop_accepting();
+            let stopped = manager.handle(
+                CodingAgentRequest::Diagnose(CodingAgentDiagnoseRequest {
+                    run_id: "wc_agent_run_diag_0002".into(),
+                    provider_id: provider.provider_id,
+                    provider_instance_id: provider.provider_instance_id,
+                }),
+                temp.path(),
+            );
+            assert_eq!(stopped.error.unwrap().code, "coding_agent_stopping");
+        });
+}

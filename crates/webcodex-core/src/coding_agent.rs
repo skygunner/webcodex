@@ -301,12 +301,38 @@ pub struct CodingAgentCancelRequest {
     pub run_id: String,
 }
 
+/// Read-only, Runner-process source presence check. Correlation run_id never
+/// creates or reserves a CodingAgentRun.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodingAgentDiagnoseRequest {
+    pub run_id: String,
+    pub provider_id: String,
+    pub provider_instance_id: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodingAgentEnvSourcePresence {
+    pub destination: String,
+    pub source: String,
+    pub present: bool,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodingAgentProviderDiagnostics {
+    pub provider_id: String,
+    pub env_sources: Vec<CodingAgentEnvSourcePresence>,
+}
+pub const CODING_AGENT_MAX_ENV_SOURCE_MAPPINGS: usize = 64;
+pub const CODING_AGENT_MAX_ENV_NAME_BYTES: usize = 256;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CodingAgentRequest {
     Start(CodingAgentStartRequest),
     Observe(CodingAgentObserveRequest),
     Cancel(CodingAgentCancelRequest),
+    Diagnose(CodingAgentDiagnoseRequest),
 }
 
 impl CodingAgentRequest {
@@ -315,12 +341,14 @@ impl CodingAgentRequest {
             Self::Start(request) => &request.run_id,
             Self::Observe(request) => &request.run_id,
             Self::Cancel(request) => &request.run_id,
+            Self::Diagnose(request) => &request.run_id,
         }
     }
 
     pub fn provider_binding(&self) -> Option<(&str, &str)> {
         match self {
             Self::Start(request) => Some((&request.provider_id, &request.provider_instance_id)),
+            Self::Diagnose(request) => Some((&request.provider_id, &request.provider_instance_id)),
             Self::Observe(_) | Self::Cancel(_) => None,
         }
     }
@@ -348,6 +376,9 @@ pub enum CodingAgentResponsePayload {
     },
     Cancel {
         run: CodingAgentRunSnapshot,
+    },
+    Diagnose {
+        diagnostic: CodingAgentProviderDiagnostics,
     },
 }
 
@@ -494,6 +525,10 @@ pub fn validate_request(request: &CodingAgentRequest) -> Result<(), String> {
             }
         }
         CodingAgentRequest::Cancel(_) => {}
+        CodingAgentRequest::Diagnose(request) => {
+            validate_provider_id(&request.provider_id)?;
+            validate_provider_instance_id(&request.provider_instance_id)?;
+        }
     }
     Ok(())
 }
@@ -515,6 +550,32 @@ pub fn validate_response_for_request(
         validate_coding_agent_error(error)?;
         return Ok(());
     };
+    if let (
+        CodingAgentRequest::Diagnose(request),
+        CodingAgentResponsePayload::Diagnose { diagnostic },
+    ) = (request, payload)
+    {
+        if diagnostic.provider_id != request.provider_id
+            || diagnostic.env_sources.len() > CODING_AGENT_MAX_ENV_SOURCE_MAPPINGS
+        {
+            return Err("ACP diagnostic provider or mapping count is invalid".into());
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for source in &diagnostic.env_sources {
+            if source.destination.is_empty()
+                || source.source.is_empty()
+                || source.destination.len() > CODING_AGENT_MAX_ENV_NAME_BYTES
+                || source.source.len() > CODING_AGENT_MAX_ENV_NAME_BYTES
+                || source.destination.chars().any(|c| c.is_control())
+                || source.source.chars().any(|c| c.is_control())
+                || !seen.insert(source.destination.to_ascii_uppercase())
+            {
+                return Err("ACP diagnostic environment mapping is invalid".into());
+            }
+        }
+        return Ok(());
+    }
+
     let run = match (request, payload) {
         (CodingAgentRequest::Start(_), CodingAgentResponsePayload::Start { run }) => run,
         (CodingAgentRequest::Observe(_), CodingAgentResponsePayload::Observe { observation }) => {
@@ -1444,5 +1505,73 @@ mod tests {
             serde_json::from_str::<CodingAgentRequest>(&json).unwrap(),
             request
         );
+    }
+}
+
+#[cfg(test)]
+mod provider_diagnostic_contract_tests {
+    use super::*;
+
+    #[test]
+    fn diagnose_response_enforces_explicit_provider_bounds_and_no_duplicate_mappings() {
+        let request = CodingAgentRequest::Diagnose(CodingAgentDiagnoseRequest {
+            run_id: "wc_agent_run_diag_0001".into(),
+            provider_id: "codex".into(),
+            provider_instance_id: "acp_test-instance".into(),
+        });
+        validate_request(&request).unwrap();
+        let good = CodingAgentResponse::success(CodingAgentResponsePayload::Diagnose {
+            diagnostic: CodingAgentProviderDiagnostics {
+                provider_id: "codex".into(),
+                env_sources: vec![CodingAgentEnvSourcePresence {
+                    destination: "ACP_VISIBLE".into(),
+                    source: "CODEX_PATH".into(),
+                    present: true,
+                }],
+            },
+        });
+        validate_response_for_request(&request, &good).unwrap();
+
+        let mut mismatched = good.clone();
+        let Some(CodingAgentResponsePayload::Diagnose { ref mut diagnostic }) = mismatched.payload
+        else {
+            unreachable!()
+        };
+        diagnostic.provider_id = "another-provider".into();
+        assert!(validate_response_for_request(&request, &mismatched).is_err());
+
+        let mut duplicates = good.clone();
+        let Some(CodingAgentResponsePayload::Diagnose { ref mut diagnostic }) = duplicates.payload
+        else {
+            unreachable!()
+        };
+        diagnostic.env_sources.push(CodingAgentEnvSourcePresence {
+            destination: "acp_visible".into(),
+            source: "ANOTHER_SOURCE".into(),
+            present: false,
+        });
+        assert!(validate_response_for_request(&request, &duplicates).is_err());
+
+        let mut too_long = good.clone();
+        let Some(CodingAgentResponsePayload::Diagnose { ref mut diagnostic }) = too_long.payload
+        else {
+            unreachable!()
+        };
+        diagnostic.env_sources[0].source = "X".repeat(257);
+        assert!(validate_response_for_request(&request, &too_long).is_err());
+
+        let mut too_many = good.clone();
+        let Some(CodingAgentResponsePayload::Diagnose { ref mut diagnostic }) = too_many.payload
+        else {
+            unreachable!()
+        };
+        diagnostic.env_sources = (0..=CODING_AGENT_MAX_ENV_SOURCE_MAPPINGS)
+            .map(|i| CodingAgentEnvSourcePresence {
+                destination: format!("DEST_{i}"),
+                source: "SECRET_NAME".into(),
+                present: false,
+            })
+            .collect();
+        assert!(validate_response_for_request(&request, &too_many).is_err());
     }
 }

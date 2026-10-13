@@ -279,6 +279,27 @@ fn project_binding_matches(
         })
 }
 
+/// Check only configured mappings in the running Runner process. Never
+/// collect environment values, arbitrary process names or filesystem paths.
+fn diagnostic_env_source_presence(
+    provider: &AcpAgentConfig,
+) -> webcodex_core::coding_agent::CodingAgentProviderDiagnostics {
+    webcodex_core::coding_agent::CodingAgentProviderDiagnostics {
+        provider_id: provider.id.clone(),
+        env_sources: provider
+            .env_from_env
+            .iter()
+            .map(|(destination, source)| {
+                webcodex_core::coding_agent::CodingAgentEnvSourcePresence {
+                    destination: destination.clone(),
+                    source: source.clone(),
+                    present: std::env::var_os(source).is_some(),
+                }
+            })
+            .collect(),
+    }
+}
+
 fn resolve_environment(
     provider: &AcpAgentConfig,
 ) -> Result<Vec<(String, std::ffi::OsString)>, String> {
@@ -474,6 +495,38 @@ impl CodingAgentManager {
         }
         match request {
             CodingAgentRequest::Start(request) => self.start(request, project_registry_dir),
+            CodingAgentRequest::Diagnose(request) => {
+                if !self.accepting.load(Ordering::Acquire) {
+                    return response_error(
+                        CodingAgentDispatchState::NotStarted,
+                        "coding_agent_stopping",
+                        "Runner is stopping",
+                        "unavailable",
+                        "wait",
+                    );
+                }
+                let Some(provider) = self.providers.get(&request.provider_id) else {
+                    return response_error(
+                        CodingAgentDispatchState::NotStarted,
+                        "coding_agent_provider_unavailable",
+                        "configured ACP provider is unavailable",
+                        "unavailable",
+                        "reobserve",
+                    );
+                };
+                if provider.instance_id != request.provider_instance_id {
+                    return response_error(
+                        CodingAgentDispatchState::NotStarted,
+                        "stale_coding_agent_provider",
+                        "ACP provider instance was replaced",
+                        "stale_state",
+                        "reobserve",
+                    );
+                }
+                CodingAgentResponse::success(CodingAgentResponsePayload::Diagnose {
+                    diagnostic: diagnostic_env_source_presence(&provider.config),
+                })
+            }
             CodingAgentRequest::Observe(request) => {
                 let entry = self.runs.lock().unwrap().get(&request.run_id).cloned();
                 match entry {

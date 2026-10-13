@@ -424,6 +424,61 @@ async fn job_log_wait_wakes_all_waiters_without_holding_registry_mutex() {
 }
 
 #[tokio::test]
+async fn job_log_wait_heartbeat_wakes_all_waiters_without_becoming_meaningful() {
+    let registry = RunnerRegistry::default();
+    let job = start_wait_job(&registry).await;
+    registry
+        .update_job(wait_job_update(
+            "inst-wait",
+            &job.job_id,
+            1,
+            "running",
+            Some("baseline\n"),
+            false,
+        ))
+        .await
+        .unwrap();
+    let token = registry
+        .get_job(&job.job_id)
+        .await
+        .unwrap()
+        .observation_token
+        .unwrap();
+    let mut tasks = Vec::new();
+    for _ in 0..2 {
+        let registry = registry.clone();
+        let job_id = job.job_id.clone();
+        let token = token.clone();
+        tasks.push(tokio::spawn(async move {
+            registry
+                .job_log_for_auth(None, &job_id, None, None, None, Some(&token), Some(5))
+                .await
+                .unwrap()
+                .5
+        }));
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    registry
+        .update_job(wait_job_update(
+            "inst-wait",
+            &job.job_id,
+            2,
+            "running",
+            None,
+            false,
+        ))
+        .await
+        .unwrap();
+    for task in tasks {
+        let wait = task.await.unwrap();
+        assert_eq!(wait.wait_outcome, JobLogWaitOutcome::Updated);
+        assert!(wait.changed);
+        assert!(!wait.meaningful_changed);
+        assert!(wait.heartbeat_changed);
+    }
+}
+
+#[tokio::test]
 async fn job_log_wait_stale_or_replayed_sequence_does_not_change_token() {
     let registry = RunnerRegistry::default();
     let job = start_wait_job(&registry).await;

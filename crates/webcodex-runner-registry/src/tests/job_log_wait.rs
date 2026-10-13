@@ -472,6 +472,12 @@ async fn job_log_wait_heartbeat_wakes_all_waiters_without_becoming_meaningful() 
     for task in tasks {
         let wait = task.await.unwrap();
         assert_eq!(wait.wait_outcome, JobLogWaitOutcome::Updated);
+        // A missed notify still yields Updated after the five-second fallback;
+        // require both waiters to return well before that timeout.
+        assert!(
+            wait.waited_ms < 4_000,
+            "heartbeat waiter was not promptly notified: {wait:?}"
+        );
         assert!(wait.changed);
         assert!(!wait.meaningful_changed);
         assert!(wait.heartbeat_changed);

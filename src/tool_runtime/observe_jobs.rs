@@ -1437,7 +1437,7 @@ impl ToolRuntime {
             self.metrics.as_ref(),
             super::runtime_metrics::JobObservationMetricObservation {
                 elapsed_ms: waited_ms,
-                requested_wait_secs: wait_secs,
+                effective_wait_secs: wait_secs,
                 wake_on: wake_on_label,
                 wake_reason: wake_reason.as_str(),
                 item_count: completed.len() as u64,

@@ -21,7 +21,8 @@ pub(crate) struct McpCallMetricObservation {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct JobObservationMetricObservation {
     pub(crate) elapsed_ms: u64,
-    pub(crate) requested_wait_secs: Option<u64>,
+    /// Wait budget after Host/runtime normalization, not the original request.
+    pub(crate) effective_wait_secs: Option<u64>,
     pub(crate) wake_on: &'static str,
     pub(crate) wake_reason: &'static str,
     pub(crate) item_count: u64,
@@ -257,7 +258,7 @@ impl RuntimeMetrics for TracingRuntimeMetrics {
             value = observation.elapsed_ms as f64 / 1000.0,
             wake_on = observation.wake_on,
             wake_reason = observation.wake_reason,
-            requested_wait_secs = ?observation.requested_wait_secs,
+            effective_wait_secs = ?observation.effective_wait_secs,
             "runtime_metric"
         );
         tracing::info!(
@@ -578,7 +579,7 @@ mod tests {
             &sink,
             JobObservationMetricObservation {
                 elapsed_ms: 15,
-                requested_wait_secs: Some(5),
+                effective_wait_secs: Some(5),
                 wake_on: "meaningful_change",
                 wake_reason: "updated",
                 item_count: 2,

@@ -426,3 +426,76 @@ fn natural_process_exit_is_observed_before_cleanup() {
     assert_eq!(failure, AcpFailure::ProcessExited);
     assert!(!failure.safe_message().contains("23"));
 }
+
+#[test]
+fn declared_acp_environment_presence_only_returns_configured_boolean_destinations() {
+    let provider = AcpAgentConfig {
+        id: "codex".into(),
+        name: "Codex".into(),
+        executable: "never-spawn-this-binary".into(),
+        args: vec!["secret-command-argument".into()],
+        env_from_env: BTreeMap::from([
+            ("API_KEY".into(), "PRIVATE_SECRET_ENV".into()),
+            ("CODEX_PATH".into(), "ACP_CONFIG_SOURCE".into()),
+        ]),
+        allowed_config_options: Vec::new(),
+    };
+    let mut probed = Vec::new();
+    let result = declared_env_source_presence(&provider, |source| {
+        probed.push(source.to_owned());
+        source == "ACP_CONFIG_SOURCE"
+    });
+    assert_eq!(
+        result,
+        BTreeMap::from([("API_KEY".into(), false), ("CODEX_PATH".into(), true),])
+    );
+    assert_eq!(probed, vec!["PRIVATE_SECRET_ENV", "ACP_CONFIG_SOURCE"]);
+    let serialized = serde_json::to_string(&result).unwrap();
+    for forbidden in [
+        "PRIVATE_SECRET_ENV",
+        "ACP_CONFIG_SOURCE",
+        "never-spawn-this-binary",
+        "secret-command-argument",
+    ] {
+        assert!(!serialized.contains(forbidden));
+    }
+}
+
+#[test]
+fn acp_environment_presence_does_not_probe_unlisted_sources() {
+    let provider = AcpAgentConfig {
+        id: "codex".into(),
+        name: "Codex".into(),
+        executable: "unused".into(),
+        args: Vec::new(),
+        env_from_env: BTreeMap::new(),
+        allowed_config_options: Vec::new(),
+    };
+    let result = declared_env_source_presence(&provider, |_| {
+        panic!("unlisted environment sources must not be inspected")
+    });
+    assert!(result.is_empty());
+}
+
+#[test]
+fn provider_env_presence_uses_explicit_provider_id_and_omits_values() {
+    let temp = TempDir::new().unwrap();
+    let mut config = fake_config("do-not-launch".into(), Vec::new());
+    config.agents[0].env_from_env = BTreeMap::from([
+        ("PATH_DESTINATION".into(), "PATH".into()),
+        (
+            "MISSING_DESTINATION".into(),
+            "WEBCODEX_TEST_NEVER_SET_ENV_994".into(),
+        ),
+    ]);
+    let manager = CodingAgentManager::with_store(&config, temp.path().join("store")).unwrap();
+    assert!(manager.declared_provider_env_presence("unknown").is_none());
+    let readiness = manager.declared_provider_env_presence("codex").unwrap();
+    assert_eq!(readiness.get("PATH_DESTINATION"), Some(&true));
+    assert_eq!(readiness.get("MISSING_DESTINATION"), Some(&false));
+    assert_eq!(readiness.len(), 2);
+    let output = serde_json::to_string(&readiness).unwrap();
+    assert!(!output.contains("WEBCODEX_TEST_NEVER_SET_ENV_994"));
+    assert!(!output.contains("PATH="));
+    assert!(!output.contains("do-not-launch"));
+}

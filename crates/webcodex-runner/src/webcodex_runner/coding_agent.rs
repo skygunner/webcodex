@@ -279,6 +279,20 @@ fn project_binding_matches(
         })
 }
 
+/// Evaluate only the explicitly configured ACP environment sources within
+/// the *running Runner process*. Values and undeclared names never leave this
+/// function, including when the source contains non-Unicode bytes.
+fn declared_env_source_presence(
+    provider: &AcpAgentConfig,
+    mut present: impl FnMut(&str) -> bool,
+) -> BTreeMap<String, bool> {
+    provider
+        .env_from_env
+        .iter()
+        .map(|(destination, source)| (destination.clone(), present(source)))
+        .collect()
+}
+
 fn resolve_environment(
     provider: &AcpAgentConfig,
 ) -> Result<Vec<(String, std::ffi::OsString)>, String> {
@@ -313,6 +327,20 @@ fn response_error(
     )
 }
 impl CodingAgentManager {
+    /// First-stage, read-only ACP readiness primitive. Lookup is provider-ID
+    /// scoped and snapshots the process environment at call time rather than
+    /// using the configuration process's possibly stale environment. Only
+    /// configured destination keys and presence bits are returned.
+    pub(crate) fn declared_provider_env_presence(
+        &self,
+        provider_id: &str,
+    ) -> Option<BTreeMap<String, bool>> {
+        let entry = self.providers.get(provider_id)?;
+        Some(declared_env_source_presence(&entry.config, |name| {
+            std::env::var_os(name).is_some()
+        }))
+    }
+
     pub(crate) fn new(
         config: &AcpConfig,
         client_id: &str,

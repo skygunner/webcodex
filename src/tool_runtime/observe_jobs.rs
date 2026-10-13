@@ -1461,7 +1461,12 @@ impl ToolRuntime {
             }
         }
 
-        match apply_output_budget_with_update_kind(requested_count, completed, wake_reason, waited_ms) {
+        match apply_output_budget_with_update_kind(
+            requested_count,
+            completed,
+            wake_reason,
+            waited_ms,
+        ) {
             Ok(mut output) => {
                 add_actionable_batch_continuation(&mut output, &original_items, tail_lines);
                 ToolResult::ok(output)

@@ -57,20 +57,18 @@ struct FakeServerBinary {
     path: PathBuf,
 }
 
-/// Temp directory on the same filesystem as the compiled test binaries.
-/// Hardened hosts commonly mount the system temp directory with `noexec`;
-/// fixtures that must execute generated binaries build them here instead,
-/// because `cargo test` already requires this filesystem to stay executable.
-/// Unique per call, cleaned up on drop, safe under concurrent tests.
+/// Create executable fixtures next to this *running test binary*. This
+/// follows Cargo's actual target directory (including CARGO_TARGET_DIR and
+/// --target-dir) rather than guessing a path from the source checkout.
+/// The directory containing this executable is already known to allow exec,
+/// even if system TMPDIR or the source checkout is mounted noexec.
 pub(super) fn executable_tempdir() -> tempfile::TempDir {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target")
-        .join("test-executables");
-    std::fs::create_dir_all(&root).expect("create LSP executable test root");
+    let test_binary = env::current_exe().expect("locate executing LSP test binary");
+    let executable_dir = test_binary.parent().expect("test binary has a parent directory");
     tempfile::Builder::new()
         .prefix("webcodex-lsp-exec-")
-        .tempdir_in(root)
-        .expect("create LSP executable test temp dir")
+        .tempdir_in(executable_dir)
+        .expect("create temporary executable fixture next to the test binary")
 }
 
 pub(super) fn fake_server_path() -> &'static Path {

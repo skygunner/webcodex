@@ -362,7 +362,7 @@ fn observation_schemas_do_not_repeat_static_continuation_semantics() {
     assert_eq!(wait_variants.len(), 2);
     for variant in wait_variants {
         let wait_properties = &variant["properties"]["wait"]["properties"];
-        for field in ["reason", "wake_on", "requested_secs"] {
+        for field in ["update_kind"] {
             assert!(
                 wait_properties.get(field).is_some(),
                 "observe_jobs wait schema must advertise {field} in every projection"
@@ -1169,10 +1169,7 @@ fn observe_jobs_failure_item_schema_closes_recovery_metadata() {
             }],
             "wait": {
                 "outcome": "item_error",
-                "waited_ms": 0,
-                "reason": "item_error",
-                "wake_on": "change",
-                "requested_secs": null
+                "waited_ms": 0
             },
             "changed_count": 0,
             "terminal_count": 0,
@@ -1182,15 +1179,9 @@ fn observe_jobs_failure_item_schema_closes_recovery_metadata() {
     });
     validate(&result).unwrap();
 
-    let mut invalid_wait_reason = result.clone();
-    invalid_wait_reason["output"]["wait"]["reason"] = json!("not_a_wake_reason");
-    assert!(validate(&invalid_wait_reason).is_err());
-    let mut invalid_wait_policy = result.clone();
-    invalid_wait_policy["output"]["wait"]["wake_on"] = json!("not_a_policy");
-    assert!(validate(&invalid_wait_policy).is_err());
-    let mut invalid_wait_seconds = result.clone();
-    invalid_wait_seconds["output"]["wait"]["requested_secs"] = json!(-1);
-    assert!(validate(&invalid_wait_seconds).is_err());
+    let mut invalid_update_kind = result.clone();
+    invalid_update_kind["output"]["wait"]["update_kind"] = json!("not_an_update_kind");
+    assert!(validate(&invalid_update_kind).is_err());
 
     let mut duplicate_kind = result.clone();
     duplicate_kind["output"]["items"][0]["recovery_kind"] = json!("reobserve");

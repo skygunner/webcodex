@@ -814,19 +814,10 @@ fn observe_jobs_output_schema() -> Value {
                         "enum": ["immediate", "updated", "terminal", "item_error", "timeout"]
                     },
                     "waited_ms": {"type": "integer", "minimum": 0},
-                    "reason": {
+                    "update_kind": {
                         "type": "string",
-                        "enum": ["immediate", "terminal", "item_error", "timeout", "meaningful_change", "heartbeat", "change"],
-                        "description": "Detailed wake event observed over the complete batch before result truncation."
-                    },
-                    "wake_on": {
-                        "type": "string",
-                        "enum": ["change", "meaningful_change", "terminal", "all_terminal"],
-                        "description": "Wait policy requested by the caller."
-                    },
-                    "requested_secs": {
-                        "anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}],
-                        "description": "Requested wait duration in seconds, or null when no wait was requested."
+                        "enum": ["meaningful_change", "heartbeat", "change"],
+                        "description": "Present only on updated waits. Describes the triggering update over the full batch, including items omitted by the output budget."
                     }
                 },
                 "required": ["outcome", "waited_ms"],
@@ -883,16 +874,9 @@ fn observe_jobs_output_schema() -> Value {
                         "minimum": 1,
                         "description": "Non-zero shared wait duration; omitted when the canonical value is zero."
                     },
-                    "reason": {
+                    "update_kind": {
                         "type": "string",
-                        "enum": ["immediate", "terminal", "item_error", "timeout", "meaningful_change", "heartbeat", "change"]
-                    },
-                    "wake_on": {
-                        "type": "string",
-                        "enum": ["change", "meaningful_change", "terminal", "all_terminal"]
-                    },
-                    "requested_secs": {
-                        "anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]
+                        "enum": ["meaningful_change", "heartbeat", "change"]
                     }
                 },
                 "required": ["outcome"],

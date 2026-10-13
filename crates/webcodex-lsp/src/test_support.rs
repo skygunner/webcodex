@@ -64,7 +64,9 @@ struct FakeServerBinary {
 /// even if system TMPDIR or the source checkout is mounted noexec.
 pub(super) fn executable_tempdir() -> tempfile::TempDir {
     let test_binary = env::current_exe().expect("locate executing LSP test binary");
-    let executable_dir = test_binary.parent().expect("test binary has a parent directory");
+    let executable_dir = test_binary
+        .parent()
+        .expect("test binary has a parent directory");
     tempfile::Builder::new()
         .prefix("webcodex-lsp-exec-")
         .tempdir_in(executable_dir)

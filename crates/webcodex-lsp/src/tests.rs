@@ -1993,7 +1993,12 @@ fn fake_server_fixture_uses_the_current_test_executable_directory() {
     );
     let fake = fake_server_path();
     assert_eq!(
-        fake.canonicalize().unwrap().parent().unwrap().parent().unwrap(),
+        fake.canonicalize()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap(),
         parent,
         "fake LSP binary must live in an executable sibling fixture"
     );
@@ -2004,4 +2009,3 @@ fn fake_server_fixture_uses_the_current_test_executable_directory() {
         assert_ne!(executable.permissions().mode() & 0o111, 0);
     }
 }
-

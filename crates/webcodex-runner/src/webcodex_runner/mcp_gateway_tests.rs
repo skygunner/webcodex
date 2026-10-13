@@ -951,24 +951,89 @@ fn provider_status_reaps_an_exited_connection_without_restarting_it() {
 }
 
 #[test]
-fn provider_callback_after_dispatch_remains_unsupported_and_unknown() {
+fn provider_callback_is_rejected_without_terminating_original_tool_call() {
     let fixture = Fixture::new("callback", 2);
     let provider = fixture.provider();
     assert!(fixture.list(&provider).error.is_none());
-
     let response = fixture.call(&provider);
-    assert_eq!(
-        response.dispatch_state,
-        McpGatewayDispatchState::OutcomeUnknown
-    );
-    assert_eq!(
-        response.error.as_ref().unwrap().code,
-        "provider_callbacks_unsupported"
-    );
-    let recovered = fixture.list(&provider);
-    assert!(recovered.error.is_none(), "{:?}", recovered.error);
-    assert_eq!(fixture.marker_count("start"), 2);
+    assert!(response.error.is_none(), "{:?}", response.error);
+    assert_eq!(fixture.marker_count("callback-rejected"), 1);
     assert_eq!(fixture.marker_count("call"), 1);
+    assert!(fixture.list(&provider).error.is_none());
+    assert_eq!(fixture.marker_count("start"), 1);
+}
+
+#[test]
+fn provider_ping_during_initialize_does_not_block_handshake() {
+    let fixture = Fixture::new("init_ping", 2);
+    let provider = fixture.provider();
+    assert!(fixture.list(&provider).error.is_none());
+    assert_eq!(fixture.marker_count("init-ping-ok"), 1);
+    assert_eq!(fixture.marker_count("start"), 1);
+}
+
+#[test]
+fn provider_ping_during_tool_execution_does_not_complete_or_replay_call() {
+    let fixture = Fixture::new("call_ping", 2);
+    let provider = fixture.provider();
+    assert!(fixture.list(&provider).error.is_none());
+    let response = fixture.call(&provider);
+    assert!(response.error.is_none(), "{:?}", response.error);
+    assert_eq!(fixture.marker_count("call-ping-ok"), 1);
+    assert_eq!(fixture.marker_count("call"), 1);
+    assert_eq!(fixture.marker_count("start"), 1);
+}
+
+#[test]
+fn provider_idle_ping_with_numeric_and_string_ids_is_answered() {
+    let fixture = Fixture::new("idle_ping", 2);
+    let provider = fixture.provider();
+    assert!(fixture.list(&provider).error.is_none());
+    // Wait for a protocol milestone before initiating another outbound request:
+    // JSON-RPC messages from opposite directions may legitimately interleave.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while fixture.marker_count("ping-ok") + fixture.marker_count("ping-bad") < 3
+        && Instant::now() < deadline
+    {
+        std::thread::yield_now();
+    }
+    assert_eq!(fixture.marker_count("ping-ok"), 3);
+    let second = fixture.list(&provider);
+    assert!(second.error.is_none(), "{:?}", second.error);
+    assert_eq!(fixture.marker_count("ping-bad"), 0);
+    assert_eq!(fixture.marker_count("start"), 1);
+}
+
+#[test]
+fn unsolicited_window_allows_long_lived_idle_ping_but_still_rejects_bursts() {
+    let mut window = UnsolicitedWindow::default();
+    let start = Instant::now();
+    // Low-frequency heartbeats must not accumulate toward a lifetime cap.
+    for step in 0..(MCP_GATEWAY_MAX_IGNORED_NOTIFICATIONS as u64 * 4) {
+        assert!(!window.exceeded(start + Duration::from_secs(step * 30)));
+    }
+    let burst = start + Duration::from_secs(5_000);
+    for _ in 0..MCP_GATEWAY_MAX_IGNORED_NOTIFICATIONS {
+        assert!(!window.exceeded(burst));
+    }
+    assert!(window.exceeded(burst));
+    window.reset();
+    assert!(!window.exceeded(burst));
+}
+
+#[test]
+fn provider_request_id_rejects_unbounded_or_non_integer_ids() {
+    assert_eq!(
+        provider_request_id(&json!({"jsonrpc":"2.0","method":"ping","id":"123"})),
+        Some(json!("123"))
+    );
+    for id in [
+        json!("x".repeat(MCP_GATEWAY_MAX_PROVIDER_REQUEST_ID_BYTES + 1)),
+        json!(1.5),
+        Value::Null,
+    ] {
+        assert!(provider_request_id(&json!({"jsonrpc":"2.0","method":"ping","id":id})).is_none());
+    }
 }
 
 #[test]

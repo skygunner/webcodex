@@ -496,6 +496,19 @@ operator-installed local Agent Browser to inherit native profiles/configuration 
 attach to an explicitly authorized running Chrome while keeping opaque page/snapshot
 identities, tab ownership, and uncertain-effect handling inside the Plugin boundary.
 
+## Community Native Plugins (third-party)
+
+The following plugin is maintained outside the WebCodex repository and is **not an
+officially maintained or audited integration**. Native Plugins run as trusted local
+executables; review their source and Runner permissions before installing.
+
+- [WebCodex × Orca Native Plugin](https://github.com/LonelyHerbivore/webcodex-orca-plugin)
+  (Node.js 18+, integration candidate): wraps Orca CLI multi-agent runs, Worker
+  lifecycle, message delivery, guarded recovery after unknown outcomes, and
+  provenance-aware transcript paging. As of v0.3.1, automated tests pass, but
+  full Claude Code + two Antigravity completion/release remains unverified.
+  See the third-party repository for setup instructions and limitations.
+
 ## Calling and failure semantics
 
 Each provider handles one request at a time. Concurrent calls receive a

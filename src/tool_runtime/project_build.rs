@@ -15,12 +15,30 @@ use crate::auth::AuthContext;
 use crate::runner_http::{
     process_preview, ShellJobStartMetadata, ShellJobVisibility, StructuredJobExecution,
 };
-use crate::runner_protocol::{ShellCommandExecutionState, ShellJobOpRequest};
+use crate::runner_protocol::{ShellCommandExecutionState, ShellJobInfo, ShellJobOpRequest};
 use webcodex_core::project_build::{
     ProjectBuildAdapter, ProjectBuildPlanningResult, ProjectBuildRequest, ProjectBuildScope,
 };
 
 const PROJECT_BUILD_DEFAULT_TIMEOUT_SECS: u64 = 1800;
+
+/// Artifact observation errors are not native process failures. Keep the same
+/// safe classification after an asynchronous handoff without exposing raw errors.
+pub(super) fn artifact_observation_failure_kind(job: &ShellJobInfo) -> Option<&'static str> {
+    if job.kind != "project_build"
+        || job.status != "failed"
+        || job.command_execution_state != Some(ShellCommandExecutionState::Completed)
+        || job.exit_code != Some(0)
+        || job.error.is_none()
+    {
+        return None;
+    }
+    Some(if job.error.as_deref() == Some("build_artifacts_missing") {
+        "build_artifacts_missing"
+    } else {
+        "build_artifact_observation_failed"
+    })
+}
 
 fn decorate(output: &mut serde_json::Value, backend: &str, summary: &str, cwd: &str) {
     output["execution_source"] = json!("project_build");

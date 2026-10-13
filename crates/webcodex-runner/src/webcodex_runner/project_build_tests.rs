@@ -1,5 +1,6 @@
 use super::config::RunnerPolicy;
 use super::project_build;
+use sha2::Digest;
 use std::fs;
 use std::path::PathBuf;
 use webcodex_core::project_build::*;
@@ -11,6 +12,9 @@ fn fixture(marker: &str) -> (tempfile::TempDir, PathBuf, PathBuf, RunnerPolicy) 
     let root = tmp.path().join("remote-project");
     let registry = tmp.path().join("registry");
     fs::create_dir_all(&root).unwrap();
+    // Production plans supply a canonical cwd. Temporary roots may contain
+    // aliases on macOS or lack the canonical Windows verbatim prefix.
+    let root = root.canonicalize().unwrap();
     fs::create_dir_all(&registry).unwrap();
     fs::write(root.join(marker), "").unwrap();
     fs::write(
@@ -100,6 +104,12 @@ fn start_build_operation(plan: &ProjectBuildPlan, cwd: &std::path::Path) -> Runn
             command_preview: match plan.provenance.backend.as_str() {
                 "rust" => "cargo build".into(),
                 "go" => "go build".into(),
+                "python" => "python -m build --no-isolation".into(),
+                "node" => format!(
+                    "{} {}",
+                    plan.process.executable,
+                    plan.process.args.join(" ")
+                ),
                 _ => unreachable!(),
             },
             validation_steps: Vec::new(),
@@ -189,17 +199,6 @@ fn project_build_backend_selection_is_nearest_explicit_and_fail_closed() {
         Err(ProjectBuildPlanningResult::Unavailable { code, .. })
             if code == "build_recipe_ambiguous"
     ));
-
-    for (marker, backend) in [("package.json", "node"), ("pyproject.toml", "python")] {
-        let (_tmp, _root, registry, policy) = fixture(marker);
-        assert_eq!(
-            project_build::plan(&policy, &registry, &request()).unwrap_err(),
-            ProjectBuildPlanningResult::Unavailable {
-                code: "build_adapter_unavailable".into(),
-                detected_backend: Some(backend.into()),
-            }
-        );
-    }
 }
 
 #[test]
@@ -480,4 +479,257 @@ fn project_build_all_packages_rejects_excluded_recipe_cwd() {
     );
     req.cwd = Some("app".into());
     assert!(project_build::plan(&policy, &registry, &req).is_ok());
+}
+
+#[test]
+fn python_packaging_plans_manifest_and_backend_input_fences() {
+    let (_tmp, root, registry, policy) = fixture("pyproject.toml");
+    fs::write(
+        root.join("pyproject.toml"),
+        "[build-system]\nrequires=[]\nbuild-backend='backend'\nbackend-path=['.']\n",
+    )
+    .unwrap();
+    let mut req = request();
+    req.adapter = ProjectBuildAdapter::Python;
+    req.dependency_policy = Some(ProjectDependencyPolicy {
+        mode: ProjectDependencyMode::Locked,
+    });
+    let (plan, cwd) = project_build::plan(&policy, &registry, &req).unwrap();
+    assert_eq!(plan.process.args, ["-m", "build", "--no-isolation"]);
+    let operation = start_build_operation(&plan, &cwd);
+    project_build::fence(&policy, &registry, &operation).unwrap();
+    fs::write(root.join("setup.cfg"), "[metadata]\nname=demo\n").unwrap();
+    assert!(project_build::fence(&policy, &registry, &operation)
+        .unwrap_err()
+        .contains("build_plan_stale"));
+    let (plan, cwd) = project_build::plan(&policy, &registry, &req).unwrap();
+    let operation = start_build_operation(&plan, &cwd);
+    fs::write(
+        root.join("pyproject.toml"),
+        "[build-system]\nrequires=['changed']\n",
+    )
+    .unwrap();
+    assert!(project_build::fence(&policy, &registry, &operation)
+        .unwrap_err()
+        .contains("build_plan_stale"));
+    req.scope = Some(ProjectBuildScope {
+        packages: Vec::new(),
+        all_packages: true,
+    });
+    assert!(
+        matches!(project_build::plan(&policy,&registry,&req),Err(ProjectBuildPlanningResult::Unavailable { code,.. }) if code == "build_scope_invalid")
+    );
+}
+
+#[test]
+fn python_artifact_observation_uses_existing_metadata_and_bounds() {
+    use std::sync::atomic::AtomicBool;
+    let (_tmp, root, registry, policy) = fixture("pyproject.toml");
+    // Observation receives the canonical recipe cwd from planning, as native Jobs do.
+    let (_, cwd) = project_build::plan(&policy, &registry, &request()).unwrap();
+    fs::create_dir(root.join("dist")).unwrap();
+    fs::write(root.join("dist/demo.whl"), b"PK\x05\x06fixture").unwrap();
+    fs::write(root.join("dist/demo.tar.gz"), b"\x1f\x8b\x08fixture").unwrap();
+    let artifacts = project_build::observe_python_artifacts(
+        &policy,
+        &registry,
+        &request(),
+        &cwd,
+        std::time::Instant::now() + std::time::Duration::from_secs(5),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(artifacts.len(), 2);
+    let artifact = artifacts
+        .iter()
+        .find(|artifact| artifact.path.ends_with(".whl"))
+        .unwrap();
+    assert_eq!(artifact.path, "dist/demo.whl");
+    assert_eq!(artifact.bytes, 11);
+    assert_eq!(artifact.mime_type.as_deref(), Some("application/zip"));
+    assert_eq!(
+        artifact.sha256,
+        format!("{:x}", sha2::Sha256::digest(b"PK\x05\x06fixture"))
+    );
+    fs::write(root.join("dist/unknown.opaque"), b"unrecognized binary").unwrap();
+    let unknown = project_build::observe_python_artifacts(
+        &policy,
+        &registry,
+        &request(),
+        &cwd,
+        std::time::Instant::now() + std::time::Duration::from_secs(5),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert!(unknown
+        .iter()
+        .find(|artifact| artifact.path.ends_with(".opaque"))
+        .unwrap()
+        .mime_type
+        .is_none());
+    fs::write(root.join("dist/.env"), "must stay private").unwrap();
+    assert!(project_build::observe_python_artifacts(
+        &policy,
+        &registry,
+        &request(),
+        &cwd,
+        std::time::Instant::now() + std::time::Duration::from_secs(5),
+        &AtomicBool::new(false)
+    )
+    .is_err());
+    fs::remove_file(root.join("dist/.env")).unwrap();
+    for index in 0..16 {
+        fs::write(root.join(format!("dist/{index}.whl")), "").unwrap();
+    }
+    assert!(project_build::observe_python_artifacts(
+        &policy,
+        &registry,
+        &request(),
+        &cwd,
+        std::time::Instant::now() + std::time::Duration::from_secs(5),
+        &AtomicBool::new(false)
+    )
+    .unwrap_err()
+    .contains("limit"));
+}
+
+#[cfg(unix)]
+#[test]
+fn python_packaging_rejects_redirected_dist_and_artifact_symlinks() {
+    use std::{os::unix::fs::symlink, sync::atomic::AtomicBool};
+    let (tmp, root, registry, policy) = fixture("pyproject.toml");
+    // Observation receives the canonical recipe cwd from planning, as native Jobs do.
+    let (_, cwd) = project_build::plan(&policy, &registry, &request()).unwrap();
+    symlink(tmp.path(), root.join("dist")).unwrap();
+    assert!(
+        matches!(project_build::plan(&policy,&registry,&request()),Err(ProjectBuildPlanningResult::Unavailable { code,.. }) if code == "build_artifact_path_invalid")
+    );
+    fs::remove_file(root.join("dist")).unwrap();
+    fs::create_dir(root.join("dist")).unwrap();
+    symlink(root.join("pyproject.toml"), root.join("dist/demo.whl")).unwrap();
+    assert!(project_build::observe_python_artifacts(
+        &policy,
+        &registry,
+        &request(),
+        &cwd,
+        std::time::Instant::now() + std::time::Duration::from_secs(5),
+        &AtomicBool::new(false)
+    )
+    .unwrap_err()
+    .contains("path_invalid"));
+}
+
+#[test]
+fn python_artifact_observation_reports_missing_directory_and_incomplete_outputs() {
+    use std::sync::atomic::AtomicBool;
+    let (_tmp, root, registry, policy) = fixture("pyproject.toml");
+    // Observation receives the canonical recipe cwd from planning, as native Jobs do.
+    let (_, cwd) = project_build::plan(&policy, &registry, &request()).unwrap();
+    for state in 0..3 {
+        if state == 1 {
+            fs::create_dir(root.join("dist")).unwrap();
+        }
+        if state == 2 {
+            fs::write(root.join("dist/demo.whl"), b"PK\x05\x06fixture").unwrap();
+        }
+        assert_eq!(
+            project_build::observe_python_artifacts(
+                &policy,
+                &registry,
+                &request(),
+                &cwd,
+                std::time::Instant::now() + std::time::Duration::from_secs(5),
+                &AtomicBool::new(false)
+            )
+            .unwrap_err(),
+            "build_artifacts_missing"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn python_artifact_observation_uses_planned_cwd_for_registered_project_alias() {
+    use std::{os::unix::fs::symlink, sync::atomic::AtomicBool};
+    let (tmp, root, registry, policy) = fixture("pyproject.toml");
+    let alias = tmp.path().join("project-alias");
+    symlink(&root, &alias).unwrap();
+    fs::write(
+        registry.join("demo.toml"),
+        format!(
+            "id = 'demo'\nname = 'Demo'\npath = {}\nallow_patch = true\n",
+            serde_json::to_string(alias.to_str().unwrap()).unwrap()
+        ),
+    )
+    .unwrap();
+    let (_, cwd) = project_build::plan(&policy, &registry, &request()).unwrap();
+    assert_eq!(cwd, root.canonicalize().unwrap());
+    assert_ne!(cwd, alias);
+    fs::create_dir(root.join("dist")).unwrap();
+    fs::write(root.join("dist/demo.whl"), b"PK\x05\x06fixture").unwrap();
+    fs::write(root.join("dist/demo.tar.gz"), b"\x1f\x8b\x08fixture").unwrap();
+    let artifacts = project_build::observe_python_artifacts(
+        &policy,
+        &registry,
+        &request(),
+        &cwd,
+        std::time::Instant::now() + std::time::Duration::from_secs(5),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(artifacts.len(), 2);
+    assert!(artifacts
+        .iter()
+        .all(|artifact| artifact.path.starts_with("dist/")));
+    // Alias acceptance at Project admission does not permit redirected output reads.
+    fs::remove_file(root.join("dist/demo.whl")).unwrap();
+    symlink(root.join("pyproject.toml"), root.join("dist/demo.whl")).unwrap();
+    assert_eq!(
+        project_build::observe_python_artifacts(
+            &policy,
+            &registry,
+            &request(),
+            &cwd,
+            std::time::Instant::now() + std::time::Duration::from_secs(5),
+            &AtomicBool::new(false),
+        )
+        .unwrap_err(),
+        "build_artifact_path_invalid"
+    );
+}
+
+#[test]
+fn node_build_manifest_script_manager_scope_and_stale_fence() {
+    let (_tmp, root, registry, policy) = fixture("package.json");
+    fs::write(
+        root.join("package.json"),
+        r#"{"packageManager":"pnpm@9","scripts":{"build":"node build.js"}}"#,
+    )
+    .unwrap();
+    let mut req = request();
+    req.adapter = ProjectBuildAdapter::Node;
+    let (plan, cwd) = project_build::plan(&policy, &registry, &req).unwrap();
+    assert!(plan.is_valid());
+    assert_eq!(plan.process.executable, "pnpm");
+    assert_eq!(plan.process.args, ["run", "--silent", "build"]);
+    let operation = start_build_operation(&plan, &cwd);
+    project_build::fence(&policy, &registry, &operation).unwrap();
+    fs::write(root.join("pnpm-lock.yaml"), "lock").unwrap();
+    assert!(project_build::fence(&policy, &registry, &operation)
+        .unwrap_err()
+        .contains("build_plan_stale"));
+    req.scope = Some(ProjectBuildScope {
+        packages: vec![],
+        all_packages: true,
+    });
+    assert!(
+        matches!(project_build::plan(&policy, &registry, &req), Err(ProjectBuildPlanningResult::Unavailable { code, .. }) if code == "build_scope_unsupported")
+    );
+    req.scope = None;
+    req.dependency_policy = Some(ProjectDependencyPolicy {
+        mode: ProjectDependencyMode::Locked,
+    });
+    assert!(
+        matches!(project_build::plan(&policy, &registry, &req), Err(ProjectBuildPlanningResult::Unavailable { code, .. }) if code == "dependency_policy_unsupported")
+    );
 }

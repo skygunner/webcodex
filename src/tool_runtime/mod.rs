@@ -3,6 +3,7 @@
 //! Both protocol adapters call `ToolRuntime::dispatch()`.
 //! No HTTP framework types here — pure Rust input/output.
 
+mod acceptance_evidence;
 pub mod activity;
 pub(crate) mod admin_dashboard;
 mod agent_task;

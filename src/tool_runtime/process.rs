@@ -176,6 +176,7 @@ pub(crate) fn terminal_structured_job_result(
     let state = job
         .command_execution_state
         .unwrap_or(ShellCommandExecutionState::OutcomeUnknown);
+    let artifact_failure = super::project_build::artifact_observation_failure_kind(job);
     let mut result = match state {
         ShellCommandExecutionState::NotStarted => {
             let reason = job
@@ -209,6 +210,21 @@ pub(crate) fn terminal_structured_job_result(
         {
             ToolResult::ok(success_output(0, stdout, stderr, job.duration_ms))
         }
+        ShellCommandExecutionState::Completed if artifact_failure.is_some() => {
+            let mut result = command_failure_result(
+                job.exit_code,
+                stdout,
+                stderr,
+                job.duration_ms,
+                timeout_secs,
+                state,
+            );
+            let kind = artifact_failure.expect("artifact failure guard");
+            let missing = kind == "build_artifacts_missing";
+            result.error = Some(if missing { "Build process exited successfully, but expected packaging artifact observations are missing." } else { "Build process exited successfully, but artifact observation failed." }.into());
+            result.output["failure_kind"] = json!(kind);
+            result
+        }
         ShellCommandExecutionState::Completed => command_failure_result(
             job.exit_code,
             stdout,
@@ -218,6 +234,9 @@ pub(crate) fn terminal_structured_job_result(
             state,
         ),
     };
+    if let Some(artifacts) = &job.build_artifacts {
+        result.output["build_artifacts"] = json!(artifacts);
+    }
     if job.stdout_log_truncated {
         result.output["stdout_truncated"] = json!(true);
     }
@@ -229,7 +248,11 @@ pub(crate) fn terminal_structured_job_result(
 
 pub(crate) fn classify_process_failure(message: &str) -> &'static str {
     let lower = message.to_ascii_lowercase();
-    if lower.contains("interpreter_unavailable") || lower.contains("interpreter is unavailable") {
+    if lower.contains("build_tool_unavailable") {
+        "build_tool_unavailable"
+    } else if lower.contains("interpreter_unavailable")
+        || lower.contains("interpreter is unavailable")
+    {
         "interpreter_unavailable"
     } else if lower.contains("script_setup_failed")
         || lower.contains("temporary script setup failed")

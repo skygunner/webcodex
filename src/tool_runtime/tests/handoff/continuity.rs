@@ -3,6 +3,63 @@
 use super::*;
 
 #[tokio::test]
+async fn acceptance_is_rederived_from_restored_evidence_without_recording_or_execution() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = dir.path().join("sessions.json");
+    let runtime = test_runtime().with_session_ledger(&ledger);
+    let session = runtime
+        .sessions
+        .start_session(None, Some("Review the task".into()));
+    record_handoff_tool_event(
+        &runtime,
+        &session.session_id,
+        "cargo_check",
+        json!({}),
+        false,
+        json!({"exit_code": 1}),
+    );
+    let read = |runtime: ToolRuntime, sid: String| async move {
+        runtime
+            .session_handoff_summary(
+                sid,
+                None,
+                Some(false),
+                Some(false),
+                Some(false),
+                false,
+                Some(20),
+                None,
+            )
+            .await
+    };
+    let original = read(runtime.clone(), session.session_id.clone()).await;
+    assert!(original.success, "{original:?}");
+    assert_ne!(original.output["acceptance"]["state"], "ready_for_review");
+    runtime.sessions.flush_persistence();
+    drop(runtime);
+    let restored = test_runtime().with_session_ledger(&ledger);
+    let before = restored
+        .sessions
+        .summary(&session.session_id, None)
+        .unwrap();
+    let recovered = read(restored.clone(), session.session_id.clone()).await;
+    assert!(recovered.success, "{recovered:?}");
+    assert_eq!(
+        recovered.output["acceptance"],
+        original.output["acceptance"]
+    );
+    let after = restored
+        .sessions
+        .summary(&session.session_id, None)
+        .unwrap();
+    assert_eq!(before.events_total, after.events_total);
+    assert_eq!(
+        serde_json::to_value(before.events).unwrap(),
+        serde_json::to_value(after.events).unwrap()
+    );
+}
+
+#[tokio::test]
 async fn handoff_reread_recovers_corrected_task_without_reusing_validation_or_restarting_job() {
     let root = tempfile::tempdir().unwrap();
     init_git_repo(root.path());

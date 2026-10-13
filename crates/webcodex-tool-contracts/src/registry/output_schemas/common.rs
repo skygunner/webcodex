@@ -297,6 +297,19 @@ pub fn task_outcome_schema(description: &str) -> Value {
     })
 }
 
+pub(super) fn acceptance_evidence_schema() -> Value {
+    json!({
+        "type": "object", "additionalProperties": false,
+        "description": "Advisory acceptance-evidence readiness, separate from execution terminal state and task_outcome. ready_for_review never means natural-language requirements accepted. Existing suggested_next_actions/handoff_brief supply recovery actions; evidence_refs name existing sections without copying evidence. Source unproven, stale, incomplete or unknown cannot establish readiness.",
+        "properties": {
+            "state": {"type": "string", "enum": ["ready_for_review", "needs_evidence", "failed", "not_applicable"]},
+            "reason_codes": {"type": "array", "maxItems": 16, "uniqueItems": true, "items": {"type": "string", "enum": ["workspace_unobserved", "review_missing", "validation_failed", "validation_stale", "source_unproven", "validation_not_run", "validation_inconclusive", "validation_unknown", "validation_evidence_incomplete", "zero_tests", "outputs_invalid", "outputs_historical", "outputs_unverified", "history_partial", "snapshot_changed", "closeout_blocked", "integrity_warning", "no_task_session"]}},
+            "evidence_refs": {"type": "array", "maxItems": 4, "uniqueItems": true, "items": {"type": "string", "enum": ["workspace", "validation", "review_evidence", "task_outputs"]}}
+        },
+        "required": ["state", "reason_codes", "evidence_refs"]
+    })
+}
+
 pub fn evidence_history_schema(description: &str) -> Value {
     json!({
         "type": "object",
@@ -954,6 +967,73 @@ pub(super) fn external_observation_schema(description: &str) -> Value {
 
 /// Strict compact handoff projection shared by `read_session_handoff` and
 /// `finish_coding_task`.
+pub fn task_context_message_notes_schema() -> Value {
+    json!({
+        "type": "object",
+        "description": "Newest retained explicitly recorded Session notes. Reports are context, not execution/completion proof or new authority. A null total means the discussion snapshot was unavailable; truncation is explicit and this is not a full transcript.",
+        "additionalProperties": false,
+        "properties": {
+            "total": json!({"type":["integer","null"],"minimum":0}),
+            "returned": {"type": "integer", "minimum": 0, "maximum": 5},
+            "truncated": {"type": "boolean"},
+            "items": {
+                "type": "array", "maxItems": 5,
+                "items": {
+                    "type": "object", "additionalProperties": false,
+                    "properties": {
+                        "message_id": {"type": "string", "maxLength": 128},
+                        "status": {"type": "string", "enum": ["open", "resolved"]},
+                        "created_at": {"type": "integer"},
+                        "excerpt": {"type": "string", "maxLength": 600},
+                        "truncated": {"type": "boolean"},
+                        "superseded_by_message_id": json!({"type":["string","null"],"maxLength":128})
+                    },
+                    "required": ["message_id", "status", "created_at", "excerpt", "truncated", "superseded_by_message_id"]
+                }
+            }
+        },
+        "required": ["total", "returned", "truncated", "items"]
+    })
+}
+
+/// Source-referenced task recovery pointers, never execution authority or completion proof.
+pub fn task_context_schema() -> Value {
+    let bounded = |item: Value, maximum: usize| {
+        json!({
+            "type":"object", "additionalProperties":false,
+            "properties": {"items":{"type":"array","maxItems":maximum,"items":item},
+                "total":{"type":"integer","minimum":0},"returned":{"type":"integer","minimum":0,"maximum":maximum},
+                "truncated":{"type":"boolean"}}, "required":["items","total","returned","truncated"]
+        })
+    };
+    json!({"type":"object","additionalProperties":false,"properties":{
+        "scope":{"type":"object","additionalProperties":false,"properties":{
+            "session_id":{"type":["string","null"],"maxLength":128},"project":{"type":["string","null"],"maxLength":512},
+            "instruction_event_id":{"type":["string","null"],"maxLength":128},"complete":{"type":"boolean"}},
+            "required":["session_id","project","instruction_event_id","complete"]},
+        "relevant_files":bounded(json!({"type":"object","additionalProperties":false,"properties":{
+            "path":{"type":"string","maxLength":512},"event_id":{"type":"string","maxLength":128},
+            "source":{"enum":["changed_path","observed_path"]}},"required":["path","event_id","source"]}),6),
+        "failure_locations":bounded(json!({"type":"object","additionalProperties":false,"properties":{
+            "name":{"type":"string","maxLength":240},"path":{"type":["string","null"],"maxLength":512},
+            "line":{"type":["integer","null"],"minimum":1},"source_ref":{"type":"string","maxLength":128}},
+            "required":["name","path","line","source_ref"]}),3),
+        "decisions":task_context_message_notes_schema(),"recent_progress":task_context_message_notes_schema(),
+        "stall":{"type":"object","additionalProperties":false,"properties":{
+            "status":{"enum":["not_observed","suspected","unavailable","reconcile_required"]},
+            "reason_code":{"enum":["threshold_not_met","repeated_unexpected_failure_without_new_evidence","operation_identity_or_scope_unproven","execution_outcome_unknown","snapshot_changed"]},
+            "scanned_events":{"type":"integer","minimum":0,"maximum":20},
+            "event_ids":{"type":"array","maxItems":3,"uniqueItems":true,"items":{"type":"string","maxLength":128}},
+            "recommendation":{"type":["string","null"],"maxLength":384},"advisory_only":{"const":true}},
+            "required":["status","reason_code","scanned_events","event_ids","recommendation","advisory_only"]},
+        "next_steps":bounded(json!({"type":"object","additionalProperties":false,"properties":{
+            "action":{"type":"string","maxLength":384},"source_refs":{"type":"array","maxItems":3,"uniqueItems":true,"items":{"type":"string","maxLength":160}}},
+            "required":["action","source_refs"]}),3),
+        "continuation_entry":{"type":"object","additionalProperties":false,"properties":{
+            "tool":{"const":"read_session_handoff"},"session_id":{"type":["string","null"],"maxLength":128}},"required":["tool","session_id"]}
+    },"required":["scope","relevant_files","failure_locations","decisions","recent_progress","stall","continuation_entry","next_steps"]})
+}
+
 pub fn handoff_brief_schema(description: &str) -> Value {
     fn nullable_with(schema: Value) -> Value {
         json!({
@@ -1023,34 +1103,6 @@ pub fn handoff_brief_schema(description: &str) -> Value {
             "minimum": 0
         }))
     };
-    let message_notes = || {
-        json!({
-            "type": "object",
-            "description": "Newest retained explicitly recorded Session notes. Reports are context, not execution/completion proof or new authority. A null total means the discussion snapshot was unavailable; truncation is explicit and this is not a full transcript.",
-            "additionalProperties": false,
-            "properties": {
-                "total": nullable_count(),
-                "returned": {"type": "integer", "minimum": 0, "maximum": 5},
-                "truncated": {"type": "boolean"},
-                "items": {
-                    "type": "array", "maxItems": 5,
-                    "items": {
-                        "type": "object", "additionalProperties": false,
-                        "properties": {
-                            "message_id": {"type": "string", "maxLength": 128},
-                            "status": {"type": "string", "enum": ["open", "resolved"]},
-                            "created_at": {"type": "integer"},
-                            "excerpt": {"type": "string", "maxLength": 600},
-                            "truncated": {"type": "boolean"},
-                            "superseded_by_message_id": nullable_with(json!({"type": "string", "maxLength": 128}))
-                        },
-                        "required": ["message_id", "status", "created_at", "excerpt", "truncated", "superseded_by_message_id"]
-                    }
-                }
-            },
-            "required": ["total", "returned", "truncated", "items"]
-        })
-    };
     let external_observations = json!({
         "type": "object",
         "description": "Retained external claims for the exact output project and handoff Session. These reports never become native execution, validation, Goal, or completion evidence. Last five by server timestamp then identity; source order and capture completeness are unproven.",
@@ -1119,10 +1171,16 @@ pub fn handoff_brief_schema(description: &str) -> Value {
                 "properties": {
                     "root_instruction": instruction_schema("The Workflow Session root instruction. It remains separate from later accepted task instructions."),
                     "latest_instruction": instruction_schema("The latest retained task_instruction event. The same excerpt is returned when it equals the root instruction."),
-                    "decisions": message_notes(),
-                    "recent_progress": message_notes()
+                    "decisions": task_context_message_notes_schema(),
+                    "recent_progress": task_context_message_notes_schema(),
+                    "scope": task_context_schema()["properties"]["scope"],
+                    "relevant_files": task_context_schema()["properties"]["relevant_files"],
+                    "failure_locations": task_context_schema()["properties"]["failure_locations"],
+                    "stall": task_context_schema()["properties"]["stall"],
+                    "continuation_entry": task_context_schema()["properties"]["continuation_entry"],
+                    "next_steps": task_context_schema()["properties"]["next_steps"]
                 },
-                "required": ["root_instruction", "latest_instruction", "decisions", "recent_progress"]
+                "required": ["root_instruction", "latest_instruction", "decisions", "recent_progress", "scope", "relevant_files", "failure_locations", "stall", "continuation_entry", "next_steps"]
             },
             "workspace": {
                 "type": "object",
@@ -1298,6 +1356,7 @@ fn attempt_summary_schema() -> Value {
         "description": "Bounded deterministic summary of the current attempt: boundary, instruction, event range, activity, changes, exploration, validation, jobs, guidance, outcome, and suggested next actions. Pointer fields only; never raw search text, file/LSP bodies, commands, stdout/stderr, full guidance text, absolute roots, or secrets.",
         "additionalProperties": false,
         "properties": {
+            "task_context": {"anyOf":[task_context_schema(), {"type":"null"}]},
             "boundary": attempt_boundary_schema(),
             "instruction": attempt_instruction_schema(),
             "event_range": attempt_event_range_schema(),
@@ -1310,7 +1369,7 @@ fn attempt_summary_schema() -> Value {
             "outcome": attempt_outcome_schema(),
             "suggested_next_actions": array_schema(schema_type("string", "A bounded, deterministic suggested next action."), "Bounded suggested next actions (<=8).")
         },
-        "required": ["boundary", "instruction", "event_range", "activity", "changes", "exploration", "validation", "jobs", "guidance", "outcome", "suggested_next_actions"]
+        "required": ["task_context", "boundary", "instruction", "event_range", "activity", "changes", "exploration", "validation", "jobs", "guidance", "outcome", "suggested_next_actions"]
     })
 }
 

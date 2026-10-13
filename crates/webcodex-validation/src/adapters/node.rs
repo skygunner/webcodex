@@ -10,6 +10,8 @@ pub(super) fn evidence_profile(identity: &str) -> Option<&'static dyn Validation
     match identity {
         "node:script:check" => Some(&NODE_SCRIPT_CHECK),
         "node:tap:test" => Some(&NODE_NATIVE_TAP_TEST),
+        "node:vitest:test" => Some(&NODE_VITEST_TEST),
+        "node:jest:test" => Some(&NODE_JEST_TEST),
         _ => None,
     }
 }
@@ -90,5 +92,27 @@ impl ValidationEvidenceProfile for NodeNativeTapTest {
         } else {
             "process_exit"
         }
+    }
+}
+
+struct NodeJsonTest(&'static str);
+static NODE_VITEST_TEST: NodeJsonTest = NodeJsonTest("node:vitest:test");
+static NODE_JEST_TEST: NodeJsonTest = NodeJsonTest("node:jest:test");
+impl ValidationEvidenceProfile for NodeJsonTest {
+    fn tool_identity(&self) -> &'static str {
+        self.0
+    }
+    fn validation_kind(&self) -> &'static str {
+        "test"
+    }
+    fn parse(&self, _: &str, _: &str, truncated: bool) -> ValidationDiagnostics {
+        // Framework reports are read from the Job's private file, never logs.
+        NODE_SCRIPT_CHECK.parse("", "", truncated)
+    }
+    fn reports_test_run_metadata(&self) -> bool {
+        true
+    }
+    fn map_failure_kind(&self, evidence: ValidationFailureEvidence<'_>) -> &'static str {
+        NODE_NATIVE_TAP_TEST.map_failure_kind(evidence)
     }
 }

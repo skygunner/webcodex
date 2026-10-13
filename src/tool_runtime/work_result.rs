@@ -440,6 +440,37 @@ impl ToolRuntime {
             if let Some(outputs) = super::task_outputs::retained_task_outputs(summary) {
                 projection["task_outputs"] = outputs;
             }
+            let reconciliation = super::handoff::reconcile_closeout_evidence(
+                &super::sessions::tool_failure_summary_from_events(&projection_summary.events, 10),
+                &projection_summary,
+                &validation,
+            );
+            let mut acceptance_validation = reconciliation.validation;
+            acceptance_validation["current_evidence"] = current_validation.clone();
+            let facts = super::closeout_projection::closeout_facts(
+                super::closeout_projection::workspace_observation(
+                    &workspace_result.output,
+                    true,
+                    workspace_result.success,
+                ),
+                None,
+                &Value::Null,
+                &acceptance_validation,
+                &reconciliation.tool_failures,
+                &review,
+            );
+            let outputs = projection.get("task_outputs").cloned().and_then(|value| {
+                serde_json::from_value::<webcodex_core::task_outputs::TaskOutputs>(value).ok()
+            });
+            projection["acceptance"] = super::acceptance_evidence::acceptance_evidence(
+                &facts,
+                super::acceptance_evidence::AcceptanceContext {
+                    outputs: outputs.as_ref(),
+                    outputs_historical: true,
+                    history_partial: summary.events_truncated || summary.retention_truncated,
+                    ..Default::default()
+                },
+            );
             if let Some(detail) = self.workflow_session_console_detail(
                 &resolved_project,
                 &summary.session_id,
@@ -486,6 +517,7 @@ impl ToolRuntime {
                     &workspace_result.output,
                 ),
                 "validation": empty_work_result_validation(),
+                "acceptance": super::acceptance_evidence::no_session_acceptance_evidence(),
                 "review": empty_work_result_review(),
                 "collaboration": {
                     "available": false,

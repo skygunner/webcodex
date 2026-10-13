@@ -4,10 +4,10 @@ use super::helpers::{
 };
 
 pub(crate) use webcodex_validation::{
-    validation_adapter_for_tool, validation_evidence_profile_for_recipe,
-    validation_evidence_profile_for_tool, CargoCheckOptions, CargoReadOnlyValidationOperation,
-    CargoTestOptions, GoReadOnlyValidationOperation, GoTestOptions, ReadOnlyValidationOperation,
-    ValidationCommandOptions, ValidationEvidenceProfile, ValidationFailureEvidence,
+    validation_adapter_for_tool, validation_evidence_profile_for_tool, CargoCheckOptions,
+    CargoReadOnlyValidationOperation, CargoTestOptions, GoReadOnlyValidationOperation,
+    GoTestOptions, ReadOnlyValidationOperation, ValidationCommandOptions,
+    ValidationEvidenceProfile, ValidationFailureEvidence,
 };
 
 pub(crate) struct ValidationRuntimeProfile {
@@ -21,7 +21,7 @@ pub(crate) fn runtime_profile(operation: &ReadOnlyValidationOperation) -> Valida
         ReadOnlyValidationOperation::NodeNativeTest => ValidationRuntimeProfile {
             default_timeout_secs: DEFAULT_CARGO_TEST_TIMEOUT_SECS,
             force_agent_handoff: true,
-            invalid_argument_guidance: "Native node:test TAP only; no custom scripts, filter or package scope.",
+            invalid_argument_guidance: "Native Node TAP or recognized direct Vitest/Jest only; no compound scripts, filter or package scope.",
         },
         ReadOnlyValidationOperation::NodeScriptCheck => ValidationRuntimeProfile {
             default_timeout_secs: DEFAULT_CARGO_CHECK_TIMEOUT_SECS,

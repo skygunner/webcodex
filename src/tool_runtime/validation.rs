@@ -16,9 +16,8 @@ use super::structured_execution::{
 };
 use super::tool_result::ToolResult;
 use super::validation_profile::{
-    requires_multi_package_cargo_check, runtime_profile, validation_evidence_profile_for_recipe,
-    CargoReadOnlyValidationOperation, ReadOnlyValidationOperation, ValidationEvidenceProfile,
-    ValidationFailureEvidence,
+    requires_multi_package_cargo_check, runtime_profile, CargoReadOnlyValidationOperation,
+    ReadOnlyValidationOperation, ValidationEvidenceProfile, ValidationFailureEvidence,
 };
 #[cfg(test)]
 use super::validation_profile::{validation_adapter_for_tool, ValidationCommandOptions};
@@ -518,7 +517,7 @@ impl ToolRuntime {
         let plan = match serde_json::from_str::<ProjectValidationPlanningResult>(response.stdout.as_deref().unwrap_or("")) {
             Ok(ProjectValidationPlanningResult::Ready { plan }) => plan,
             Ok(ProjectValidationPlanningResult::Unavailable { code, detected_backend }) => return ToolResult::err_with_output(
-                "Project validation unavailable; use a supported Rust/Go action, configured Python pytest/Ruff, or a Node >=22.3 native check script on a supported Runner.",
+                "Project validation unavailable; use a supported Rust/Go action, configured Python pytest/Ruff, or a supported native Node check/TAP/Vitest/Jest script on a supported Runner.",
                 json!({"execution_source":"project_validate", "execution_state":"not_started", "command_started":false, "command_completed":false, "failure_kind":code, "detected_backend":detected_backend})),
             Err(_) => return ToolResult::err("invalid Runner validation plan; upgrade Server and Runner together"),
         };
@@ -539,9 +538,11 @@ impl ToolRuntime {
             ProjectValidationAction::Check => webcodex_validation::SemanticCheck::Check,
             ProjectValidationAction::Test => webcodex_validation::SemanticCheck::Test,
         };
-        let Some(adapter) =
-            validation_evidence_profile_for_recipe(&plan.provenance.backend, semantic_action)
-        else {
+        let Some(adapter) = webcodex_validation::validation_evidence_profile_for_project_step(
+            &plan.provenance.backend,
+            semantic_action,
+            &plan.step,
+        ) else {
             return ToolResult::err(
                 "validation adapter unavailable; upgrade Server and Runner together",
             );

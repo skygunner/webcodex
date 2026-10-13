@@ -23,22 +23,23 @@ mod recipe_tests;
 pub use adapters::{
     execution_purpose_for_validation_kind, project_validation_operation,
     validation_adapter_for_recipe, validation_adapter_for_tool,
-    validation_evidence_profile_for_recipe, validation_evidence_profile_for_tool,
-    CargoCheckOptions, CargoReadOnlyValidationOperation, CargoTestOptions, GoCheckOptions,
-    GoReadOnlyValidationOperation, GoTestOptions, PythonTestOptions, ReadOnlyValidationOperation,
-    ReadOnlyValidationPlan, ValidationAdapter, ValidationCommandOptions,
-    ValidationCompatibilityProfile, ValidationEvidenceProfile, ValidationFailureEvidence,
+    validation_evidence_profile_for_project_step, validation_evidence_profile_for_recipe,
+    validation_evidence_profile_for_tool, CargoCheckOptions, CargoReadOnlyValidationOperation,
+    CargoTestOptions, GoCheckOptions, GoReadOnlyValidationOperation, GoTestOptions,
+    PythonTestOptions, ReadOnlyValidationOperation, ReadOnlyValidationPlan, ValidationAdapter,
+    ValidationCommandOptions, ValidationCompatibilityProfile, ValidationEvidenceProfile,
+    ValidationFailureEvidence,
 };
 #[cfg(any(feature = "session-evidence", test))]
 pub use evidence::{
-    current_validation_evidence_for_session, event_is_job_acceptance_only,
-    event_observes_validation_activity, extract_validation_events, skipped_validation_summary,
-    validation_kind_for_tool, validation_summary_for_session_events,
+    complete_failure_identity_for_session_event, current_validation_evidence_for_session,
+    event_is_job_acceptance_only, event_observes_validation_activity, extract_validation_events,
+    skipped_validation_summary, validation_kind_for_tool, validation_summary_for_session_events,
     validation_summary_from_events, CurrentValidationEvidenceProjection, ValidationEvent,
 };
 pub use recipe::{
     detect_validation_recipe, resolve_node_native_project_check, resolve_node_native_project_test,
-    resolve_project_validation_recipe, resolve_validation_recipe,
+    resolve_node_project_build, resolve_project_validation_recipe, resolve_validation_recipe,
     resolve_validation_recipe_with_packages, resolve_validation_recipe_with_project_policy,
     validate_node_project_markers, RecipeError, RecipeId, ResolvedValidationRecipe, SemanticCheck,
 };

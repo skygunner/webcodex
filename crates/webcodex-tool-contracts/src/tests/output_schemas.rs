@@ -3055,7 +3055,7 @@ fn finish_coding_task_output_schema_describes_ledger_validation_summary() {
     assert_permission_summary_schema_fields(&output_props["permissions"]);
     assert_job_lifecycle_summary_schema_fields(&output_props["jobs"]);
     assert_review_evidence_schema_fields(&output_props["review_evidence"]);
-    let nested_show_changes = &output_props["changes"]["properties"]["show_changes"];
+    let nested_show_changes = &output_props["changes"]["properties"]["read_workspace_changes"];
     let nested_recovery =
         &nested_show_changes["properties"]["diff_review_handoff"]["properties"]["next_call"];
     assert_eq!(

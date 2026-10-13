@@ -21,6 +21,8 @@ pub enum ProjectBuildAdapter {
     Auto,
     Rust,
     Go,
+    Node,
+    Python,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,7 +95,14 @@ impl ProjectBuildProvenance {
     pub fn is_valid(&self) -> bool {
         self.request.validate().is_ok()
             && validate_relative(&self.recipe_root).is_ok()
-            && matches!(self.backend.as_str(), "rust" | "go")
+            && matches!(
+                (self.request.adapter, self.backend.as_str()),
+                (ProjectBuildAdapter::Auto, "rust" | "go" | "python" | "node")
+                    | (ProjectBuildAdapter::Rust, "rust")
+                    | (ProjectBuildAdapter::Go, "go")
+                    | (ProjectBuildAdapter::Python, "python")
+                    | (ProjectBuildAdapter::Node, "node")
+            )
             && [
                 &self.root_digest,
                 &self.manifest_digest,
@@ -114,8 +123,12 @@ pub struct ProjectBuildPlan {
 impl ProjectBuildPlan {
     pub fn is_valid(&self) -> bool {
         self.provenance.is_valid()
-            && canonical_project_build_process(&self.provenance.backend, &self.provenance.request)
-                .is_ok_and(|process| process == self.process)
+            && canonical_project_build_process_with_manager(
+                &self.provenance.backend,
+                &self.provenance.request,
+                &self.process.executable,
+            )
+            .is_ok_and(|process| process == self.process)
             && project_build_invocation_digest(&self.process) == self.provenance.invocation_digest
     }
 }
@@ -135,6 +148,16 @@ pub enum ProjectBuildPlanningResult {
 pub fn canonical_project_build_process(
     backend: &str,
     request: &ProjectBuildRequest,
+) -> Result<ShellProcessArgv, &'static str> {
+    canonical_project_build_process_with_manager(backend, request, "npm")
+}
+
+/// Node manager is resolved from the manifest and bound by invocation digest and
+/// Runner re-planning; this validator accepts only the closed script vocabulary.
+pub fn canonical_project_build_process_with_manager(
+    backend: &str,
+    request: &ProjectBuildRequest,
+    manager: &str,
 ) -> Result<ShellProcessArgv, &'static str> {
     let packages = request
         .scope
@@ -167,6 +190,15 @@ pub fn canonical_project_build_process(
                 args,
             })
         }
+        "python" => {
+            if request.scope.is_some() {
+                return Err("Python packaging does not support package scope");
+            }
+            Ok(ShellProcessArgv {
+                executable: "python".into(),
+                args: vec!["-m".into(), "build".into(), "--no-isolation".into()],
+            })
+        }
         "go" => {
             let packages = normalize_go_packages(if all_packages { None } else { packages })?;
             let mut args = vec!["build".to_string()];
@@ -182,6 +214,19 @@ pub fn canonical_project_build_process(
                 args,
             })
         }
+        "node" if matches!(manager, "npm" | "pnpm" | "yarn" | "bun") => {
+            if request.scope.is_some() || request.dependency_policy.is_some() {
+                return Err("Node build scope/dependency policy unavailable");
+            }
+            Ok(ShellProcessArgv {
+                executable: manager.into(),
+                args: if manager == "yarn" {
+                    vec!["run".into(), "build".into()]
+                } else {
+                    vec!["run".into(), "--silent".into(), "build".into()]
+                },
+            })
+        }
         _ => Err("unsupported project build backend"),
     }
 }
@@ -189,4 +234,62 @@ pub fn canonical_project_build_process(
 pub fn project_build_invocation_digest(process: &ShellProcessArgv) -> String {
     let bytes = serde_json::to_vec(process).expect("ShellProcessArgv serialization cannot fail");
     format!("{:x}", Sha256::digest(bytes))
+}
+
+/// A bounded observation of an existing artifact, never a correctness receipt.
+/// These use the same path, byte count, MIME and digest facts as artifact reads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectBuildArtifact {
+    pub path: String,
+    pub bytes: u64,
+    pub sha256: String,
+    pub mime_type: Option<String>,
+}
+
+pub const PROJECT_BUILD_ARTIFACTS_MAX: usize = 16;
+pub fn validate_build_artifacts(artifacts: &[ProjectBuildArtifact]) -> bool {
+    artifacts.len() <= PROJECT_BUILD_ARTIFACTS_MAX
+        && artifacts
+            .iter()
+            .try_fold(0u64, |sum, artifact| sum.checked_add(artifact.bytes))
+            .is_some_and(|total| total <= 256 * 1024 * 1024)
+        && artifacts.iter().enumerate().all(|(index, artifact)| {
+            validate_relative(&artifact.path).is_ok()
+                && !crate::sensitive_paths::is_bulk_skipped_path(&artifact.path)
+                && artifact.bytes <= 256 * 1024 * 1024
+                && artifact.sha256.len() == 64
+                && artifact
+                    .sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                && artifact.mime_type.as_ref().is_none_or(|mime| {
+                    !mime.is_empty() && mime.len() <= 128 && !mime.chars().any(char::is_control)
+                })
+                && !artifacts[..index]
+                    .iter()
+                    .any(|earlier| earlier.path == artifact.path)
+        })
+}
+
+/// Artifact metadata is terminal historical observation, never active execution
+/// authority. Reject injected metadata on unrelated or incomplete Jobs.
+pub fn validate_build_artifact_report(
+    source: &str,
+    status: &str,
+    exit_code: Option<i32>,
+    state: Option<crate::runner_protocol::ShellCommandExecutionState>,
+    artifacts: Option<&[ProjectBuildArtifact]>,
+) -> Result<(), &'static str> {
+    if let Some(artifacts) = artifacts {
+        if source != "project_build"
+            || status != "completed"
+            || exit_code != Some(0)
+            || state != Some(crate::runner_protocol::ShellCommandExecutionState::Completed)
+            || !validate_build_artifacts(artifacts)
+        {
+            return Err("build_artifacts_invalid");
+        }
+    }
+    Ok(())
 }

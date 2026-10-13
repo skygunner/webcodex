@@ -193,6 +193,7 @@ pub(crate) fn configured_prepared_shell_job_command(
 /// Native Node project-check command. Interpreter resolution is Runner-owned
 /// and the same exact executable is probed and used for the script. An existing
 /// project script may have effects; this does not create a filesystem sandbox.
+#[cfg(test)]
 pub(crate) fn configured_node_project_check_job_command(
     shell: &ShellConfig,
     profile: Option<&PreparedShellProfile>,
@@ -200,11 +201,31 @@ pub(crate) fn configured_node_project_check_job_command(
     cwd: &Path,
     stop_requested: Option<&AtomicBool>,
 ) -> Result<Command, String> {
-    if !step.is_structured_node_check() && !step.is_structured_node_tap_test() {
+    configured_node_project_job_command(shell, profile, step, cwd, stop_requested, None)
+}
+
+pub(crate) fn configured_node_project_job_command(
+    shell: &ShellConfig,
+    profile: Option<&PreparedShellProfile>,
+    step: &ShellJobValidationStep,
+    cwd: &Path,
+    stop_requested: Option<&AtomicBool>,
+    report_path: Option<&Path>,
+) -> Result<Command, String> {
+    if step.node_json_framework().is_some() && report_path.is_none() {
+        return Err("owned Node report path required".into());
+    }
+    if !step.is_structured_node_check()
+        && !step.is_structured_node_tap_test()
+        && step.node_json_framework().is_none()
+    {
         return Err("invalid Node project validation step".into());
     }
     let unavailable =
         || webcodex_core::runner_protocol::VALIDATION_TOOL_UNAVAILABLE_CODE.to_string();
+    if step.node_json_framework().is_some() && !cwd.join(&step.args[0]).is_file() {
+        return Err(unavailable());
+    }
     let program = super::scripts::configured_validation_node_interpreter(shell, profile)
         .map_err(|_| unavailable())?;
     let mut probe = Command::new(&program);
@@ -217,17 +238,80 @@ pub(crate) fn configured_node_project_check_job_command(
     let (status, stdout, _) = run_prepare_command(probe, Duration::from_secs(5), stop_requested)
         .map_err(|_| unavailable())?;
     let version = super::scripts::parse_node_version(&stdout).ok_or_else(unavailable)?;
-    if !status.success() || version.major < 22 || (version.major == 22 && version.minor < 3) {
+    if !status.success()
+        || (step.node_json_framework().is_none()
+            && (version.major < 22 || (version.major == 22 && version.minor < 3)))
+    {
         return Err(unavailable());
     }
     let mut command = Command::new(&program);
-    command
-        .args(&step.args)
-        .current_dir(cwd)
-        .stdin(Stdio::null());
+    for arg in &step.args {
+        if arg == "__WEBCODEX_JOB_REPORT__" {
+            command.arg(report_path.expect("owned report path"));
+        } else {
+            command.arg(arg);
+        }
+    }
+    command.current_dir(cwd).stdin(Stdio::null());
     super::scripts::apply_script_environment(&mut command, shell, profile)
         .map_err(|_| unavailable())?;
     command.env_remove("NODE_OPTIONS");
+    Ok(command)
+}
+
+/// Build frontend availability is checked without importing project hooks. The
+/// same configured interpreter and environment execute the real packaging job.
+/// `build --no-isolation` performs backend dependency checks and never installs.
+pub(crate) fn configured_python_build_job_command(
+    shell: &ShellConfig,
+    profile: Option<&PreparedShellProfile>,
+    args: &[String],
+    cwd: &Path,
+    stop_requested: Option<&AtomicBool>,
+    deadline: Instant,
+) -> Result<Command, String> {
+    let unavailable = || "build_tool_unavailable".to_string();
+    let program = super::scripts::configured_validation_python_interpreter(shell, profile)
+        .map_err(|_| unavailable())?;
+    let mut probe = Command::new(&program);
+    probe.args(["-c", "import sys,importlib.util;sys.exit(0 if sys.version_info.major == 3 and importlib.util.find_spec('build') else 42)"])
+        .current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    super::scripts::apply_script_environment(&mut probe, shell, profile)
+        .map_err(|_| unavailable())?;
+    if stop_requested.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+        return Err("build_cancelled".into());
+    }
+    if Instant::now() >= deadline {
+        return Err("build_timeout".into());
+    }
+    let mut child = ManagedChild::spawn(&mut probe).map_err(|_| unavailable())?;
+    let probe_deadline = deadline.min(Instant::now() + Duration::from_secs(5));
+    let available = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status.success(),
+            Ok(None)
+                if Instant::now() < probe_deadline
+                    && !stop_requested.is_some_and(|flag| flag.load(Ordering::SeqCst)) =>
+            {
+                std::thread::sleep(Duration::from_millis(20))
+            }
+            _ => break false,
+        }
+    };
+    let cleaned = terminate_child_process_tree(&mut child).is_ok();
+    if stop_requested.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+        return Err("build_cancelled".into());
+    }
+    if Instant::now() >= deadline {
+        return Err("build_timeout".into());
+    }
+    if !available || !cleaned {
+        return Err(unavailable());
+    }
+    let mut command = Command::new(program);
+    command.args(args);
+    super::scripts::apply_script_environment(&mut command, shell, profile)
+        .map_err(|_| unavailable())?;
     Ok(command)
 }
 

@@ -17,6 +17,9 @@ mod model;
 mod persistence;
 mod query;
 mod store;
+mod task_context;
+#[cfg(test)]
+mod task_context_tests;
 mod util;
 
 #[cfg(test)]

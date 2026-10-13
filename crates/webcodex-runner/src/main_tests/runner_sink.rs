@@ -63,6 +63,7 @@ fn sink_send_job_update_sends_job_update_envelope() {
             validation_progress: None,
             test_count_evidence: None,
             format_mutation: None,
+            build_artifacts: None,
             activity: None,
             finished: false,
         };
@@ -124,6 +125,7 @@ fn sink_try_send_job_update_preserves_full_ws_and_quic_queue_for_retry() {
             validation_progress: None,
             test_count_evidence: None,
             format_mutation: None,
+            build_artifacts: None,
             activity: None,
             finished: false,
         };

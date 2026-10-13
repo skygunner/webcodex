@@ -1898,7 +1898,7 @@ fn lsp_command_resolution_uses_explicit_env_then_path_without_shell() {
         )
         .is_none());
 
-    let spaced = tempfile::tempdir().unwrap();
+    let spaced = super::super::test_support::executable_tempdir();
     let program = spaced.path().join("fake server with spaces");
     fs::hard_link(fake, &program).unwrap();
     let project = tempfile::tempdir().unwrap();
@@ -1971,4 +1971,41 @@ fn process_exists(pid: u32) -> bool {
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn process_exists(_pid: u32) -> bool {
     false
+}
+
+/// Executable fixtures follow the actual test executable, not a hard-coded
+/// source-tree target directory. This also works with a custom Cargo target
+/// directory or a source checkout located beneath TMPDIR.
+#[test]
+fn fake_server_fixture_uses_the_current_test_executable_directory() {
+    let parent = std::env::current_exe()
+        .expect("current test executable")
+        .canonicalize()
+        .expect("canonical executable path")
+        .parent()
+        .expect("test executable parent")
+        .to_path_buf();
+    let scoped = super::super::test_support::executable_tempdir();
+    assert_eq!(
+        scoped.path().parent().unwrap().canonicalize().unwrap(),
+        parent,
+        "fixture root must track Cargo's actual executable location"
+    );
+    let fake = fake_server_path();
+    assert_eq!(
+        fake.canonicalize()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap(),
+        parent,
+        "fake LSP binary must live in an executable sibling fixture"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let executable = std::fs::metadata(fake).unwrap();
+        assert_ne!(executable.permissions().mode() & 0o111, 0);
+    }
 }

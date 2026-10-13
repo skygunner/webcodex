@@ -21,6 +21,7 @@ async fn setup(grace_ms: u64) -> ToolRuntime {
             project_validation_python_pytest_v1: true,
             project_validation_python_ruff_v1: true,
             project_validation_node_tap_v1: true,
+            project_validation_node_json_v1: true,
             structured_go_test_json: true,
             structured_go_test_tool: true,
             structured_go_test_packages: true,
@@ -1008,5 +1009,143 @@ async fn project_validation_mismatched_evidence_profile_starts_nothing() {
         assert!(probe_patch_agent_request(&runtime, "project-validation")
             .await
             .is_none());
+    }
+}
+
+#[tokio::test]
+async fn node_json_project_validation_handoff_owns_counts_and_keeps_freshness_unproven() {
+    use webcodex_core::validation_evidence::CargoTestCountEvidenceStatus;
+    use webcodex_core::validation_identity::{
+        structured_validation_target_identity, ToolValidationIdentityKind,
+    };
+    for framework in ["vitest", "jest"] {
+        for count in [Some(2), Some(0), None] {
+            let runtime = setup(1).await;
+            let project = agent_test_project_id("project-validation");
+            let session = runtime.sessions.start_session(Some(project), None);
+            let task = tokio::spawn({
+                let runtime = runtime.clone();
+                let id = session.session_id.clone();
+                async move {
+                    runtime
+                        .dispatch_with_auth(
+                            call(ProjectValidationAction::Test, Some(id)),
+                            Some(&auth_context(None, true)),
+                        )
+                        .await
+                }
+            });
+            let planning = wait_for_runner_request(&runtime, "project-validation").await;
+            assert_eq!(planning.kind, "plan_project_validation");
+            let semantic: ProjectValidationRequest =
+                serde_json::from_str(planning.content.as_deref().unwrap()).unwrap();
+            let plan = ProjectValidationPlan {
+                provenance: ProjectValidationProvenance {
+                    request: semantic,
+                    backend: "node".into(),
+                    recipe_root: ".".into(),
+                    root_digest: "a".repeat(64),
+                    manifest_digest: "b".repeat(64),
+                    invocation_digest: "c".repeat(64),
+                },
+                adapter: format!("node:{framework}:test"),
+                step: crate::runner_protocol::ShellJobValidationStep::node_json_test(framework)
+                    .unwrap(),
+                validation_target_id: structured_validation_target_identity(
+                    if framework == "vitest" {
+                        ToolValidationIdentityKind::NodeVitestTest
+                    } else {
+                        ToolValidationIdentityKind::NodeJestTest
+                    },
+                    &json!({"cwd":"."}),
+                )
+                .unwrap(),
+            };
+            complete_sync_shell_lifecycle(
+                &runtime,
+                "project-validation",
+                planning.request_id,
+                ShellCommandExecutionState::Completed,
+                Some(0),
+                &serde_json::to_string(&ProjectValidationPlanningResult::Ready { plan }).unwrap(),
+                "",
+                None,
+            )
+            .await;
+            let (request, job_id) = poll_start_validation_job(&runtime, "project-validation").await;
+            let metadata = request
+                .job_context
+                .as_ref()
+                .unwrap()
+                .validation
+                .as_ref()
+                .unwrap();
+            assert!(metadata.is_valid());
+            assert_eq!(metadata.adapter, format!("node:{framework}:test"));
+            let pending = task.await.unwrap();
+            assert_eq!(pending.output["execution_state"], "pending", "{pending:?}");
+            let mut update = cargo_test_update(
+                "project-validation",
+                &request.request_id,
+                &job_id,
+                "completed",
+                "arbitrary log: 999 tests passed",
+                "",
+                Some(0),
+                completed_progress(),
+                true,
+            );
+            update.test_count_evidence = Some(crate::runner_protocol::ShellJobTestCountEvidence {
+                tests_detected: count.is_some(),
+                tests_run_count: count,
+                tests_passed: count,
+                tests_failed: count.map(|_| 0),
+                status: if count.is_some() {
+                    CargoTestCountEvidenceStatus::CompleteSummary
+                } else {
+                    CargoTestCountEvidenceStatus::NoCompleteSummary
+                },
+            });
+            runtime.runner_registry.update_job(update).await.unwrap();
+            let status = runtime
+                .job_status_for_auth(job_id.clone(), false, None)
+                .await;
+            assert_eq!(
+                status.output["validation"]["passed"],
+                count == Some(2),
+                "{status:?}"
+            );
+            assert_eq!(status.output["validation"]["tests_run_count"], json!(count));
+            assert_eq!(
+                status.output["validation"]["source_state"]["freshness"],
+                "unproven"
+            );
+            let summary = runtime.sessions.summary(&session.session_id, None).unwrap();
+            let evidence = runtime
+                .validation_summary_for_session_with_jobs(
+                    &summary,
+                    50,
+                    Some(&auth_context(None, true)),
+                )
+                .await;
+            assert_eq!(
+                evidence["latest"]["success"],
+                count == Some(2),
+                "{evidence}"
+            );
+            assert_eq!(evidence["latest"]["tests_run_count"], json!(count));
+            assert_eq!(evidence["latest"]["source_state"]["freshness"], "unproven");
+            assert_eq!(
+                evidence["current_evidence"]["status"],
+                if count == Some(2) {
+                    "unproven"
+                } else {
+                    "inconclusive"
+                }
+            );
+            assert!(probe_patch_agent_request(&runtime, "project-validation")
+                .await
+                .is_none());
+        }
     }
 }

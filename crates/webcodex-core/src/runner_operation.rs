@@ -2006,9 +2006,10 @@ fn validate_project_build_job(
     if !provenance.is_valid() {
         return Err("project build Job provenance is invalid".to_string());
     }
-    let canonical = crate::project_build::canonical_project_build_process(
+    let canonical = crate::project_build::canonical_project_build_process_with_manager(
         &provenance.backend,
         &provenance.request,
+        &process.executable,
     )
     .map_err(str::to_string)?;
     if &canonical != process

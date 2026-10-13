@@ -59,6 +59,7 @@ pub(super) struct PreparedShellJob {
     pub(super) timeout_secs: u64,
     pub(super) validation: bool,
     pub(super) capture_cargo_test_count: bool,
+    pub(super) node_report: Option<super::node_report::NodeReport>,
     pub(super) step_count: usize,
     pub(super) commands: VecDeque<std::process::Command>,
     pub(super) prepared_profile: Option<Arc<crate::webcodex_runner::shell::PreparedShellProfile>>,
@@ -74,6 +75,7 @@ impl JobManager {
             timeout_secs,
             validation,
             capture_cargo_test_count,
+            node_report,
             step_count,
             mut commands,
             prepared_profile,
@@ -498,7 +500,13 @@ impl JobManager {
             };
             let command_execution_state = (!validation)
                 .then(|| raw_shell_job_terminal_lifecycle(&final_status.0, final_status.1));
-            let test_count_evidence = finish_cargo_test_count_evidence(test_count_accumulator);
+            let test_count_evidence = node_report
+                .as_ref()
+                .map(|report| report.evidence(&final_status.0, final_status.1))
+                .or_else(|| finish_cargo_test_count_evidence(test_count_accumulator));
+            // Aggregate evidence is durable; raw report and private directory are
+            // cleaned before terminal delivery, including failure/timeout/stop.
+            drop(node_report);
             manager.update_and_send(
                 &job_id,
                 RunnerJobDelta {
@@ -513,6 +521,7 @@ impl JobManager {
                     validation_progress: final_progress,
                     test_count_evidence,
                     format_mutation: None,
+                    build_artifacts: None,
                     activity: None,
                     finished: true,
                 },

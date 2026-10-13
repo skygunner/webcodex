@@ -14,6 +14,7 @@ pub(crate) use webcodex_workflow_session::{
 
 pub(crate) fn continuation_projection_hooks() -> ContinuationProjectionHooks {
     ContinuationProjectionHooks::new(root_tool_is_meaningful)
+        .with_failure_identity(webcodex_validation::complete_failure_identity_for_session_event)
 }
 
 pub(crate) fn continuation_validation_snapshot(

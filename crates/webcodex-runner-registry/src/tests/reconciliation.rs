@@ -352,6 +352,7 @@ fn snapshot_from_request(
         validation_progress: None,
         test_count_evidence: None,
         format_mutation: None,
+        build_artifacts: None,
         activity: None,
     }
 }
@@ -381,6 +382,7 @@ fn update(
         validation_progress: None,
         test_count_evidence: None,
         format_mutation: None,
+        build_artifacts: None,
         activity: None,
         finished,
     }
@@ -543,6 +545,7 @@ async fn validation_progress_accepts_sequence_only_heartbeats_and_coalesced_gaps
             }),
             test_count_evidence: None,
             format_mutation: None,
+            build_artifacts: None,
             activity,
             finished,
         }
@@ -911,6 +914,8 @@ async fn cargo_test_count_assertion_survives_inventory_roundtrip_and_server_rest
         failed_step: None,
     });
     snapshot.test_count_evidence = Some(ShellJobTestCountEvidence {
+            tests_passed: None,
+            tests_failed: None,
         tests_detected: true,
         tests_run_count: Some(6),
         status: CargoTestCountEvidenceStatus::CompleteSummary,
@@ -2857,6 +2862,7 @@ fn standalone_snapshot(job_id: &str, status: &str) -> ShellJobSnapshot {
         validation_progress: None,
         test_count_evidence: None,
         format_mutation: None,
+        build_artifacts: None,
         activity: None,
     }
 }
@@ -4041,6 +4047,53 @@ async fn project_validation_node_native_capability_rechecked_at_job_admission() 
             let error = result.unwrap_err();
             assert!(error.starts_with("capability_unavailable:"), "{error}");
             assert!(error.contains("project_validation_node_tap_v1"), "{error}");
+            assert!(registry.list_jobs(Some(10)).await.is_empty());
+        }
+    }
+}
+
+#[tokio::test]
+async fn project_validation_node_json_capability_rechecked_at_job_admission() {
+    use webcodex_core::project_validation::*;
+    for (supported,framework) in [(false,"vitest"),(true,"vitest"),(false,"jest"),(true,"jest")] {
+        let registry = RunnerRegistry::default();
+        let mut registration = register_request(INSTANCE_A, empty_inventory());
+        registration.capabilities.project_validation_v1 = true;
+        registration.capabilities.project_validation_node_json_v1 = supported;
+        registry.register(registration).await.unwrap();
+
+        let mut metadata = cargo_validation_start_metadata(Some(true), None, Some(1));
+        let validation = metadata.validation.as_mut().unwrap();
+        validation.tool = "project_validate".into();
+        validation.adapter = format!("node:{framework}:test");
+        validation.steps = vec![ShellJobValidationStep::node_json_test(framework).unwrap()];
+        validation.project_validation = Some(ProjectValidationProvenance {
+            request: ProjectValidationRequest {
+                project_id: "demo".into(),
+                cwd: None,
+                action: ProjectValidationAction::Test,
+                adapter: ProjectValidationAdapter::Auto,
+                scope: None,
+                dependency_policy: None,
+                test: None,
+            },
+            backend: "node".into(),
+            recipe_root: ".".into(),
+            root_digest: "a".repeat(64),
+            manifest_digest: "b".repeat(64),
+            invocation_digest: "c".repeat(64),
+        });
+        assert!(validation.is_valid());
+        metadata.validation_steps = validation.steps.clone();
+        let result = registry
+            .start_job_with_metadata(start_request("validation"), "tester".into(), metadata)
+            .await;
+        if supported {
+            assert!(result.is_ok(), "{result:?}");
+        } else {
+            let error = result.unwrap_err();
+            assert!(error.starts_with("capability_unavailable:"), "{error}");
+            assert!(error.contains("project_validation_node_json_v1"), "{error}");
             assert!(registry.list_jobs(Some(10)).await.is_empty());
         }
     }

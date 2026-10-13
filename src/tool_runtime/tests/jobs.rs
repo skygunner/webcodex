@@ -124,6 +124,8 @@ fn validation_evidence_authoritative_cargo_count_requires_matching_kind_and_tool
     use webcodex_core::validation_evidence::CargoTestCountEvidenceStatus;
 
     let count = ShellJobTestCountEvidence {
+        tests_passed: None,
+        tests_failed: None,
         tests_detected: true,
         tests_run_count: Some(20),
         status: CargoTestCountEvidenceStatus::CompleteSummary,
@@ -710,6 +712,7 @@ async fn update_agent_shell_job(
             validation_progress: None,
             test_count_evidence: None,
             format_mutation: None,
+            build_artifacts: None,
             activity: None,
             finished,
         })
@@ -2279,6 +2282,7 @@ pub(super) async fn mark_next_agent_job_running(runtime: &ToolRuntime, client_id
             validation_progress: None,
             test_count_evidence: None,
             format_mutation: None,
+            build_artifacts: None,
             activity: None,
             finished: false,
         })
@@ -3474,6 +3478,108 @@ fn node_native_test_evidence_requires_complete_tap_and_agrees_with_process_resul
             assert_eq!(unproven["tests_detected"], false);
             assert!(unproven["tests_run_count"].is_null());
             assert!(unproven["tests_passed"].is_null());
+        }
+    }
+}
+
+#[test]
+fn node_json_validation_uses_only_owned_report_evidence_and_same_job_policy() {
+    use crate::runner_protocol::ShellJobTestCountEvidence;
+    use crate::tool_runtime::jobs::validation_job_projection_with_policy;
+    use webcodex_core::validation_evidence::CargoTestCountEvidenceStatus;
+    for tool in ["node:vitest:test", "node:jest:test"] {
+        let evidence = ShellJobTestCountEvidence {
+            tests_detected: true,
+            tests_run_count: Some(2),
+            tests_passed: Some(2),
+            tests_failed: Some(0),
+            status: CargoTestCountEvidenceStatus::CompleteSummary,
+        };
+        for (truncated, minimum, passed) in [(false, 1, true), (true, 1, true), (false, 3, false)] {
+            let value = validation_job_projection_with_policy(
+                Some(tool),
+                Some("test"),
+                "completed",
+                Some(0),
+                "arbitrary tests passed 999",
+                "",
+                truncated,
+                Some(&evidence),
+                Some(minimum),
+                Some(true),
+                None,
+            )
+            .unwrap();
+            assert_eq!(value["passed"], passed, "{tool}: {value}");
+            assert_eq!(value["tests_run_count"], 2);
+            assert_eq!(value["tests_passed"], 2);
+            assert_eq!(value["require_tests"], true);
+        }
+        let absent = validation_job_projection_with_policy(
+            Some(tool),
+            Some("test"),
+            "completed",
+            Some(0),
+            r#"{"numPassedTests":999}"#,
+            "",
+            false,
+            None,
+            None,
+            Some(false),
+            None,
+        )
+        .unwrap();
+        assert_eq!(absent["passed"], false);
+        assert!(absent["tests_run_count"].is_null());
+        let zero = ShellJobTestCountEvidence {
+            tests_detected: true,
+            tests_run_count: Some(0),
+            tests_passed: Some(0),
+            tests_failed: Some(0),
+            status: CargoTestCountEvidenceStatus::CompleteSummary,
+        };
+        for (required, minimum, expected) in [
+            (true, Some(1), false),
+            (false, None, true),
+            (false, Some(1), false),
+        ] {
+            let value = validation_job_projection_with_policy(
+                Some(tool),
+                Some("test"),
+                "completed",
+                Some(0),
+                "",
+                "",
+                false,
+                Some(&zero),
+                minimum,
+                Some(required),
+                None,
+            )
+            .unwrap();
+            assert_eq!(value["passed"], expected, "{tool}: {value}");
+            assert_eq!(value["zero_tests_run"], true);
+        }
+        for status in ["timeout", "stopped", "lost", "running"] {
+            let value = validation_job_projection_with_policy(
+                Some(tool),
+                Some("test"),
+                status,
+                Some(0),
+                "",
+                "",
+                false,
+                Some(&evidence),
+                Some(1),
+                Some(true),
+                None,
+            )
+            .unwrap();
+            assert!(
+                value["tests_run_count"].is_null(),
+                "{tool}/{status}: {value}"
+            );
+            assert_ne!(value["passed"], true);
         }
     }
 }

@@ -293,6 +293,7 @@ pub(super) fn job_view(job: &ShellJobRecord) -> ShellJobInfo {
         result,
         validation_progress: job.validation_progress.clone(),
         test_count_evidence: job.test_count_evidence.clone(),
+        build_artifacts: job.build_artifacts.clone(),
         format_mutation: if job.kind == "project_format"
             && !job
                 .observation

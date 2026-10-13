@@ -338,6 +338,8 @@ pub(crate) fn finish_cargo_test_count_evidence(
     accumulator.map(|accumulator| {
         let metadata = accumulator.finish();
         ShellJobTestCountEvidence {
+            tests_passed: None,
+            tests_failed: None,
             tests_detected: metadata.tests_detected,
             tests_run_count: metadata.tests_run_count,
             status: metadata.count_evidence_status,

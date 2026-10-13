@@ -27,6 +27,7 @@ pub(super) fn job_update_from_snapshot(
         validation_progress: snapshot.validation_progress.clone(),
         test_count_evidence: snapshot.test_count_evidence.clone(),
         format_mutation: snapshot.format_mutation,
+        build_artifacts: snapshot.build_artifacts.clone(),
         activity: snapshot.activity,
         finished: runner_job_is_terminal(&snapshot.status),
     }
@@ -207,6 +208,9 @@ impl JobManager {
             }
             if delta.format_mutation.is_some() {
                 job.snapshot.format_mutation = delta.format_mutation;
+            }
+            if delta.build_artifacts.is_some() {
+                job.snapshot.build_artifacts = delta.build_artifacts.clone();
             }
             if delta.test_count_evidence.is_some() {
                 job.snapshot.test_count_evidence = delta.test_count_evidence.clone();

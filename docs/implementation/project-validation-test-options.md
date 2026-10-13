@@ -8,9 +8,13 @@ Runner can prove the complete project unit, and `dependency_policy.mode=locked`.
 Python `project_validate` supports pytest tests (including bounded `test.filter`
 mapped to pytest `-k`) and project-local Ruff `check` / `format_check`; Python
 still rejects package scope and dependency policy. Node supports Runner-owned
-script `check` (#995) and exact-opt-in native TAP `test` (#997), but not Jest,
-Vitest, arbitrary test scripts, test filters or package scope. `project_build`
-remains a separate Rust/Go gateway.
+script `check` (#995), exact-opt-in native TAP `test` (#997), and direct
+Vitest/Jest JSON-report tests. Compound scripts, test filters and package scope
+remain unsupported by native Node validation. `project_build`
+additionally executes manifest-declared Node build scripts through detected
+package managers; see [MCP](../MCP.md) for the current contract and the Node
+implementation notes in [English](node-json-project-validation.md) /
+[简体中文](node-json-project-validation.zh-CN.md).
 The historical implementation record below is retained as the state of that slice.
 
 ## Status and bounded scope

@@ -922,7 +922,7 @@ mod tests {
     }
 
     #[test]
-    fn finish_coding_task_nested_show_changes_recovery_projects_with_route() {
+    fn finish_coding_task_nested_read_workspace_changes_recovery_projects_with_route() {
         let canonical_schema =
             webcodex_tool_contracts::output_schema_for_tool("finish_coding_task");
         let canonical_call = json!({
@@ -941,7 +941,7 @@ mod tests {
             "success": true,
             "output": {
                 "changes": {
-                    "show_changes": {
+                    "read_workspace_changes": {
                         "diff_review_handoff": {"next_call": canonical_call.clone()}
                     },
                     "hunks_truncated": true
@@ -955,7 +955,7 @@ mod tests {
             &canonical_schema,
             &|target| suggested_tool_call_route(target, false),
         );
-        let current_call = &current_adaptive["output"]["changes"]["show_changes"]
+        let current_call = &current_adaptive["output"]["changes"]["read_workspace_changes"]
             ["diff_review_handoff"]["next_call"];
         assert_eq!(current_call["tool"], ADAPTIVE_RUNTIME_GATEWAY_TOOL_NAME);
         assert_eq!(current_call["follow_up_kind"], "mechanically_followable");
@@ -977,7 +977,7 @@ mod tests {
             &canonical_schema,
             &synthetic_gateway_route,
         );
-        let projected_call = &projected_value["output"]["changes"]["show_changes"]
+        let projected_call = &projected_value["output"]["changes"]["read_workspace_changes"]
             ["diff_review_handoff"]["next_call"];
         assert_eq!(projected_call["tool"], ADAPTIVE_RUNTIME_GATEWAY_TOOL_NAME);
         assert_eq!(projected_call["arguments"]["tool"], "read_git_diff_hunks");
@@ -989,8 +989,8 @@ mod tests {
         let mut projected_schema = canonical_schema;
         project_suggested_tool_call_schema(&mut projected_schema, &synthetic_gateway_route);
         let projected_call_schema = &projected_schema["properties"]["output"]["properties"]
-            ["changes"]["properties"]["show_changes"]["properties"]["diff_review_handoff"]
-            ["properties"]["next_call"];
+            ["changes"]["properties"]["read_workspace_changes"]["properties"]
+            ["diff_review_handoff"]["properties"]["next_call"];
         assert_eq!(
             projected_call_schema["properties"]["tool"]["const"],
             ADAPTIVE_RUNTIME_GATEWAY_TOOL_NAME

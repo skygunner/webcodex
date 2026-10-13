@@ -596,30 +596,15 @@ fn resolve_node_native_project_action(
     cwd: Option<&str>,
     action: SemanticCheck,
 ) -> Result<ResolvedValidationRecipe, RecipeError> {
-    use std::io::Read;
     const MAX_NODE_MANIFEST_BYTES: u64 = 1024 * 1024;
 
     validate_node_project_markers(execution_root, cwd)?;
     let resolved = resolve_project_recipe_root(execution_root, cwd, Some(RecipeId::Node))
         .map_err(map_project_recipe_error)?;
     let marker = resolved.marker_path();
-    // Reject link-like and special manifest files; the project must actually own
-    // the selected package.json at its canonical recipe root.
-    if !fs::symlink_metadata(&marker).is_ok_and(|metadata| metadata.file_type().is_file()) {
-        return Err(manifest_invalid());
-    }
+    let manifest = read_node_input(&resolved.execution_root, &marker, MAX_NODE_MANIFEST_BYTES)?
+        .ok_or_else(manifest_invalid)?;
     let canonical = marker.canonicalize().map_err(|_| manifest_invalid())?;
-    if !canonical.starts_with(&resolved.execution_root) {
-        return Err(manifest_invalid());
-    }
-    let file = fs::File::open(&canonical).map_err(|_| manifest_invalid())?;
-    let mut manifest = Vec::new();
-    file.take(MAX_NODE_MANIFEST_BYTES + 1)
-        .read_to_end(&mut manifest)
-        .map_err(|_| manifest_invalid())?;
-    if manifest.len() as u64 > MAX_NODE_MANIFEST_BYTES {
-        return Err(manifest_invalid());
-    }
     let value: Value = serde_json::from_slice(&manifest).map_err(|_| manifest_invalid())?;
     let scripts = value
         .as_object()
@@ -640,14 +625,16 @@ fn resolve_node_native_project_action(
             .and_then(|scripts| scripts.get(selected))
             .and_then(Value::as_str)
             .ok_or_else(manifest_invalid)?;
-        if !matches!(body, "node --test" | "node --test --test-reporter=tap") {
-            return Err(check_unavailable());
-        }
-        ShellJobValidationStep {
-            name: "test".into(),
-            program: "node".into(),
-            args: vec!["--test".into(), "--test-reporter=tap".into()],
-            env: Vec::new(),
+        match body {
+            "vitest" | "vitest run" => ShellJobValidationStep::node_json_test("vitest").unwrap(),
+            "jest" => ShellJobValidationStep::node_json_test("jest").unwrap(),
+            "node --test" | "node --test --test-reporter=tap" => ShellJobValidationStep {
+                name: "test".into(),
+                program: "node".into(),
+                args: vec!["--test".into(), "--test-reporter=tap".into()],
+                env: Vec::new(),
+            },
+            _ => return Err(RecipeError::new("structured_test_report_unavailable")),
         }
     } else {
         ShellJobValidationStep {
@@ -665,7 +652,17 @@ fn resolve_node_native_project_action(
     hasher.update(relative.as_os_str().as_encoded_bytes());
     hasher.update((manifest.len() as u64).to_be_bytes());
     hasher.update(&manifest);
-    let manifest_digest = format!("{:x}", hasher.finalize());
+    let manifest_digest = if step.node_json_framework().is_some() {
+        let mut files = vec![marker];
+        files.extend(
+            NODE_LOCKFILES
+                .iter()
+                .map(|(name, _)| resolved.absolute_root.join(name)),
+        );
+        node_input_digest(&resolved.execution_root, files)?
+    } else {
+        format!("{:x}", hasher.finalize())
+    };
     let invocation_digest = format!(
         "{:x}",
         Sha256::digest(
@@ -719,38 +716,7 @@ fn node_steps(
         .get("scripts")
         .map(|value| value.as_object().ok_or_else(manifest_invalid))
         .transpose()?;
-    let mut managers = BTreeSet::new();
-    if let Some(package_manager) = object.get("packageManager") {
-        let raw = package_manager.as_str().ok_or_else(manifest_invalid)?;
-        let (manager, version) = raw.split_once('@').ok_or_else(manifest_invalid)?;
-        let manager = match manager {
-            "npm" => "npm",
-            "pnpm" => "pnpm",
-            "yarn" => "yarn",
-            "bun" => "bun",
-            _ => return Err(manifest_invalid()),
-        };
-        if version.is_empty() || version.chars().any(char::is_whitespace) {
-            return Err(manifest_invalid());
-        }
-        managers.insert(manager);
-    }
-    let present_locks = NODE_LOCKFILES
-        .iter()
-        .filter(|(file, _)| root.join(file).is_file())
-        .copied()
-        .collect::<Vec<_>>();
-    managers.extend(present_locks.iter().map(|(_, manager)| *manager));
-    if managers.len() != 1 || present_locks.len() > 1 {
-        let mut error = RecipeError::new("package_manager_ambiguous");
-        error.details = Some(json!({
-            "recipe_root": null,
-            "candidate_recipes": managers,
-            "detected_markers": present_locks.iter().map(|(file, _)| *file).collect::<Vec<_>>()
-        }));
-        return Err(error);
-    }
-    let manager = managers.into_iter().next().unwrap();
+    let (manager, present_locks) = node_package_manager(root, object)?;
     let mut steps = Vec::with_capacity(checks.len());
     for check in checks {
         let script = select_node_script(scripts, *check)?;
@@ -761,10 +727,7 @@ fn node_steps(
         ];
         steps.push(step(*check, manager, args));
     }
-    Ok((
-        steps,
-        present_locks.into_iter().map(|(file, _)| file).collect(),
-    ))
+    Ok((steps, present_locks))
 }
 
 fn python_steps(
@@ -916,4 +879,158 @@ pub fn detect_validation_recipe(
     resolve_project_recipe_root(root, cwd, hint)
         .map(|resolved| resolved.recipe)
         .map_err(map_project_recipe_error)
+}
+
+fn node_package_manager(
+    root: &Path,
+    object: &serde_json::Map<String, Value>,
+) -> Result<(&'static str, Vec<&'static str>), RecipeError> {
+    let mut managers = BTreeSet::new();
+    if let Some(package_manager) = object.get("packageManager") {
+        let raw = package_manager.as_str().ok_or_else(manifest_invalid)?;
+        let (manager, version) = raw.split_once('@').ok_or_else(manifest_invalid)?;
+        let manager = match manager {
+            "npm" => "npm",
+            "pnpm" => "pnpm",
+            "yarn" => "yarn",
+            "bun" => "bun",
+            _ => return Err(manifest_invalid()),
+        };
+        if version.is_empty() || version.chars().any(char::is_whitespace) {
+            return Err(manifest_invalid());
+        }
+        managers.insert(manager);
+    }
+    let present_locks = NODE_LOCKFILES
+        .iter()
+        .filter(|(file, _)| root.join(file).is_file())
+        .copied()
+        .collect::<Vec<_>>();
+    managers.extend(present_locks.iter().map(|(_, manager)| *manager));
+    if managers.len() != 1 || present_locks.len() > 1 {
+        let mut error = RecipeError::new("package_manager_ambiguous");
+        error.details = Some(json!({
+            "recipe_root": null,
+            "candidate_recipes": managers,
+            "detected_markers": present_locks.iter().map(|(file, _)| *file).collect::<Vec<_>>()
+        }));
+        return Err(error);
+    }
+    let manager = managers.into_iter().next().unwrap();
+    Ok((
+        manager,
+        present_locks.into_iter().map(|(file, _)| file).collect(),
+    ))
+}
+
+/// Manifest-declared build script; no installation or model supplied argv.
+pub fn resolve_node_project_build(
+    execution_root: &Path,
+    cwd: Option<&str>,
+) -> Result<(String, String), RecipeError> {
+    validate_node_project_markers(execution_root, cwd)?;
+    let resolved = resolve_project_recipe_root(execution_root, cwd, Some(RecipeId::Node))
+        .map_err(map_project_recipe_error)?;
+    let manifest = read_node_input(
+        &resolved.execution_root,
+        &resolved.marker_path(),
+        1024 * 1024,
+    )?
+    .ok_or_else(manifest_invalid)?;
+    let value: Value = serde_json::from_slice(&manifest).map_err(|_| manifest_invalid())?;
+    let object = value.as_object().ok_or_else(manifest_invalid)?;
+    if object
+        .get("scripts")
+        .and_then(Value::as_object)
+        .and_then(|scripts| scripts.get("build"))
+        .and_then(Value::as_str)
+        .is_none_or(|body| body.trim().is_empty())
+    {
+        return Err(RecipeError::new("build_script_unavailable"));
+    }
+    let (manager, _) = node_package_manager(&resolved.absolute_root, object)?;
+    let mut files = vec![resolved.marker_path()];
+    // Bind absent locks too, so additions/removals cannot change admission.
+    files.extend(
+        NODE_LOCKFILES
+            .iter()
+            .map(|(name, _)| resolved.absolute_root.join(name)),
+    );
+    let digest = node_input_digest(&resolved.execution_root, files)?;
+    Ok((manager.into(), digest))
+}
+
+fn read_node_input(root: &Path, path: &Path, max: u64) -> Result<Option<Vec<u8>>, RecipeError> {
+    use std::io::Read;
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(manifest_invalid()),
+    };
+    if !metadata.file_type().is_file() || metadata.len() > max {
+        return Err(manifest_invalid());
+    }
+    let canonical = path.canonicalize().map_err(|_| manifest_invalid())?;
+    if !canonical.starts_with(root) {
+        return Err(manifest_invalid());
+    }
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(0x00200000); // FILE_FLAG_OPEN_REPARSE_POINT
+    }
+    let file = options.open(path).map_err(|_| manifest_invalid())?;
+    let opened = file.metadata().map_err(|_| manifest_invalid())?;
+    if !opened.is_file() || opened.len() > max {
+        return Err(manifest_invalid());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if opened.dev() != metadata.dev() || opened.ino() != metadata.ino() {
+            return Err(manifest_invalid());
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if opened.file_attributes() & 0x400 != 0
+            || path.canonicalize().ok().as_ref() != Some(&canonical)
+        {
+            return Err(manifest_invalid());
+        }
+    }
+    let mut bytes = Vec::new();
+    file.take(max + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| manifest_invalid())?;
+    if bytes.len() as u64 > max {
+        return Err(manifest_invalid());
+    }
+    Ok(Some(bytes))
+}
+fn node_input_digest(root: &Path, files: Vec<PathBuf>) -> Result<String, RecipeError> {
+    let mut hasher = Sha256::new();
+    let mut remaining = 8 * 1024 * 1024;
+    for path in files {
+        let relative = path.strip_prefix(root).map_err(|_| manifest_invalid())?;
+        hasher.update(relative.as_os_str().as_encoded_bytes());
+        match read_node_input(root, &path, remaining)? {
+            None => hasher.update([0]),
+            Some(bytes) => {
+                remaining -= bytes.len() as u64;
+                hasher.update([1]);
+                hasher.update((bytes.len() as u64).to_be_bytes());
+                hasher.update(bytes);
+            }
+        }
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }

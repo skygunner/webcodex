@@ -490,6 +490,7 @@ pub(super) struct ShellJobRecord {
     pub(super) validation_progress: Option<ShellJobValidationProgress>,
     pub(super) test_count_evidence: Option<ShellJobTestCountEvidence>,
     pub(super) format_mutation: Option<webcodex_core::project_format::ProjectFormatMutationReport>,
+    pub(super) build_artifacts: Option<Vec<webcodex_core::project_build::ProjectBuildArtifact>>,
     /// Last Runner-authoritative bounded activity for an active Job. Cleared on
     /// terminal/recovery transitions; never used as execution authority.
     pub(super) activity: Option<ShellJobActivity>,

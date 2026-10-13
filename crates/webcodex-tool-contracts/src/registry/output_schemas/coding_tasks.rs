@@ -1,15 +1,15 @@
 use serde_json::{json, Value};
 
 use super::common::{
-    array_schema, continuation_feedback_schema, evidence_history_schema, evidence_integrity_schema,
-    handoff_brief_schema, job_lifecycle_summary_schema, nullable_schema, open_object_schema,
-    permission_summary_schema, schema_type, session_execution_context_schema, task_outcome_schema,
-    wrapped_output_schema,
+    acceptance_evidence_schema, array_schema, continuation_feedback_schema,
+    evidence_history_schema, evidence_integrity_schema, handoff_brief_schema,
+    job_lifecycle_summary_schema, nullable_schema, open_object_schema, permission_summary_schema,
+    schema_type, session_execution_context_schema, task_outcome_schema, wrapped_output_schema,
 };
 #[cfg(any(test, feature = "root-test-support"))]
 use super::common::{
     authority_profile_schema, exploration_tool_name_schema, permission_decision_schema,
-    session_hint_schema,
+    session_hint_schema, task_context_schema,
 };
 use super::files::{
     key_file_schema, path_kind_schema, project_type_schema, scan_schema, suggested_read_schema,
@@ -26,7 +26,7 @@ fn finish_changes_schema() -> Value {
         "type": "object",
         "description": "read_workspace_changes output and hunk truncation metadata. The nested read_workspace_changes contract is formalized so structured recovery calls remain model-surface projectable; other closeout metadata stays additive.",
         "properties": {
-            "show_changes": super::git::show_changes_output_value_schema(),
+            "read_workspace_changes": super::git::show_changes_output_value_schema(),
             "hunks_truncated": schema_type("boolean", "Whether the nested read_workspace_changes diff hunks were truncated by limits.")
         },
         "additionalProperties": true
@@ -66,6 +66,7 @@ pub(super) fn output_schema_for_tool(name: &str) -> Option<Value> {
     match name {
         "work_on_project" => Some(work_on_project_output_schema()),
         "finish_coding_task" => Some(wrapped_output_schema(vec![
+            ("acceptance", acceptance_evidence_schema()),
             ("task_outputs", task_outputs_schema()),
             ("goal_follow_up", super::goals::active_goal_context_schema()),
             (
@@ -777,6 +778,7 @@ fn startup_continuation_schema(detail: &str) -> Value {
     json!({
         "type": "object",
         "properties": {
+            "task": {"anyOf":[task_context_schema(), {"type":"null"}]},
             "status": {"type": "string", "enum": ["available", "not_applicable", "unknown"]},
             "reason_code": nullable_schema("string", "Stable reason when continuation is not available."),
             "instruction": {
@@ -873,6 +875,7 @@ fn startup_continuation_schema(detail: &str) -> Value {
             )
         },
         "required": [
+            "task",
             "status",
             "reason_code",
             "instruction",

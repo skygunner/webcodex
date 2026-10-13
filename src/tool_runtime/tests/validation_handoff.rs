@@ -288,6 +288,7 @@ pub(super) fn cargo_test_update(
         validation_progress: Some(progress),
         test_count_evidence: None,
         format_mutation: None,
+        build_artifacts: None,
         activity,
         finished,
     }

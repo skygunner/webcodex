@@ -173,6 +173,7 @@ async fn update_observed_job(
             validation_progress: None,
             test_count_evidence: None,
             format_mutation: None,
+            build_artifacts: None,
             activity,
             finished,
         })
@@ -206,6 +207,7 @@ async fn update_sequenced_observed_job(
             validation_progress: None,
             test_count_evidence: None,
             format_mutation: None,
+            build_artifacts: None,
             activity: None,
             finished: false,
         })
@@ -1798,6 +1800,7 @@ async fn ordinary_receipts_production_sqlite_dual_restart_observe_and_list_filte
             validation_progress: None,
             test_count_evidence: None,
             format_mutation: None,
+            build_artifacts: None,
             activity: None,
             finished: true,
         })
@@ -1966,6 +1969,7 @@ async fn observe_jobs_terminal_policy_coalesces_noisy_jobs_with_one_deadline_and
                 validation_progress: None,
                 test_count_evidence: None,
                 format_mutation: None,
+                build_artifacts: None,
                 activity: Some(process_activity()),
                 finished: false,
             })
@@ -2328,6 +2332,7 @@ async fn observe_jobs_generic_failed_test_identity_survives_small_model_tail() {
                 validation_progress: None,
                 test_count_evidence: None,
                 format_mutation: None,
+                build_artifacts: None,
                 activity: None,
                 finished: true,
             })

@@ -322,6 +322,11 @@ fn project_build_schema_is_closed_bounded_and_has_no_raw_execution_fields() {
     )
     .is_ok());
 
+    assert!(test_support::validate_schema_instance(
+        &serde_json::json!({"project":"demo","adapter":"python"}),
+        &schema
+    )
+    .is_ok());
     for forbidden in [
         "executable",
         "args",

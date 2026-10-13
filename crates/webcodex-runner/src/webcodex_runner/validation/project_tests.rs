@@ -1121,7 +1121,7 @@ fn project_validation_node_native_test_has_exact_plan_and_stale_source_fence() {
         .is_canonical());
     fs::write(
         root.join("package.json"),
-        r#"{"scripts":{"test":"vitest run"}}"#,
+        r#"{"scripts":{"test":"vitest run && node extra.js"}}"#,
     )
     .unwrap();
     assert!(

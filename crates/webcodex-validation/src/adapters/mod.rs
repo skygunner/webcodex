@@ -659,3 +659,21 @@ pub fn validation_evidence_profile_for_recipe(
             .map(|adapter| adapter as &dyn ValidationEvidenceProfile),
     }
 }
+
+/// Project planning selects the framework from a closed Runner-owned step,
+/// never from an arbitrary adapter string supplied over the wire.
+pub fn validation_evidence_profile_for_project_step(
+    backend: &str,
+    action: crate::SemanticCheck,
+    step: &ShellJobValidationStep,
+) -> Option<&'static dyn ValidationEvidenceProfile> {
+    if backend == "node" && action == crate::SemanticCheck::Test {
+        return validation_evidence_profile_for_tool(match step.node_json_framework() {
+            Some("vitest") => "node:vitest:test",
+            Some("jest") => "node:jest:test",
+            None if step.is_structured_node_tap_test() => "node:tap:test",
+            _ => return None,
+        });
+    }
+    validation_evidence_profile_for_recipe(backend, action)
+}

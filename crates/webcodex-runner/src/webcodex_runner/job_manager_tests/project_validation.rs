@@ -14,6 +14,8 @@ fn project_validation_rechecks_manifest_and_dependency_state_after_queueing() {
         ("Cargo.toml", "Cargo.lock", true, false, None),
         ("go.mod", "go.sum", false, false, None),
         ("go.mod", "go.sum", true, false, None),
+        ("package.json", "package-lock.json", false, false, None),
+        ("package.json", "package-lock.json", true, false, None),
         ("pyproject.toml", "pytest.ini", false, false, None),
         ("pyproject.toml", "pytest.ini", true, false, None),
         ("Cargo.toml", "Cargo.lock", false, true, None),
@@ -60,7 +62,9 @@ edition = "2021"
         } else {
             std::fs::write(
                 root.join(marker),
-                if ruff_action.is_some() {
+                if marker == "package.json" {
+                    r#"{"scripts":{"test":"vitest run"}}"#
+                } else if ruff_action.is_some() {
                     "[tool.ruff]\ntarget-version='py311'\n"
                 } else {
                     ""
@@ -87,7 +91,7 @@ edition = "2021"
             cwd: member_cwd.then(|| "member".into()),
             action: if let Some(action) = ruff_action {
                 action
-            } else if marker == "pyproject.toml" {
+            } else if matches!(marker, "pyproject.toml" | "package.json") {
                 ProjectValidationAction::Test
             } else {
                 ProjectValidationAction::Check

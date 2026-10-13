@@ -343,6 +343,8 @@ async fn handoff_cargo_test_authoritative_count_passes_session_validation() {
         true,
     );
     update.test_count_evidence = Some(crate::runner_protocol::ShellJobTestCountEvidence {
+        tests_passed: None,
+        tests_failed: None,
         tests_detected: true,
         tests_run_count: Some(120),
         status: webcodex_core::validation_evidence::CargoTestCountEvidenceStatus::CompleteSummary,

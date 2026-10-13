@@ -573,6 +573,11 @@ async fn work_result_window_card_needs_no_session_and_uses_all_window_activity()
     assert_eq!(work["project"], project);
     assert!(work.get("session_id").is_none());
     assert!(work.get("session").is_none());
+    assert_eq!(work["acceptance"]["state"], "not_applicable");
+    assert_eq!(
+        work["acceptance"]["reason_codes"],
+        json!(["no_task_session"])
+    );
     assert_eq!(work["collaboration"]["available"], false);
     assert_eq!(work["window_activity"]["events_observed"], 3);
     assert_eq!(work["window_activity"]["events_returned"], 3);
@@ -954,6 +959,15 @@ async fn work_result_refresh_reobserves_validation_source_staleness_without_reco
         "unproven"
     );
 
+    assert_eq!(
+        initial.output["work_result"]["acceptance"]["state"],
+        "needs_evidence"
+    );
+    assert!(initial.output["work_result"]["acceptance"]["reason_codes"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("source_unproven")));
+
     let mutation = runtime
         .validation_sources
         .begin(&project)
@@ -998,6 +1012,15 @@ async fn work_result_refresh_reobserves_validation_source_staleness_without_reco
         stale.output["work_result"]["validation"]["reason"],
         "validation_source_fence_crossed"
     );
+
+    assert_eq!(
+        stale.output["work_result"]["acceptance"]["state"],
+        "needs_evidence"
+    );
+    assert!(stale.output["work_result"]["acceptance"]["reason_codes"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("validation_stale")));
 
     let after = runtime.sessions.summary(&session.session_id, None).unwrap();
     assert_eq!(after.events_total, before.events_total);

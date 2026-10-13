@@ -145,7 +145,7 @@ impl ProjectClient {
             .call(
                 "list_runners",
                 json!({
-                    "client_id":self.client_id,"summary_only":true,"include_projects":false
+                    "client_id":self.client_id,"summary_only":false,"include_projects":false
                 }),
                 false,
             )

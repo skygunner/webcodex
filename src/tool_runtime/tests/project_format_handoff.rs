@@ -225,6 +225,7 @@ async fn finish_format_job(
             validation_progress: None,
             test_count_evidence: None,
             format_mutation: mutation,
+            build_artifacts: None,
             activity: None,
             finished: true,
         })
@@ -410,6 +411,7 @@ async fn project_format_active_running_and_stop_requested_observation_does_not_r
                 validation_progress: None,
                 test_count_evidence: None,
                 format_mutation: None,
+                build_artifacts: None,
                 activity: None,
                 finished: false,
             })

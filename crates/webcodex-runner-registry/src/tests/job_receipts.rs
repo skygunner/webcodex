@@ -783,82 +783,125 @@ async fn receipts_protocol_violation_and_recovery_sweep_capture_final_evidence()
 
 #[tokio::test]
 async fn receipts_validation_provenance_is_restored_only_by_same_instance_inventory() {
-    let store = Arc::new(MemoryReceipts::default());
-    let a = durable(&store).await;
-    register(&a, INSTANCE_A, empty_inventory()).await;
-    let (job, _) = start_and_take_over(&a, INSTANCE_A).await;
-    {
-        let mut inner = a.inner.lock().await;
-        let record = inner.jobs_by_id.get_mut(&job.job_id).unwrap();
-        record.validation = cargo_validation_start_metadata(None, None, None).validation;
-        record.validation_steps = vec!["test".into()];
-    }
-    let mut terminal = update(INSTANCE_A, &job.job_id, 2, "completed", None, true);
-    terminal.validation_progress = Some(ShellJobValidationProgress {
-        completed: 1,
-        current_step: None,
-        failed_step: None,
-    });
-    let test_count_evidence = ShellJobTestCountEvidence {
-        tests_detected: true,
-        tests_run_count: Some(6),
-        status: CargoTestCountEvidenceStatus::CompleteSummary,
-    };
-    terminal.test_count_evidence = Some(test_count_evidence.clone());
-    a.update_job(terminal).await.unwrap();
-    let (receipt_snapshot, mut injected_receipt) = {
-        let rows = store.rows.lock().unwrap();
-        let stored = &rows[0].snapshot;
-        assert!(stored.context.validation.is_none());
+    for adapter in ["cargo_test", "node:vitest:test", "node:jest:test"] {
+        let validation = || {
+            let mut metadata = cargo_validation_start_metadata(None, None, None)
+                .validation
+                .unwrap();
+            if adapter != "cargo_test" {
+                use webcodex_core::project_validation::*;
+                metadata.tool = "project_validate".into();
+                metadata.adapter = adapter.into();
+                metadata.steps =
+                    vec![
+                        ShellJobValidationStep::node_json_test(if adapter.contains("vitest") {
+                            "vitest"
+                        } else {
+                            "jest"
+                        })
+                        .unwrap(),
+                    ];
+                metadata.require_tests = Some(true);
+                metadata.minimum_tests = Some(1);
+                metadata.project_validation = Some(ProjectValidationProvenance {
+                    request: ProjectValidationRequest {
+                        project_id: "demo".into(),
+                        cwd: None,
+                        action: ProjectValidationAction::Test,
+                        adapter: ProjectValidationAdapter::Auto,
+                        scope: None,
+                        dependency_policy: None,
+                        test: None,
+                    },
+                    backend: "node".into(),
+                    recipe_root: ".".into(),
+                    root_digest: "a".repeat(64),
+                    manifest_digest: "b".repeat(64),
+                    invocation_digest: "c".repeat(64),
+                });
+            }
+            assert!(metadata.is_valid());
+            Some(metadata)
+        };
+        let store = Arc::new(MemoryReceipts::default());
+        let a = durable(&store).await;
+        register(&a, INSTANCE_A, empty_inventory()).await;
+        let (job, _) = start_and_take_over(&a, INSTANCE_A).await;
+        {
+            let mut inner = a.inner.lock().await;
+            let record = inner.jobs_by_id.get_mut(&job.job_id).unwrap();
+            record.validation = validation();
+            record.validation_steps = vec!["test".into()];
+        }
+        let mut terminal = update(INSTANCE_A, &job.job_id, 2, "completed", None, true);
+        terminal.validation_progress = Some(ShellJobValidationProgress {
+            completed: 1,
+            current_step: None,
+            failed_step: None,
+        });
+        let test_count_evidence = ShellJobTestCountEvidence {
+            tests_passed: Some(6),
+            tests_failed: Some(0),
+            tests_detected: true,
+            tests_run_count: Some(6),
+            status: CargoTestCountEvidenceStatus::CompleteSummary,
+        };
+        terminal.test_count_evidence = Some(test_count_evidence.clone());
+        a.update_job(terminal).await.unwrap();
+        let (receipt_snapshot, mut injected_receipt) = {
+            let rows = store.rows.lock().unwrap();
+            let stored = &rows[0].snapshot;
+            assert!(stored.context.validation.is_none());
+            assert!(
+                stored.test_count_evidence.is_none(),
+                "receipt must not detach test-count evidence from its omitted validation identity"
+            );
+            (stored.clone(), rows[0].clone())
+        };
+        injected_receipt.snapshot.test_count_evidence = Some(test_count_evidence.clone());
+        let injected_store = Arc::new(MemoryReceipts::default());
+        injected_store.rows.lock().unwrap().push(injected_receipt);
+        let rejected = durable(&injected_store).await;
         assert!(
-            stored.test_count_evidence.is_none(),
-            "receipt must not detach test-count evidence from its omitted validation identity"
+            rejected.get_job(&job.job_id).await.is_err(),
+            "receipt hydration must reject provenance-free test-count evidence"
         );
-        (stored.clone(), rows[0].clone())
-    };
-    injected_receipt.snapshot.test_count_evidence = Some(test_count_evidence.clone());
-    let injected_store = Arc::new(MemoryReceipts::default());
-    injected_store.rows.lock().unwrap().push(injected_receipt);
-    let rejected = durable(&injected_store).await;
-    assert!(
-        rejected.get_job(&job.job_id).await.is_err(),
-        "receipt hydration must reject provenance-free test-count evidence"
-    );
-    drop(a);
+        drop(a);
 
-    let mut snapshot = receipt_snapshot;
-    let validation = cargo_validation_start_metadata(None, None, None).validation;
-    snapshot.context.validation = validation.clone();
-    snapshot.test_count_evidence = Some(test_count_evidence.clone());
-    let inventory = ShellJobInventory {
-        active_complete: true,
-        jobs: vec![snapshot],
-    };
+        let mut snapshot = receipt_snapshot;
+        let validation = validation();
+        snapshot.context.validation = validation.clone();
+        snapshot.test_count_evidence = Some(test_count_evidence.clone());
+        let inventory = ShellJobInventory {
+            active_complete: true,
+            jobs: vec![snapshot],
+        };
 
-    let different_instance = durable(&store).await;
-    register(&different_instance, INSTANCE_B, inventory.clone()).await;
-    let still_historical = different_instance.get_job(&job.job_id).await.unwrap();
-    assert!(still_historical.validation.is_none());
-    assert!(still_historical.test_count_evidence.is_none());
-    drop(different_instance);
+        let different_instance = durable(&store).await;
+        register(&different_instance, INSTANCE_B, inventory.clone()).await;
+        let still_historical = different_instance.get_job(&job.job_id).await.unwrap();
+        assert!(still_historical.validation.is_none());
+        assert!(still_historical.test_count_evidence.is_none());
+        drop(different_instance);
 
-    let mut drifted_inventory = inventory.clone();
-    drifted_inventory.jobs[0].duration_ms = Some(2_001);
-    let drifted_same_instance = durable(&store).await;
-    register(&drifted_same_instance, INSTANCE_A, drifted_inventory).await;
-    let still_unproven = drifted_same_instance.get_job(&job.job_id).await.unwrap();
-    assert!(still_unproven.validation.is_none());
-    assert!(still_unproven.test_count_evidence.is_none());
-    drop(drifted_same_instance);
+        let mut drifted_inventory = inventory.clone();
+        drifted_inventory.jobs[0].duration_ms = Some(2_001);
+        let drifted_same_instance = durable(&store).await;
+        register(&drifted_same_instance, INSTANCE_A, drifted_inventory).await;
+        let still_unproven = drifted_same_instance.get_job(&job.job_id).await.unwrap();
+        assert!(still_unproven.validation.is_none());
+        assert!(still_unproven.test_count_evidence.is_none());
+        drop(drifted_same_instance);
 
-    let same_instance = durable(&store).await;
-    register(&same_instance, INSTANCE_A, inventory).await;
-    let restored = same_instance.get_job(&job.job_id).await.unwrap();
-    assert_eq!(restored.status, "completed");
-    assert_eq!(restored.validation, validation);
-    assert_eq!(restored.test_count_evidence, Some(test_count_evidence));
-    assert!(restored.recovered_after_server_restart);
-    assert!(same_instance.inner.lock().await.pending_by_id.is_empty());
+        let same_instance = durable(&store).await;
+        register(&same_instance, INSTANCE_A, inventory).await;
+        let restored = same_instance.get_job(&job.job_id).await.unwrap();
+        assert_eq!(restored.status, "completed");
+        assert_eq!(restored.validation, validation);
+        assert_eq!(restored.test_count_evidence, Some(test_count_evidence));
+        assert!(restored.recovered_after_server_restart);
+        assert!(same_instance.inner.lock().await.pending_by_id.is_empty());
+    }
 }
 
 #[tokio::test]
@@ -1005,4 +1048,34 @@ async fn job_telemetry_contention_omits_snapshot_without_waiting_or_mutating() {
         .try_job_observability_views_for_auth(None, &["unknown"])
         .unwrap()
         .is_empty());
+}
+
+#[tokio::test]
+async fn project_build_artifact_observations_restore_without_replay_or_invented_metadata() {
+    use webcodex_core::project_build::ProjectBuildArtifact;
+    use webcodex_core::runner_protocol::{ShellCommandExecutionState,ShellJobStructuredExecutionMetadata};
+    for known in [true,false] {
+        let store=Arc::new(MemoryReceipts::default());let before=durable(&store).await;
+        register(&before,INSTANCE_A,empty_inventory()).await;
+        let (job,_)=start_and_take_over(&before,INSTANCE_A).await;
+        {
+            let mut inner=before.inner.lock().await;
+            let record=inner.jobs_by_id.get_mut(&job.job_id).unwrap();
+            record.kind="project_build".into();record.purpose=Some("build".into());
+            record.structured_execution=Some(ShellJobStructuredExecutionMetadata { execution_source:"project_build".into(),language:None,script_bytes:None,arg_count:3,stdin_present:false,validation_identity:None,assertion_name:None,validation_tool:None });
+            record.command_execution_state=Some(ShellCommandExecutionState::NotStarted);
+        }
+        let observations=known.then(|| vec![ProjectBuildArtifact { path:"dist/existing.whl".into(),bytes:4,sha256:"a".repeat(64),mime_type:Some("application/zip".into()) }]);
+        let mut terminal=update(INSTANCE_A,&job.job_id,2,"completed",None,true);
+        terminal.command_execution_state=Some(ShellCommandExecutionState::Completed);terminal.build_artifacts=observations.clone();
+        let completed=before.update_job(terminal).await.unwrap();
+        assert_eq!(completed.build_artifacts,observations);
+        let receipt=store.rows.lock().unwrap()[0].clone();assert_eq!(receipt.snapshot.build_artifacts,observations);
+        drop(before);
+        let after=durable(&store).await;
+        let restored=after.get_job(&job.job_id).await.unwrap();
+        assert_eq!(restored.job_id,job.job_id);assert_eq!(restored.request_id,job.request_id);
+        assert_eq!(restored.status,"completed");assert_eq!(restored.build_artifacts,observations);
+        assert!(after.list_runners().await.is_empty(),"restoring observations cannot create a Runner or execution authority");
+    }
 }

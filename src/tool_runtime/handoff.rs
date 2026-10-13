@@ -531,11 +531,29 @@ impl ToolRuntime {
             existing_suggested_actions: output.get("suggested_next_actions"),
         });
 
+        let retained_outputs = super::task_outputs::retained_task_outputs(
+            &projection_closeout_session,
+        )
+        .and_then(|value| {
+            serde_json::from_value::<webcodex_core::task_outputs::TaskOutputs>(value).ok()
+        });
+        output["acceptance"] = super::acceptance_evidence::acceptance_evidence(
+            &facts,
+            super::acceptance_evidence::AcceptanceContext {
+                outputs: retained_outputs.as_ref(),
+                outputs_historical: true,
+                history_partial: projection_closeout_session.events_truncated
+                    || projection_closeout_session.retention_truncated,
+                snapshot_changed: session_changed_during_snapshot
+                    || external_observations_changed_during_snapshot,
+            },
+        );
         if !diagnostic {
             let mut handoff = json!({
                 "session_id": output["session_id"],
                 "project": output["project"],
                 "handoff_brief": output["handoff_brief"],
+                "acceptance": output["acceptance"],
             });
             if let Some(session_ref) = output.get("session_ref") {
                 handoff["session_ref"] = session_ref.clone();

@@ -436,6 +436,17 @@ Browser semantic snapshot 转换成结构化简历填写计划，支持重复 se
 本机 Agent Browser，继承 native profile/config 或连接用户明确授权的当前 Chrome，同时把
 opaque page/snapshot identity、tab ownership 和不确定 effect 的处理限制在 Plugin 边界内。
 
+## 社区原生插件（非官方）
+
+下列插件由社区在 WebCodex 仓库外独立维护，**不代表 WebCodex 官方维护或安全审计**。
+Native Plugin 是受信任的本地可执行程序，安装前应自行检查源码和 Runner 权限。
+
+- [WebCodex × Orca Native Plugin](https://github.com/LonelyHerbivore/webcodex-orca-plugin)
+  （Node.js 18+，集成验证版）：通过 Orca CLI 提供多 Agent Run 编排、Worker 生命周期、
+  Agent 消息传递、不确定结果下的防重复执行恢复及带来源完整性标记的对话分页读取。
+  v0.3.1 自动化测试已通过，但 Claude Code + 两个 Antigravity 的完整协作完成与资源回收
+  尚未通过真实端到端验收。配置方式和已知限制请查阅第三方仓库。
+
 ## 调用与失败语义
 
 每个 provider 同一时间只处理一个 request。并发请求会得到 provider-busy，而不是无限

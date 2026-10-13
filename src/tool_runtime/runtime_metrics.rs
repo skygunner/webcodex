@@ -16,6 +16,23 @@ pub(crate) struct McpCallMetricObservation {
     pub(crate) streaming: bool,
 }
 
+/// A bounded Job-observation batch summary. No Job ids, project ids, paths,
+/// output text or other high-cardinality user content is recorded.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct JobObservationMetricObservation {
+    pub(crate) elapsed_ms: u64,
+    /// Wait budget after Host/runtime normalization, not the original request.
+    pub(crate) effective_wait_secs: Option<u64>,
+    pub(crate) wake_on: &'static str,
+    pub(crate) wake_reason: &'static str,
+    pub(crate) item_count: u64,
+    pub(crate) changed_count: u64,
+    pub(crate) meaningful_changed_count: u64,
+    pub(crate) heartbeat_changed_count: u64,
+    pub(crate) terminal_count: u64,
+    pub(crate) returned_bytes: u64,
+}
+
 impl McpCallMetricObservation {
     fn ordinary_completed_response(self) -> bool {
         !self.streaming
@@ -93,6 +110,7 @@ pub(crate) struct SkillSourceMetricObservation {
 pub(crate) trait RuntimeMetrics: std::fmt::Debug + Send + Sync {
     fn observe_tool_call(&self, record: &ModelErgonomicsRecord);
     fn observe_mcp_call(&self, observation: McpCallMetricObservation);
+    fn observe_job_observation(&self, _observation: JobObservationMetricObservation) {}
     fn observe_skill_source(&self, observation: SkillSourceMetricObservation);
     fn observe_instruction_read_after_complete_bootstrap(&self, target: InstructionReadTarget);
     fn observe_window_transition(&self, transition: WindowLoopTransition);
@@ -122,6 +140,15 @@ pub(crate) fn observe_mcp_call(
     observation: McpCallMetricObservation,
 ) {
     observe_fail_open("mcp_call", || metrics.observe_mcp_call(observation));
+}
+
+pub(crate) fn observe_job_observation(
+    metrics: &dyn RuntimeMetrics,
+    observation: JobObservationMetricObservation,
+) {
+    observe_fail_open("job_observation", || {
+        metrics.observe_job_observation(observation)
+    });
 }
 
 pub(crate) fn observe_skill_source(
@@ -223,6 +250,36 @@ impl RuntimeMetrics for TracingRuntimeMetrics {
                 );
             }
         }
+    }
+
+    fn observe_job_observation(&self, observation: JobObservationMetricObservation) {
+        tracing::info!(
+            metric = "job_observation_wait_seconds",
+            value = observation.elapsed_ms as f64 / 1000.0,
+            wake_on = observation.wake_on,
+            wake_reason = observation.wake_reason,
+            effective_wait_secs = ?observation.effective_wait_secs,
+            "runtime_metric"
+        );
+        tracing::info!(
+            metric = "job_observation_wakes_total",
+            value = 1_u64,
+            wake_on = observation.wake_on,
+            wake_reason = observation.wake_reason,
+            "runtime_metric"
+        );
+        tracing::info!(
+            metric = "job_observation_items_total",
+            value = observation.item_count,
+            wake_on = observation.wake_on,
+            wake_reason = observation.wake_reason,
+            changed = observation.changed_count,
+            meaningful_changed = observation.meaningful_changed_count,
+            heartbeat_changed = observation.heartbeat_changed_count,
+            terminal = observation.terminal_count,
+            returned_bytes = observation.returned_bytes,
+            "runtime_metric"
+        );
     }
 
     fn observe_skill_source(&self, observation: SkillSourceMetricObservation) {
@@ -399,6 +456,10 @@ mod tests {
             panic!("test metrics sink failure");
         }
 
+        fn observe_job_observation(&self, _observation: JobObservationMetricObservation) {
+            panic!("test metrics sink failure");
+        }
+
         fn observe_skill_source(&self, _observation: SkillSourceMetricObservation) {
             panic!("test metrics sink failure");
         }
@@ -512,6 +573,21 @@ mod tests {
                 outcome_class: "success",
                 meaningful: true,
                 streaming: false,
+            },
+        );
+        observe_job_observation(
+            &sink,
+            JobObservationMetricObservation {
+                elapsed_ms: 15,
+                effective_wait_secs: Some(5),
+                wake_on: "meaningful_change",
+                wake_reason: "updated",
+                item_count: 2,
+                changed_count: 1,
+                meaningful_changed_count: 0,
+                heartbeat_changed_count: 1,
+                terminal_count: 0,
+                returned_bytes: 0,
             },
         );
         observe_skill_source(

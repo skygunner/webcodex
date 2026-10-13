@@ -1066,6 +1066,58 @@ pub fn event_observes_validation_activity(event: &SessionEvent) -> bool {
     execution_purpose(event).is_some()
 }
 
+/// Complete structured failure identity for read-only recovery diagnostics.
+/// Reuses the canonical adapter/parser; excludes timing, logs and command previews.
+/// Missing/truncated/unsupported evidence never becomes an identical-failure claim.
+pub fn complete_failure_identity_for_session_event(event: &SessionEvent) -> Option<Value> {
+    let adapter = validation_evidence_profile_for_execution(event, Some(event))?;
+    let diagnostics = validation_diagnostics_from_summary(event, adapter)?;
+    if !diagnostics.available
+        || diagnostics.diagnostics_truncated
+        || diagnostics.failed_test_details_truncated
+        || diagnostics.invalid_diagnostics_omitted > 0
+        || diagnostics.truncated == Some(true)
+    {
+        return None;
+    }
+    let mut identities = diagnostics
+        .failed_test_details
+        .iter()
+        .map(|test| {
+            json!([
+                "test",
+                test.name,
+                test.failure_kind,
+                test.file,
+                test.line,
+                test.column
+            ])
+        })
+        .collect::<Vec<_>>();
+    for diagnostic in diagnostics
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == "error")
+    {
+        if diagnostic.code.is_none() && (diagnostic.file.is_none() || diagnostic.line.is_none()) {
+            return None;
+        }
+        identities.push(json!([
+            "diagnostic",
+            diagnostic.code,
+            diagnostic.file,
+            diagnostic.line,
+            diagnostic.column
+        ]));
+    }
+    if identities.is_empty() {
+        return None;
+    }
+    identities.sort_by_key(Value::to_string);
+    identities.dedup();
+    Some(json!({"parser":diagnostics.parser,"failures":identities}))
+}
+
 fn validation_event_from_finished(
     finished: &SessionEvent,
     started: Option<&SessionEvent>,

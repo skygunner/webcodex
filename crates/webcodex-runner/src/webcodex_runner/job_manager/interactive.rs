@@ -53,6 +53,7 @@ impl JobManager {
             timeout_secs,
             validation: false,
             capture_cargo_test_count: false,
+            node_report: None,
             step_count: 1,
             commands: VecDeque::from([command]),
             prepared_profile: None,

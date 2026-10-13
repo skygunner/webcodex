@@ -69,10 +69,41 @@ impl JobManager {
                     },
                 );
             };
-            let result = match &operation {
+            let build_started = Instant::now();
+            let mut result = match &operation {
+                RunnerJobOperation::StartBuild(request)
+                    if request.provenance.backend == "python" =>
+                {
+                    crate::webcodex_runner::shell::run_python_build_with_start_hook(
+                        generation,
+                        &policy,
+                        &shell,
+                        &project_registry_dir,
+                        &manager.prepared_profiles,
+                        request.cwd.as_deref(),
+                        &request.process.args,
+                        request.timeout_secs,
+                        Some(stop_requested.as_ref()),
+                        Some(&on_started),
+                        Some(&|| {
+                            crate::webcodex_runner::project_build::fence(
+                                &policy,
+                                &project_registry_dir,
+                                &operation,
+                            )
+                        }),
+                    )
+                }
                 RunnerJobOperation::StartBuild(request) => {
                     let env_overrides = if request.provenance.backend == "go" {
                         &GO_PROJECT_SINGLE_MODULE_ENV[..]
+                    } else if request.provenance.backend == "node" {
+                        &[
+                            ("COREPACK_ENABLE_NETWORK", "0"),
+                            ("COREPACK_ENABLE_DOWNLOAD_PROMPT", "0"),
+                            ("COREPACK_ENV_FILE", "0"),
+                            ("COREPACK_ENABLE_AUTO_PIN", "0"),
+                        ][..]
                     } else {
                         &[]
                     };
@@ -90,6 +121,13 @@ impl JobManager {
                         Some(stop_requested.as_ref()),
                         env_overrides,
                         Some(&on_started),
+                        Some(&|| {
+                            crate::webcodex_runner::project_build::fence(
+                                &policy,
+                                &project_registry_dir,
+                                &operation,
+                            )
+                        }),
                     )
                 }
                 RunnerJobOperation::StartProcess(request) => {
@@ -142,6 +180,34 @@ impl JobManager {
                 }
                 _ => unreachable!("structured Job starter received non structured operation"),
             };
+            let mut build_artifacts = None;
+            if let RunnerJobOperation::StartBuild(request) = &operation {
+                if request.provenance.backend == "python"
+                    && result.execution_state == ShellCommandExecutionState::Completed
+                    && result.result.exit_code == Some(0)
+                    && result.result.error.is_none()
+                    && !stop_requested.load(Ordering::SeqCst)
+                {
+                    let deadline = build_started
+                        + Duration::from_secs(request.timeout_secs.min(policy.max_timeout_secs));
+                    match crate::webcodex_runner::project_build::observe_python_artifacts(
+                        &policy,
+                        &project_registry_dir,
+                        &request.provenance.request,
+                        Path::new(request.cwd.as_deref().expect("build cwd")),
+                        deadline,
+                        &stop_requested,
+                    ) {
+                        Ok(artifacts) => build_artifacts = Some(artifacts),
+                        Err(error) => {
+                            if error == "build_timeout" {
+                                result.execution_state = ShellCommandExecutionState::TimedOut;
+                            }
+                            result.result.error = Some(error);
+                        }
+                    }
+                }
+            }
             let execution_state = result.execution_state;
             let stopped = stop_requested.load(Ordering::SeqCst)
                 && execution_state == ShellCommandExecutionState::Completed;
@@ -157,10 +223,16 @@ impl JobManager {
                 }
                 ShellCommandExecutionState::Completed => "failed",
             };
+            // A stop can arrive after artifact observation succeeds. The wire
+            // contract allows metadata only on a completed terminal report.
+            if status != "completed" {
+                build_artifacts = None;
+            }
             manager.update_and_send(
                 &job_id,
                 RunnerJobDelta {
                     status: status.to_string(),
+                    build_artifacts,
                     stdout_chunk: result.result.stdout,
                     stderr_chunk: result.result.stderr,
                     exit_code: result.result.exit_code,

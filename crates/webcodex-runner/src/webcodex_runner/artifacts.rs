@@ -517,6 +517,45 @@ fn handle_save_project_artifact(
     )
 }
 
+pub(crate) fn observe_build_artifact(
+    root: &Path,
+    path: &str,
+) -> Result<webcodex_core::project_build::ProjectBuildArtifact, String> {
+    validate_artifact_runner_path(path)?;
+    let target = resolve_existing_target_in_project_root(&root.join(path), root)?;
+    if !std::fs::metadata(&target).is_ok_and(|metadata| metadata.is_file()) {
+        return Err("build artifact is not a regular file".into());
+    }
+    let request = RunnerFilePayload {
+        path: path.into(),
+        cwd: Some(root.to_string_lossy().into_owned()),
+        content: Some(serde_json::json!({"max_bytes": MAX_ARTIFACT_EXPORT_BYTES}).to_string()),
+        max_bytes: None,
+        expected_sha256: None,
+        expected_prefix: None,
+        start_line: None,
+        end_line: None,
+        create_dirs: false,
+    };
+    let result = handle_read_project_artifact_metadata(&request, &target, Instant::now());
+    let output: Value = serde_json::from_str(result.stdout.as_deref().unwrap_or(""))
+        .map_err(|_| "build artifact metadata unavailable")?;
+    if output.get("error").is_some_and(|error| !error.is_null()) {
+        return Err("build artifact metadata unavailable".into());
+    }
+    Ok(webcodex_core::project_build::ProjectBuildArtifact {
+        path: path.into(),
+        bytes: output["bytes"]
+            .as_u64()
+            .ok_or("build artifact size unavailable")?,
+        sha256: output["sha256"]
+            .as_str()
+            .ok_or("build artifact digest unavailable")?
+            .into(),
+        mime_type: output["mime_type"].as_str().map(str::to_string),
+    })
+}
+
 fn handle_read_project_artifact_metadata(
     request: &RunnerFilePayload,
     resolved: &Path,

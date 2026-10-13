@@ -239,7 +239,7 @@ pub fn build_handoff_brief(input: HandoffBriefInput<'_>) -> Value {
     };
     let changed_count = changes["returned"].as_u64().unwrap_or(0);
     let recent_count = recent_files["returned"].as_u64().unwrap_or(0);
-    let next_actions = if snapshot_changed {
+    let mut next_actions = if snapshot_changed {
         // The other sections remain observations of the captured snapshots,
         // not a current task verdict. Do not suggest acting on their stale
         // instruction, validation or Job context before explicit recovery.
@@ -260,6 +260,77 @@ pub fn build_handoff_brief(input: HandoffBriefInput<'_>) -> Value {
         )
     };
 
+    let current_boundary = input
+        .session_summary
+        .events
+        .iter()
+        .rev()
+        .find(|event| event.kind == "task_instruction")
+        .map(|event| event.event_id.as_str());
+    let projected_context = continuation.pointer("/attempt/task_context");
+    let mut task_context = projected_context
+        .filter(|context| {
+            context.pointer("/scope/session_id").and_then(Value::as_str)
+                == Some(input.session_summary.session_id.as_str())
+                && context.pointer("/scope/project") == Some(&json!(input.session_summary.project))
+                && context
+                    .pointer("/scope/instruction_event_id")
+                    .and_then(Value::as_str)
+                    == current_boundary
+        })
+        .cloned()
+        .unwrap_or_else(|| {
+            crate::task_context::task_context_value(
+                input.session_summary,
+                input.discussion,
+                &Value::Null,
+                None,
+                None,
+            )
+        });
+    // Session notes are the caller's independently fenced snapshot, not a
+    // copied stale continuation projection.
+    task_context["decisions"] = project_message_notes(
+        &input.session_summary.session_id,
+        input.discussion.map(|discussion| {
+            (
+                discussion.counts.decision,
+                discussion.recent_decisions.as_slice(),
+            )
+        }),
+    );
+    task_context["recent_progress"] = project_message_notes(
+        &input.session_summary.session_id,
+        input.discussion.map(|discussion| {
+            (
+                discussion.counts.progress,
+                discussion.recent_progress.as_slice(),
+            )
+        }),
+    );
+    if snapshot_changed {
+        task_context["scope"]["complete"] = json!(false);
+        task_context["stall"] = json!({"status":"unavailable", "reason_code":"snapshot_changed", "scanned_events":0,
+            "event_ids":[], "recommendation":null, "advisory_only":true});
+        task_context["next_steps"] = json!({"items":[{"action":"re-read read_session_handoff for the exact Session before dependent work",
+            "source_refs":[]}], "total":1,"returned":1,"truncated":false});
+    }
+    if !snapshot_changed {
+        if let Some(action) = task_context
+            .pointer("/stall/recommendation")
+            .and_then(Value::as_str)
+        {
+            if task_context
+                .pointer("/stall/status")
+                .and_then(Value::as_str)
+                == Some("reconcile_required")
+            {
+                next_actions.clear();
+            }
+            next_actions.insert(0, action.to_string());
+            next_actions.truncate(HANDOFF_NEXT_ACTIONS_MAX_ITEMS);
+        }
+    }
     let reason_codes = basis_reasons.into_iter().collect::<Vec<_>>();
     let mut brief = json!({
         "version": 1,
@@ -271,14 +342,14 @@ pub fn build_handoff_brief(input: HandoffBriefInput<'_>) -> Value {
         "task": {
             "root_instruction": root_instruction,
             "latest_instruction": latest_instruction,
-            "decisions": project_message_notes(
-                &input.session_summary.session_id,
-                input.discussion.map(|discussion| (discussion.counts.decision, discussion.recent_decisions.as_slice())),
-            ),
-            "recent_progress": project_message_notes(
-                &input.session_summary.session_id,
-                input.discussion.map(|discussion| (discussion.counts.progress, discussion.recent_progress.as_slice())),
-            ),
+            "decisions": task_context["decisions"],
+            "recent_progress": task_context["recent_progress"],
+            "scope": task_context["scope"],
+            "relevant_files": task_context["relevant_files"],
+            "failure_locations": task_context["failure_locations"],
+            "stall": task_context["stall"],
+            "continuation_entry": task_context["continuation_entry"],
+            "next_steps": task_context["next_steps"],
         },
         "workspace": workspace.value,
         "progress": {
@@ -359,7 +430,10 @@ fn instruction_projection(instruction: Option<&str>) -> Value {
     })
 }
 
-fn project_message_notes(session_id: &str, source: Option<(usize, &[SessionMessage])>) -> Value {
+pub(crate) fn project_message_notes(
+    session_id: &str,
+    source: Option<(usize, &[SessionMessage])>,
+) -> Value {
     let total = source.map(|(total, _)| total);
     let items = source
         .map(|(_, messages)| {
@@ -698,7 +772,7 @@ fn bounded_failure_list(attempt: Option<&Value>) -> Value {
     })
 }
 
-fn safe_failure_identity(kind: Option<&str>, name: Option<&str>) -> Option<String> {
+pub(crate) fn safe_failure_identity(kind: Option<&str>, name: Option<&str>) -> Option<String> {
     let kind = kind?;
     let name = name?.trim();
     if name.is_empty()
@@ -873,6 +947,9 @@ fn enforce_hard_limit(brief: &mut Value, preserve_recovery_action: bool) {
         && pop_external_observation(brief)
     {}
     for pointer in [
+        "/task/relevant_files",
+        "/task/failure_locations",
+        "/task/next_steps",
         "/task/recent_progress",
         "/task/decisions",
         "/progress/recent_files",

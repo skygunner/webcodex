@@ -3699,3 +3699,46 @@ fn assert_no_raw_validation_output_fields(value: &Value, context: &str) {
         );
     }
 }
+
+#[test]
+fn complete_failure_identity_ignores_log_timing_but_keeps_actual_failure_changes() {
+    let store = SessionStore::default();
+    let session = store.start_session(Some("agent:eval:demo".into()), None);
+    for (name, elapsed, extra, truncated) in [
+        ("tests::same", "0.01", "temporary build /tmp/first", false),
+        ("tests::same", "9.99", "temporary build /tmp/second", false),
+        ("tests::different", "0.01", "different failure", false),
+        ("tests::same", "0.01", "cut output", true),
+    ] {
+        record_finished_tool(
+            &store,
+            &session.session_id,
+            "cargo_test",
+            json!({"project":"agent:eval:demo","execution_identity":"target:aaaaaaaaaaaaaaaaaaaaaaaa"}),
+            false,
+            json!({"exit_code":101,"stdout_tail":format!("{extra}\ntest {name} ... FAILED\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; finished in {elapsed}s\n"),
+                "stderr_tail":"","stdout_truncated":truncated,"stderr_truncated":false}),
+        );
+    }
+    let summary = store.summary(&session.session_id, Some(200)).unwrap();
+    let events = sessions::canonical_tool_call_finished_events(&summary.events);
+    let identities = events
+        .iter()
+        .map(|event| crate::complete_failure_identity_for_session_event(event))
+        .collect::<Vec<_>>();
+    assert!(identities[0].is_some());
+    assert_eq!(identities[0], identities[1]);
+    assert_ne!(identities[1], identities[2]);
+    assert!(identities[3].is_none());
+    let encoded = identities[0].as_ref().unwrap().to_string();
+    assert!(
+        !encoded.contains("temporary")
+            && !encoded.contains("/tmp/")
+            && !encoded.contains("elapsed")
+    );
+    let mut lossy = events[0].clone();
+    lossy.validation_output_summary = Some(
+        json!({"stdout_tail_excerpt":"error with no structured identity","stderr_tail_excerpt":""}),
+    );
+    assert!(crate::complete_failure_identity_for_session_event(&lossy).is_none());
+}

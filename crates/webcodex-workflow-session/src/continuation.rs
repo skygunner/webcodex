@@ -79,6 +79,7 @@ pub(crate) struct AttemptSummary {
     pub(crate) guidance: AttemptGuidance,
     pub(crate) outcome: AttemptOutcome,
     pub(crate) suggested_next_actions: Vec<String>,
+    pub(crate) task_context: Value,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -301,11 +302,21 @@ pub(crate) struct FailureIdentity {
 #[derive(Clone, Copy)]
 pub struct ContinuationProjectionHooks {
     tool_is_meaningful: fn(&str) -> bool,
+    pub(crate) failure_identity: Option<fn(&SessionEvent) -> Option<Value>>,
 }
 
 impl ContinuationProjectionHooks {
     pub fn new(tool_is_meaningful: fn(&str) -> bool) -> Self {
-        Self { tool_is_meaningful }
+        Self {
+            tool_is_meaningful,
+            failure_identity: None,
+        }
+    }
+    /// Canonical validation owner supplies complete structured failure identity;
+    /// absence never falls back to comparing lossy stdout/argv summaries.
+    pub fn with_failure_identity(mut self, identity: fn(&SessionEvent) -> Option<Value>) -> Self {
+        self.failure_identity = Some(identity);
+        self
     }
 }
 
@@ -343,7 +354,7 @@ impl<'a> ContinuationToolFailureSnapshot<'a> {
         }
     }
 
-    fn is_actionable(&self, event: &SessionEvent) -> bool {
+    pub(crate) fn is_actionable(&self, event: &SessionEvent) -> bool {
         self.actionable_event_ids.contains(&event.event_id)
     }
 }
@@ -525,6 +536,7 @@ fn empty_attempt() -> AttemptSummary {
             reason_codes: Vec::new(),
         },
         suggested_next_actions: Vec::new(),
+        task_context: Value::Null,
     }
 }
 
@@ -662,7 +674,7 @@ fn build_attempt_summary(
         &validation_block,
     );
 
-    let suggested_next_actions = build_suggested_next_actions(
+    let mut suggested_next_actions = build_suggested_next_actions(
         &outcome_status,
         unresolved_failures,
         &jobs_block,
@@ -672,6 +684,29 @@ fn build_attempt_summary(
         suggest_exploration_continuity,
         workspace_conflicts,
     );
+
+    let task_context = crate::task_context::task_context_value(
+        session_summary,
+        Some(discussion),
+        &to_value(&validation_block.open_failures),
+        Some(tool_failures),
+        hooks.failure_identity,
+    );
+    if let Some(action) = task_context
+        .pointer("/stall/recommendation")
+        .and_then(Value::as_str)
+    {
+        if task_context
+            .pointer("/stall/status")
+            .and_then(Value::as_str)
+            == Some("reconcile_required")
+        {
+            // An uncertain execution cannot authorize replay or a fresh validation run.
+            suggested_next_actions.clear();
+        }
+        suggested_next_actions.insert(0, action.to_string());
+        suggested_next_actions.truncate(MAX_SUGGESTED_ACTIONS);
+    }
 
     AttemptSummary {
         boundary: AttemptBoundary {
@@ -705,6 +740,7 @@ fn build_attempt_summary(
             reason_codes,
         },
         suggested_next_actions,
+        task_context,
     }
 }
 

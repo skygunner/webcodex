@@ -24,6 +24,8 @@ pub(super) fn magic_mime(data: &[u8]) -> Option<&'static str> {
         Some("image/jpeg")
     } else if data.len() >= 12 && data.starts_with(b"RIFF") && &data[8..12] == b"WEBP" {
         Some("image/webp")
+    } else if data.starts_with(b"\x1f\x8b\x08") {
+        Some("application/gzip")
     } else if data.starts_with(b"%PDF-") {
         Some("application/pdf")
     } else if data.starts_with(b"PK\x03\x04") || data.starts_with(b"PK\x05\x06") {

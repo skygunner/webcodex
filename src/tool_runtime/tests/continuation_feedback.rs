@@ -62,24 +62,10 @@ fn continuation_feedback_output_conforms_to_strict_schema_shape() {
     // Every field present in the serialized output must be declared in the
     // strict schema's properties for its parent object (no drift fields).
     fn assert_no_unknown_fields(output: &Value, schema: &Value, path: &str) {
-        if let (Some(out_obj), Some(schema_obj)) = (output.as_object(), schema.as_object()) {
-            if schema_obj.get("type").and_then(Value::as_str) == Some("object") {
-                let declared = schema_obj["properties"].as_object().unwrap();
-                for key in out_obj.keys() {
-                    assert!(
-                        declared.contains_key(key),
-                        "{path}: output field '{key}' is not declared in the strict schema"
-                    );
-                }
-            }
-        }
-        if let (Some(out_obj), Some(schema_obj)) = (output.as_object(), schema.as_object()) {
-            for (key, child) in out_obj {
-                if let Some(child_schema) = schema_obj["properties"].get(key) {
-                    assert_no_unknown_fields(child, child_schema, &format!("{path}.{key}"));
-                }
-            }
-        }
+        // The shared validator also follows nullable anyOf branches, bounded
+        // arrays and required fields; a properties-only walker misses those.
+        crate::tool_runtime::startup_brief::validate_schema_instance_for_test(output, schema)
+            .unwrap_or_else(|error| panic!("{path}: {error}"));
     }
     assert_no_unknown_fields(&feedback, &schema, "continuation_feedback");
 
@@ -1167,4 +1153,150 @@ fn feedback_for_with_jobs(
             &reconciliation.actionable_unexpected_event_ids,
         ),
     })
+}
+
+#[test]
+fn task_context_keeps_job_lifecycle_and_explicit_unknown_outcomes_distinct() {
+    let runtime = test_runtime();
+    let session = create_session(&runtime, "accepted Job");
+    add_instruction(&runtime, &session, "run validation", SessionMode::Normal);
+    record_validation_event(
+        &runtime,
+        &session,
+        "cargo_test",
+        true,
+        json!({
+            "job_id":"job-task-context", "execution_state":"started",
+            "command_started":true, "command_completed":false,
+            "promoted_to_job":true, "terminal":false,
+        }),
+    );
+    let summary = runtime.sessions.summary(&session, Some(200)).unwrap();
+    for (recovering, recovery_state) in [(0, "active"), (1, "recovering")] {
+        let jobs = json!({"active_count":1,"running_count":1,"recovering_count":recovering,"terminal_pending_count":0,"recent":[],"truncated":false});
+        let feedback = feedback_for_with_jobs(&runtime, &summary, &jobs, "continued");
+        assert_ne!(
+            feedback["attempt"]["task_context"]["stall"]["status"],
+            "reconcile_required"
+        );
+        assert_eq!(
+            feedback["attempt"]["jobs"]["recovery_state"],
+            recovery_state
+        );
+        if recovering > 0 {
+            assert!(
+                feedback["attempt"]["suggested_next_actions"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|action| action == "await recovering jobs before relying on their output"),
+                "{feedback}"
+            );
+        }
+    }
+    for field in ["failure_kind", "error_kind"] {
+        let session = create_session(&runtime, field);
+        add_instruction(&runtime, &session, "recover execution", SessionMode::Normal);
+        let mut output = json!({});
+        output[field] = json!("outcome_unknown");
+        record_validation_event(&runtime, &session, "run_process", false, output);
+        let summary = runtime.sessions.summary(&session, Some(200)).unwrap();
+        let feedback = feedback_for(&runtime, &summary, "continued");
+        assert_eq!(
+            feedback["attempt"]["task_context"]["stall"]["status"], "reconcile_required",
+            "{field}: {feedback}"
+        );
+        assert_eq!(
+            feedback["attempt"]["suggested_next_actions"],
+            json!([
+                "reconcile the exact Job or execution outcome before considering another execution"
+            ])
+        );
+    }
+}
+
+#[test]
+fn task_context_uses_canonical_runtime_diagnostics_and_never_treats_recovery_as_progress() {
+    let runtime = test_runtime();
+    let session = create_session(&runtime, "repeat diagnostic recovery");
+    add_instruction(
+        &runtime,
+        &session,
+        "fix the failing test",
+        SessionMode::Normal,
+    );
+    let identity = webcodex_core::validation_identity::structured_validation_target_identity(
+        webcodex_core::validation_identity::ToolValidationIdentityKind::CargoTest,
+        &json!({"cwd":".","filter":"tests::same"}),
+    )
+    .unwrap();
+    for index in 0..3 {
+        let started = runtime.sessions.record_tool_call_started(
+            Some(&session),
+            SessionTransport::Api,
+            "cargo_test",
+            &json!({"project":"test-project","execution_identity":identity}),
+            sessions::session_tool_contract("cargo_test"),
+        );
+        let mut output = test_output(0, 1, 0, &["tests::same"]);
+        output["stdout_tail"] = json!(format!(
+            "{}\nfinished in {index}.01s\n",
+            output["stdout_tail"].as_str().unwrap()
+        ));
+        runtime.sessions.record_tool_call_finished(
+            started,
+            false,
+            &output,
+            Some("validation failed"),
+            None,
+        );
+    }
+    let summary = runtime.sessions.summary(&session, Some(200)).unwrap();
+    let feedback = feedback_for(&runtime, &summary, "continued");
+    let context = &feedback["attempt"]["task_context"];
+    assert_eq!(context["stall"]["status"], "suspected");
+    assert_eq!(context["stall"]["event_ids"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        context["scope"]["instruction_event_id"],
+        feedback["attempt"]["boundary"]["event_id"]
+    );
+    assert_eq!(
+        context["next_steps"]["items"][0]["source_refs"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    crate::tool_runtime::startup_brief::validate_schema_instance_for_test(
+        &feedback,
+        &continuation_feedback_subschema(&registered_tool_specs(), "finish_coding_task"),
+    )
+    .unwrap();
+    let reread = feedback_for(&runtime, &summary, "continued");
+    assert_eq!(feedback, reread);
+    assert_eq!(
+        summary.events.len(),
+        runtime
+            .sessions
+            .summary(&session, Some(200))
+            .unwrap()
+            .events
+            .len()
+    );
+    add_instruction(
+        &runtime,
+        &session,
+        "a separate next task",
+        SessionMode::Normal,
+    );
+    let new_summary = runtime.sessions.summary(&session, Some(200)).unwrap();
+    let new_feedback = feedback_for(&runtime, &new_summary, "continued");
+    assert_eq!(
+        new_feedback["attempt"]["task_context"]["stall"]["status"],
+        "not_observed"
+    );
+    assert_eq!(
+        new_feedback["attempt"]["task_context"]["stall"]["event_ids"],
+        json!([])
+    );
 }

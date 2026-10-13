@@ -167,6 +167,17 @@ async fn remove_uses_exact_server_identity_and_revision() {
         .await
         .unwrap();
     let requests = task.await.unwrap();
+    for index in [0, 2] {
+        assert_eq!(requests[index]["body"]["tool"], "list_runners");
+        assert_eq!(
+            requests[index]["body"]["params"],
+            json!({
+                "client_id": "runner-a",
+                "summary_only": false,
+                "include_projects": false
+            })
+        );
+    }
     assert_eq!(
         requests[3]["body"],
         json!({"tool":"unregister_project","params":{

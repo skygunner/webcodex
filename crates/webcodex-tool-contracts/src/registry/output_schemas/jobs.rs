@@ -1,3 +1,13 @@
+fn build_artifacts_schema() -> serde_json::Value {
+    serde_json::json!({"type":"array", "maxItems":16,
+        "description":"Observed existing build output files. Presence and metadata prove neither creation by this Job, package correctness nor source freshness. Read/export through the existing project artifact tools.",
+        "items":{"type":"object", "additionalProperties":false, "required":["path","bytes","sha256","mime_type"], "properties":{
+            "path":{"type":"string","maxLength":1024}, "bytes":{"type":"integer","minimum":0,"maximum":268435456},
+            "sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}, "mime_type":{"type":["string","null"],"maxLength":128}
+        }}
+    })
+}
+
 use serde_json::{json, Value};
 
 use super::common::{
@@ -592,8 +602,9 @@ fn observe_jobs_output_schema() -> Value {
                     {"type": "null"}
                 ]
             },
+            "build_artifacts": build_artifacts_schema(),
             "state_changed": nullable_schema("boolean", "Authoritative file mutation outcome for project_format."),
-            "failure_kind": nullable_schema("string", "Safe closed failure kind for project_format.")
+            "failure_kind": nullable_schema("string", "Safe closed failure kind for project_format or project_build artifact observation.")
         },
         "required": [
             "job_id", "status", "exit_code", "stdout_tail", "stderr_tail",
@@ -669,8 +680,9 @@ fn observe_jobs_output_schema() -> Value {
             "command_summary": nullable_schema("string", "Bounded safe command summary retained on baseline/reset observations for disambiguation."),
             "detected_summary": {"type": "object", "additionalProperties": true},
             "validation": validation_job_projection_schema(),
+            "build_artifacts": build_artifacts_schema(),
             "state_changed": nullable_schema("boolean", "Authoritative file mutation outcome for project_format."),
-            "failure_kind": nullable_schema("string", "Safe closed failure kind for project_format.")
+            "failure_kind": nullable_schema("string", "Safe closed failure kind for project_format or project_build artifact observation.")
         },
         "required": [
             "job_id", "status", "terminal", "changed", "meaningful_changed", "heartbeat_changed", "log_delta_status",
@@ -1073,11 +1085,12 @@ pub(super) fn output_schema_for_tool(name: &str) -> Option<Value> {
             ] {
                 properties.remove(inherited_only);
             }
+            properties.insert("build_artifacts".to_string(), build_artifacts_schema());
             properties.insert(
                 "backend".to_string(),
                 json!({
                     "type": "string",
-                    "enum": ["rust", "go"],
+                    "enum": ["rust", "go", "python", "node"],
                     "description": "Runner-resolved canonical build backend."
                 }),
             );

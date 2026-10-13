@@ -246,6 +246,9 @@ pub(crate) fn runner_register_capabilities(cfg: &RunnerConfig) -> RunnerCapabili
     capabilities.set(RunnerCapabilityId::StructuredGoTestJson, true);
     capabilities.set(RunnerCapabilityId::ProjectValidation, true);
     capabilities.set(RunnerCapabilityId::ProjectBuild, true);
+    capabilities.set(RunnerCapabilityId::ProjectBuildNode, true);
+    capabilities.set(RunnerCapabilityId::ProjectValidationNodeJson, true);
+    capabilities.set(RunnerCapabilityId::ProjectBuildPython, true);
     // Complete format lifecycle with bounded planning, worker, guarded commit
     // and durable mutation report is supported across native platforms.
     capabilities.set(

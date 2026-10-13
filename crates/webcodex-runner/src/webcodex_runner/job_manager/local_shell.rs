@@ -122,6 +122,7 @@ impl JobManager {
                     && !step.is_structured_ruff()
                     && !step.is_structured_node_check()
                     && !step.is_structured_node_tap_test()
+                    && step.node_json_framework().is_none()
                     && !validation_module_available(
                         &shell,
                         prepared_profile.as_deref(),
@@ -142,6 +143,20 @@ impl JobManager {
             );
             return;
         }
+        let node_report = if steps
+            .iter()
+            .any(|step| step.node_json_framework().is_some())
+        {
+            match super::node_report::NodeReport::new() {
+                Ok(report) => Some(report),
+                Err(_) => {
+                    self.fail_job(&operation, "validation_report_unavailable".into(), None);
+                    return;
+                }
+            }
+        } else {
+            None
+        };
         let step_count = if validation { steps.len() } else { 1 };
         let mut commands = VecDeque::with_capacity(step_count);
         for index in 0..step_count {
@@ -155,14 +170,16 @@ impl JobManager {
                 )
             } else if validation
                 && (steps[index].is_structured_node_check()
-                    || steps[index].is_structured_node_tap_test())
+                    || steps[index].is_structured_node_tap_test()
+                    || steps[index].node_json_framework().is_some())
             {
-                crate::webcodex_runner::shell::configured_node_project_check_job_command(
+                crate::webcodex_runner::shell::configured_node_project_job_command(
                     &shell,
                     prepared_profile.as_deref(),
                     &steps[index],
                     &cwd_path,
                     Some(self.shutting_down.as_ref()),
+                    node_report.as_ref().map(|report| report.path()),
                 )
             } else if validation && steps[index].is_structured_ruff() {
                 crate::webcodex_runner::shell::configured_ruff_job_command(
@@ -235,9 +252,11 @@ impl JobManager {
         // handing the prepared command to the managed process worker.
         // Node's later manifest read is not an atomic source snapshot.
         if validation
-            && steps
-                .iter()
-                .any(|step| step.is_structured_node_check() || step.is_structured_node_tap_test())
+            && steps.iter().any(|step| {
+                step.is_structured_node_check()
+                    || step.is_structured_node_tap_test()
+                    || step.node_json_framework().is_some()
+            })
         {
             if let Err(error) = crate::webcodex_runner::validation::project::fence(
                 &policy,
@@ -256,6 +275,7 @@ impl JobManager {
             timeout_secs,
             validation,
             capture_cargo_test_count,
+            node_report,
             step_count,
             commands,
             prepared_profile,

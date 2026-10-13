@@ -101,7 +101,7 @@ pub enum RunnerCapabilityRequirement {
     /// General native process + argv execution. This must never be inferred
     /// from shell or structured-validation support.
     StructuredProcess,
-    /// Runner-owned portable Rust/Go project build planning + typed StartBuild.
+    /// Runner-owned portable Rust/Go/Python project build planning + typed StartBuild.
     /// Never inferred from generic process or validation support.
     ProjectBuild,
     ProjectFormat,

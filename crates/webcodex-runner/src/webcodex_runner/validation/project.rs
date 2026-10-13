@@ -92,7 +92,20 @@ pub(crate) fn plan(
         )
     }
     .map_err(|e| unavailable(e.code, Some(backend.as_str())))?;
-    let identity = if backend == RecipeId::Node && action == SemanticCheck::Check {
+    let node_json = resolved
+        .steps
+        .first()
+        .and_then(|step| step.node_json_framework());
+    let identity = if let Some(framework) = node_json {
+        structured_validation_target_identity(
+            if framework == "vitest" {
+                ToolValidationIdentityKind::NodeVitestTest
+            } else {
+                ToolValidationIdentityKind::NodeJestTest
+            },
+            &serde_json::json!({"cwd": resolved.recipe_root_relative}),
+        )
+    } else if backend == RecipeId::Node && action == SemanticCheck::Check {
         let script = resolved
             .steps
             .first()
@@ -127,7 +140,10 @@ pub(crate) fn plan(
                 manifest_digest: resolved.manifest_digest,
                 invocation_digest: resolved.invocation_digest,
             },
-            adapter: profile.tool_identity.into(),
+            adapter: node_json.map_or_else(
+                || profile.tool_identity.into(),
+                |framework| format!("node:{framework}:test"),
+            ),
             step: resolved
                 .steps
                 .into_iter()

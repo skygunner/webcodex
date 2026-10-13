@@ -211,6 +211,7 @@ async fn job_update_rejects_mismatched_request_id_without_mutating_target_job() 
         validation_progress: None,
         test_count_evidence: None,
         format_mutation: None,
+        build_artifacts: None,
         activity: None,
         finished: false,
     };
@@ -307,6 +308,7 @@ async fn dispatched_raw_shell_accepts_prestart_not_started_terminal_update() {
             validation_progress: None,
             test_count_evidence: None,
             format_mutation: None,
+            build_artifacts: None,
             activity: None,
             finished: true,
         })

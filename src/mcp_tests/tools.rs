@@ -2315,9 +2315,29 @@ fn mcp_compact_descriptions_preserve_selection_and_schema_literals() {
         (
             "project_build",
             vec![
-                "Portable Rust/Go project build",
+                "Rust/Go/Python/Node builds",
+                "fixed argv, no installs",
+                "Python: pyproject.toml, configured interpreter -m build --no-isolation; rejects scope",
+                "Artifacts are observations, not correctness/freshness proof",
+                "declared npm/pnpm/yarn/bun build",
+                "no installs",
+                "Node: declared npm/pnpm/yarn/bun build; rejects scope/policy",
+                "scripts may write/use network",
                 "same durable Job",
-                "pending never authorizes retry or redispatch",
+                "never retry or redispatch",
+                "observe_jobs",
+            ],
+        ),
+        (
+            "project_validate",
+            vec![
+                "Validate Rust/Go/Python/Node",
+                "no installs",
+                "Only structured evidence proves counts",
+                "Vitest/Jest require project_validation_node_json_v1",
+                "Scripts may write/use network",
+                "same Job; observe_jobs, never retry",
+                "Scope/filter/policy: read_tool_manifest",
             ],
         ),
         (
@@ -2383,6 +2403,10 @@ fn mcp_compact_descriptions_preserve_selection_and_schema_literals() {
                 .clone()
         };
         let description = descriptor["description"].as_str().unwrap();
+        if name == "project_build" {
+            assert_eq!(description, "Rust/Go/Python/Node builds; fixed argv, no installs. Rust/Go: packages/all_packages, locked. Python: pyproject.toml, configured interpreter -m build --no-isolation; rejects scope. Node: declared npm/pnpm/yarn/bun build; rejects scope/policy; scripts may write/use network. Artifacts are observations, not correctness/freshness proof. Pending: same durable Job/continuation, never retry or redispatch; observe_jobs.");
+            assert!(!description.contains("artifact contract"));
+        }
         for phrase in phrases {
             assert!(description.contains(phrase), "{name}: {description}");
         }

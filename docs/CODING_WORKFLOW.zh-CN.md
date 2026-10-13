@@ -173,6 +173,10 @@ Formatting 属于收尾，不是每次编辑后的 validation。普通循环是�
 
 `finish_coding_task` 返回有界 closeout evidence。把它当成 advisory summary，不要把它当成“任务已经正确完成”的 authority。最终工程判断仍由模型完成并向用户报告。
 
+Closeout（含 `summary_only`）、`read_session_handoff` 和绑定 Session 的 Work Result 会提供从同一组观察推导的可选 `acceptance` 摘要。`state` 为 `ready_for_review`、`needs_evidence`、`failed` 或 `not_applicable`，均不表示自然语言需求已验收。`reason_codes` 说明缺失、过期或尚未证明的证据；`evidence_refs` 指向已有 workspace、validation、review 或 outputs 类证据。沿用现有下一步动作，需要细节时读取精确 Session 的证据。交接快照发生变化时，先重新读取再继续依赖该快照的工作。
+
+执行结束及历史检查通过不能证明当前源码正确。现有源码 fence 返回 `unproven` 或 `stale`，所以检查成功后仍需复核源码状态与检查适用性。保留的产物元数据是历史观察，不证明当前文件新鲜度或内容正确。只读任务可以合理地无需测试：明确判断适用性，不要只为改变状态标记而运行测试。没有任务 Session 的卡片返回 `not_applicable`，不会从 Project 活动推断任务。
+
 ## 长时间运行的工作
 
 命令或 validation 超过同步等待窗口时，会作为同一条 WebCodex Job 继续执行。保留其精确 Job identity 与 parser-ready continuation；如果仍有有用的独立工作，就先继续这些工作，之后再 observe，不要为了“保持可见”反复轮询 running Job。只有下一步真正依赖 terminal result 时，才使用返回的 continuation；Server 会按照当前 MCP Host profile 对 observation wait 做有界适配。Runtime 内部仍保留 transport-neutral observation ceiling，而 MCP 等待会适配 Host budget。单个 Job 或任一 terminal result 即可推进时使用 `terminal`；预先确定的一组 Job 必须全部结束才能推进时使用 `all_terminal`。Recovery/continuation hint 不会授权对不确定 effect 做 retry。

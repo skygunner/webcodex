@@ -135,6 +135,8 @@ pub struct RunnerJobUpdateRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format_mutation: Option<crate::project_format::ProjectFormatMutationReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_artifacts: Option<Vec<crate::project_build::ProjectBuildArtifact>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activity: Option<ShellJobActivity>,
     #[serde(default)]
     pub finished: bool,
@@ -243,6 +245,39 @@ impl ShellJobValidationStep {
             && self.args == ["--test", "--test-reporter=tap"]
     }
 
+    /// Fixed local framework CLI and report placeholder, rewritten only by the
+    /// Runner after it allocates this Job's private report directory.
+    pub fn node_json_test(framework: &str) -> Option<Self> {
+        let args = match framework {
+            "vitest" => vec![
+                "node_modules/vitest/vitest.mjs",
+                "run",
+                "--reporter=json",
+                "--outputFile",
+                "__WEBCODEX_JOB_REPORT__",
+            ],
+            "jest" => vec![
+                "node_modules/jest/bin/jest.js",
+                "--runInBand",
+                "--json",
+                "--outputFile",
+                "__WEBCODEX_JOB_REPORT__",
+            ],
+            _ => return None,
+        };
+        Some(Self {
+            name: "test".into(),
+            program: "node".into(),
+            args: args.into_iter().map(str::to_string).collect(),
+            env: Vec::new(),
+        })
+    }
+    pub fn node_json_framework(&self) -> Option<&'static str> {
+        ["vitest", "jest"]
+            .into_iter()
+            .find(|framework| Self::node_json_test(framework).as_ref() == Some(self))
+    }
+
     fn is_canonical_with_project_workspace(&self, allow_project_workspace: bool) -> bool {
         if self
             .args
@@ -268,7 +303,9 @@ impl ShellJobValidationStep {
             ("check", "go") => is_canonical_go_vet_args(&args),
             ("test", "go") => args == ["test", "./..."] || self.is_structured_go_test_json(),
             ("check", "node") => self.is_structured_node_check(),
-            ("test", "node") => self.env.is_empty() && args == ["--test", "--test-reporter=tap"],
+            ("test", "node") => {
+                self.is_structured_node_tap_test() || self.node_json_framework().is_some()
+            }
             ("format", "python") => {
                 args == ["-m", "ruff", "format", "--check"]
                     || args == ["-m", "black", "--check"]
@@ -749,9 +786,13 @@ pub struct ShellJobValidationProgress {
     pub failed_step: Option<String>,
 }
 
-/// Runner-authoritative terminal Cargo test-count evidence produced before lossy log retention.
+/// Runner-authoritative terminal test-count evidence from full Cargo summaries or exclusive bounded Node framework report files, independent of lossy log retention.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShellJobTestCountEvidence {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tests_passed: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tests_failed: Option<u64>,
     pub tests_detected: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tests_run_count: Option<u64>,
@@ -760,6 +801,13 @@ pub struct ShellJobTestCountEvidence {
 
 impl ShellJobTestCountEvidence {
     pub fn is_valid(&self) -> bool {
+        if let (Some(passed), Some(failed)) = (self.tests_passed, self.tests_failed) {
+            if passed.checked_add(failed) != self.tests_run_count {
+                return false;
+            }
+        } else if self.tests_passed.is_some() || self.tests_failed.is_some() {
+            return false;
+        }
         if self.status.count_is_proven() {
             self.tests_detected && self.tests_run_count.is_some()
         } else {
@@ -915,7 +963,12 @@ impl ShellJobValidationMetadata {
         if self.minimum_tests.is_some()
             && !matches!(
                 self.adapter.as_str(),
-                "cargo_test" | "go_test" | "python:pytest:test" | "node:tap:test"
+                "cargo_test"
+                    | "go_test"
+                    | "python:pytest:test"
+                    | "node:tap:test"
+                    | "node:vitest:test"
+                    | "node:jest:test"
             )
         {
             return false;
@@ -923,7 +976,12 @@ impl ShellJobValidationMetadata {
         if (self.require_tests.is_some() || self.no_run.is_some())
             && !matches!(
                 self.adapter.as_str(),
-                "cargo_test" | "go_test" | "python:pytest:test" | "node:tap:test"
+                "cargo_test"
+                    | "go_test"
+                    | "python:pytest:test"
+                    | "node:tap:test"
+                    | "node:vitest:test"
+                    | "node:jest:test"
             )
         {
             return false;
@@ -953,7 +1011,13 @@ impl ShellJobValidationMetadata {
                             "python",
                             "python:pytest:test" | "python:ruff:check" | "python:ruff:format"
                         )
-                        | ("node", "node:script:check" | "node:tap:test")
+                        | (
+                            "node",
+                            "node:script:check"
+                                | "node:tap:test"
+                                | "node:vitest:test"
+                                | "node:jest:test"
+                        )
                 )
                 || (provenance.backend == "node"
                     && (!matches!(
@@ -962,7 +1026,7 @@ impl ShellJobValidationMetadata {
                             "node:script:check",
                             crate::project_validation::ProjectValidationAction::Check
                         ) | (
-                            "node:tap:test",
+                            "node:tap:test" | "node:vitest:test" | "node:jest:test",
                             crate::project_validation::ProjectValidationAction::Test
                         )
                     ) || provenance.request.scope.is_some()
@@ -1000,6 +1064,13 @@ impl ShellJobValidationMetadata {
                     && step.is_structured_ruff()
             }
             "go_vet" => self.kind == "check" && step.name == "check" && step.program == "go",
+            "node:vitest:test" | "node:jest:test" => {
+                self.tool == "project_validate"
+                    && self.kind == "test"
+                    && step
+                        .node_json_framework()
+                        .is_some_and(|framework| self.adapter == format!("node:{framework}:test"))
+            }
             "node:tap:test" => {
                 self.tool == "project_validate"
                     && self.kind == "test"
@@ -1259,6 +1330,8 @@ pub struct ShellJobSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format_mutation: Option<crate::project_format::ProjectFormatMutationReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_artifacts: Option<Vec<crate::project_build::ProjectBuildArtifact>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activity: Option<ShellJobActivity>,
 }
 
@@ -1345,6 +1418,8 @@ pub struct ShellJobInfo {
     /// Executor-owned formatting truth. Missing historical evidence is unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format_mutation: Option<crate::project_format::ProjectFormatMutationReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_artifacts: Option<Vec<crate::project_build::ProjectBuildArtifact>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activity: Option<ShellJobActivity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

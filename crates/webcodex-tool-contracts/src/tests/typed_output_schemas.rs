@@ -456,6 +456,20 @@ fn project_build_output_schema_accepts_sparse_success_and_typed_failure() {
     assert_registered_schema_accepts("project_build", true, &json!({"backend": "rust"}));
     assert_registered_schema_accepts(
         "project_build",
+        true,
+        &json!({"backend":"python","build_artifacts":[{"path":"dist/demo.whl","bytes":4,"sha256":"a".repeat(64),"mime_type":"application/zip"}]}),
+    );
+    assert_registered_schema_accepts(
+        "project_build",
+        false,
+        &json!({
+            "backend":"python", "execution_state":"completed", "command_started":true,
+            "command_completed":true, "command_ok":false, "exit_code":0,
+            "failure_kind":"build_artifacts_missing", "tool_failure":false
+        }),
+    );
+    assert_registered_schema_accepts(
+        "project_build",
         false,
         &json!({
             "execution_state": "not_started",

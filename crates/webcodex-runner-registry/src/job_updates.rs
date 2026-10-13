@@ -375,6 +375,7 @@ struct JobPublicMutationSignature {
     validation_progress: Option<webcodex_core::runner_protocol::ShellJobValidationProgress>,
     test_count_evidence: Option<webcodex_core::runner_protocol::ShellJobTestCountEvidence>,
     format_mutation: Option<webcodex_core::project_format::ProjectFormatMutationReport>,
+    build_artifacts: Option<Vec<webcodex_core::project_build::ProjectBuildArtifact>>,
     activity: Option<ShellJobActivity>,
     recovered_after_server_restart: bool,
     reconciled_at: Option<i64>,
@@ -396,6 +397,7 @@ fn public_mutation_signature(job: &ShellJobRecord) -> JobPublicMutationSignature
         validation_progress: job.validation_progress.clone(),
         test_count_evidence: job.test_count_evidence.clone(),
         format_mutation: job.format_mutation,
+        build_artifacts: job.build_artifacts.clone(),
         activity: job.activity,
         recovered_after_server_restart: job.recovery.recovered_after_server_restart,
         reconciled_at: job.recovery.reconciled_at,
@@ -506,7 +508,11 @@ fn validate_test_count_evidence(
         return Ok(());
     };
     let cargo_test = job.validation.as_ref().is_some_and(|metadata| {
-        metadata.adapter == "cargo_test" && metadata.kind == "test" && metadata.no_run != Some(true)
+        matches!(
+            metadata.adapter.as_str(),
+            "cargo_test" | "node:vitest:test" | "node:jest:test"
+        ) && metadata.kind == "test"
+            && metadata.no_run != Some(true)
     });
     if !cargo_test || !lifecycle.is_terminal() || !update.finished || !evidence.is_valid() {
         return invalid_progress("test_count_evidence_invalid");
@@ -860,6 +866,8 @@ impl RunnerRegistry {
             }) => Some(runner_instance_id.clone()),
             _ => None,
         };
+        let project_node_build_request = matches!(structured_execution.as_ref(), Some(StructuredJobExecution::ProjectBuild(plan)) if plan.provenance.backend == "node");
+        let python_build_request = matches!(&structured_execution, Some(StructuredJobExecution::ProjectBuild(plan)) if plan.provenance.backend == "python");
         let project_build_request = matches!(
             structured_execution.as_ref(),
             Some(StructuredJobExecution::ProjectBuild(_))
@@ -1361,10 +1369,30 @@ impl RunnerRegistry {
                 return Err("format_runner_replaced".into());
             }
         }
+        if project_node_build_request
+            && !runner
+                .runner_features
+                .supports(RunnerFeature::ProjectBuildNode)
+        {
+            return Err(capability_upgrade_error(
+                &client_id,
+                RunnerFeature::ProjectBuildNode,
+            ));
+        }
         if project_build_request && !runner.runner_features.supports(RunnerFeature::ProjectBuild) {
             return Err(capability_upgrade_error(
                 &client_id,
                 RunnerFeature::ProjectBuild,
+            ));
+        }
+        if python_build_request
+            && !runner
+                .runner_features
+                .supports(RunnerFeature::ProjectBuildPython)
+        {
+            return Err(capability_upgrade_error(
+                &client_id,
+                RunnerFeature::ProjectBuildPython,
             ));
         }
         if project_all_packages_request
@@ -1529,12 +1557,24 @@ impl RunnerRegistry {
                 RunnerFeature::ProjectValidationPythonPytest,
             ));
         }
+        if validation_steps
+            .iter()
+            .any(|step| step.node_json_framework().is_some())
+            && !runner
+                .runner_features
+                .supports(RunnerFeature::ProjectValidationNodeJson)
+        {
+            return Err(capability_upgrade_error(
+                &client_id,
+                RunnerFeature::ProjectValidationNodeJson,
+            ));
+        }
         let node_test = validation
             .as_ref()
             .is_some_and(|v| v.adapter == "node:tap:test")
             || validation_steps
                 .iter()
-                .any(|step| step.program == "node" && step.name == "test");
+                .any(ShellJobValidationStep::is_structured_node_tap_test);
         if node_test
             && !runner
                 .runner_features
@@ -1734,6 +1774,7 @@ impl RunnerRegistry {
             validation_progress: None,
             test_count_evidence: None,
             format_mutation: None,
+            build_artifacts: None,
             activity: None,
             last_update_seq: 0,
             visibility: metadata.visibility,
@@ -3184,6 +3225,16 @@ impl RunnerRegistry {
                     )
                     .map_err(|_| ValidationProtocolError("format_mutation_invalid"))
                 })
+                .and_then(|_| {
+                    webcodex_core::project_build::validate_build_artifact_report(
+                        &job.kind,
+                        incoming_lifecycle.as_wire(),
+                        body.exit_code,
+                        body.command_execution_state,
+                        body.build_artifacts.as_deref(),
+                    )
+                    .map_err(ValidationProtocolError)
+                })
                 .and_then(|_| validate_command_execution_state(job, &body, incoming_lifecycle))
                 .and_then(|_| validate_job_activity(job, &body, incoming_lifecycle))
             {
@@ -3214,6 +3265,9 @@ impl RunnerRegistry {
                 }
                 if body.validation_progress.is_some() {
                     job.validation_progress = body.validation_progress.clone();
+                }
+                if body.build_artifacts.is_some() {
+                    job.build_artifacts = body.build_artifacts.clone();
                 }
                 if body.format_mutation.is_some() {
                     job.format_mutation = body.format_mutation;

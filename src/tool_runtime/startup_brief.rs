@@ -645,6 +645,7 @@ fn continuation_projection(
 
     let mut projected = json!({
         "status": status,
+        "task": attempt.get("task_context").cloned().unwrap_or(Value::Null),
         "reason_code": feedback.get("reason_code").cloned().unwrap_or(Value::Null),
         "instruction": {
             "status": attempt
@@ -1018,6 +1019,15 @@ fn startup_verdict(
         .filter_map(Value::as_str)
         .collect::<Vec<_>>();
     if continuation
+        .pointer("/task/stall/status")
+        .and_then(Value::as_str)
+        == Some("reconcile_required")
+    {
+        if let Some(action) = continuation_actions.first() {
+            push_unique(&mut actions, action);
+        }
+    }
+    if continuation
         .pointer("/validation/open_failures/total")
         .and_then(Value::as_u64)
         .unwrap_or(0)
@@ -1256,6 +1266,11 @@ fn enforce_hard_size_limit(brief: &mut Value) {
     // Extremely large continuation evidence is reduced item-by-item. Every
     // list retains the original total and flips truncated=true.
     const LIST_POINTERS: &[&str] = &[
+        "/continuation/task/recent_progress",
+        "/continuation/task/decisions",
+        "/continuation/task/relevant_files",
+        "/continuation/task/failure_locations",
+        "/continuation/task/next_steps",
         "/continuation/validation/delta/resolved_failures",
         "/continuation/validation/delta/new_failures",
         "/continuation/validation/delta/still_failing",
@@ -2131,6 +2146,20 @@ mod tests {
             .iter()
             .filter_map(Value::as_str)
             .any(|action| action.starts_with("rerun focused target 0")));
+    }
+    #[test]
+    fn startup_unknown_execution_reconciliation_precedes_other_attention_in_minimal_output() {
+        let action =
+            "reconcile the exact Job or execution outcome before considering another execution";
+        let feedback = json!({"status":"available","attempt":{
+            "task_context":{"stall":{"status":"reconcile_required"}},"suggested_next_actions":[action]}});
+        let continuation = continuation_projection(&feedback, &json!({}), true, "continued");
+        assert_eq!(
+            continuation["task"]["stall"]["status"],
+            "reconcile_required"
+        );
+        let verdict = startup_verdict(&["active_jobs_blocking".into()], &[], &continuation, true);
+        assert_eq!(verdict["suggested_next_actions"], json!([action]));
     }
 }
 

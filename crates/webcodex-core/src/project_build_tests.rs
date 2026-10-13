@@ -256,3 +256,154 @@ fn project_build_default_dependency_policy_preserves_historical_argv() {
         vec!["build", "./..."]
     );
 }
+
+#[test]
+fn python_build_is_canonical_no_install_and_rejects_scope_or_argv_drift() {
+    let mut request = request();
+    request.adapter = ProjectBuildAdapter::Python;
+    let process = canonical_project_build_process("python", &request).unwrap();
+    assert_eq!(process.executable, "python");
+    assert_eq!(process.args, ["-m", "build", "--no-isolation"]);
+    request.dependency_policy = Some(ProjectDependencyPolicy {
+        mode: ProjectDependencyMode::Locked,
+    });
+    assert_eq!(
+        canonical_project_build_process("python", &request).unwrap(),
+        process
+    );
+    let mut plan = ProjectBuildPlan {
+        provenance: ProjectBuildProvenance {
+            request: request.clone(),
+            backend: "python".into(),
+            recipe_root: ".".into(),
+            root_digest: "a".repeat(64),
+            manifest_digest: "b".repeat(64),
+            invocation_digest: project_build_invocation_digest(&process),
+        },
+        process: process.clone(),
+    };
+    assert!(plan.is_valid());
+    plan.process.args.push("--skip-dependency-check".into());
+    plan.provenance.invocation_digest = project_build_invocation_digest(&plan.process);
+    assert!(
+        !plan.is_valid(),
+        "even a matching digest cannot authorize noncanonical flags"
+    );
+    request.scope = Some(ProjectBuildScope {
+        packages: vec![],
+        all_packages: true,
+    });
+    assert!(canonical_project_build_process("python", &request).is_err());
+    let caps: crate::runner_protocol::RunnerCapabilities = serde_json::from_str("{}").unwrap();
+    assert!(!caps.project_build_python_v1);
+}
+
+#[test]
+fn build_artifact_observations_are_bounded_private_and_never_validation_evidence() {
+    let artifact = ProjectBuildArtifact {
+        path: "dist/demo.whl".into(),
+        bytes: 100,
+        sha256: "a".repeat(64),
+        mime_type: Some("application/zip".into()),
+    };
+    assert!(validate_build_artifacts(&[artifact.clone()]));
+    assert!(!validate_build_artifacts(&vec![
+        artifact.clone();
+        PROJECT_BUILD_ARTIFACTS_MAX
+            + 1
+    ]));
+    for path in [
+        "../dist/demo.whl",
+        "/tmp/demo.whl",
+        "dist/../../secret",
+        "secrets/id_rsa",
+        "dist/.env",
+    ] {
+        let mut invalid = artifact.clone();
+        invalid.path = path.into();
+        assert!(!validate_build_artifacts(&[invalid]), "{path}");
+    }
+    use crate::runner_protocol::ShellCommandExecutionState::Completed;
+    assert!(validate_build_artifact_report(
+        "project_build",
+        "completed",
+        Some(0),
+        Some(Completed),
+        Some(&[artifact.clone()])
+    )
+    .is_ok());
+    assert!(validate_build_artifact_report(
+        "run_process",
+        "completed",
+        Some(0),
+        Some(Completed),
+        Some(&[artifact.clone()])
+    )
+    .is_err());
+    assert!(validate_build_artifact_report(
+        "project_build",
+        "running",
+        None,
+        None,
+        Some(&[artifact])
+    )
+    .is_err());
+}
+
+#[test]
+fn node_build_canonical_manager_process_rejects_extra_authority() {
+    let request = ProjectBuildRequest {
+        project_id: "demo".into(),
+        cwd: None,
+        adapter: ProjectBuildAdapter::Node,
+        scope: None,
+        dependency_policy: None,
+    };
+    for manager in ["npm", "pnpm", "yarn", "bun"] {
+        let process =
+            canonical_project_build_process_with_manager("node", &request, manager).unwrap();
+        assert_eq!(process.executable, manager);
+        assert_eq!(
+            process.args,
+            if manager == "yarn" {
+                vec!["run", "build"]
+            } else {
+                vec!["run", "--silent", "build"]
+            }
+        );
+    }
+    assert!(canonical_project_build_process_with_manager("node", &request, "npx").is_err());
+    let old: crate::runner_protocol::RunnerCapabilities =
+        serde_json::from_value(serde_json::json!({})).unwrap();
+    assert!(!old.project_build_node_v1 && !old.project_validation_node_json_v1);
+}
+
+#[test]
+fn node_build_provenance_rejects_explicit_backend_mismatch() {
+    let mut provenance = ProjectBuildProvenance {
+        request: ProjectBuildRequest {
+            project_id: "demo".into(),
+            cwd: None,
+            adapter: ProjectBuildAdapter::Node,
+            scope: None,
+            dependency_policy: None,
+        },
+        backend: "node".into(),
+        recipe_root: ".".into(),
+        root_digest: "a".repeat(64),
+        manifest_digest: "b".repeat(64),
+        invocation_digest: "c".repeat(64),
+    };
+    assert!(provenance.is_valid());
+    for adapter in [
+        ProjectBuildAdapter::Rust,
+        ProjectBuildAdapter::Go,
+        ProjectBuildAdapter::Python,
+    ] {
+        provenance.request.adapter = adapter;
+        assert!(!provenance.is_valid());
+    }
+    provenance.request.adapter = ProjectBuildAdapter::Node;
+    provenance.backend = "go".into();
+    assert!(!provenance.is_valid());
+}

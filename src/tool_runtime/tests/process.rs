@@ -231,6 +231,7 @@ async fn update_process_job(
             validation_progress: None,
             test_count_evidence: None,
             format_mutation: None,
+            build_artifacts: None,
             activity,
             finished: state.is_some(),
         })
@@ -1065,6 +1066,7 @@ async fn detached_process_lost_initiation_after_server_restart_recovers_same_job
                     validation_progress: None,
                     test_count_evidence: None,
                     format_mutation: None,
+                    build_artifacts: None,
                     activity: Some(ShellJobActivity {
                         state: ShellJobActivityState::Working,
                         phase: ShellJobActivityPhase::ProcessRunning,

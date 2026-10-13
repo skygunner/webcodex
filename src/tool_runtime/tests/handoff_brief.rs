@@ -337,6 +337,7 @@ async fn internal_handoff_projection_does_not_append_events_or_enqueue_agent_req
 
     assert!(result.success, "{:?}", result.error);
     assert!(result.output["handoff_brief"].is_object());
+    assert_eq!(result.output["acceptance"]["state"], "needs_evidence");
     assert_eq!(
         result.output["handoff_brief"]["workspace"]["status"],
         "not_requested"

@@ -46,6 +46,7 @@ fn wait_job_update(
         validation_progress: None,
         test_count_evidence: None,
         format_mutation: None,
+        build_artifacts: None,
         activity: None,
         finished,
     }
@@ -489,6 +490,7 @@ async fn job_log_wait_sequenced_update_changes_token_even_when_snapshot_is_same(
             validation_progress: None,
             test_count_evidence: None,
             format_mutation: None,
+            build_artifacts: None,
             activity: None,
             finished: false,
         })
@@ -526,6 +528,7 @@ async fn job_log_wait_sequenced_update_changes_token_even_when_snapshot_is_same(
             validation_progress: None,
             test_count_evidence: None,
             format_mutation: None,
+            build_artifacts: None,
             activity: None,
             finished: false,
         })
@@ -636,6 +639,7 @@ async fn job_log_wait_unsequenced_update_between_calls_and_noop_update() {
         validation_progress: None,
         test_count_evidence: None,
         format_mutation: None,
+        build_artifacts: None,
         activity: None,
         finished: false,
     };
@@ -736,6 +740,7 @@ async fn job_log_wait_activity_only_legacy_transition_advances_revision_and_wake
         validation_progress: None,
         test_count_evidence: None,
         format_mutation: None,
+        build_artifacts: None,
         activity: None,
         finished: false,
     };
@@ -914,6 +919,7 @@ async fn agent_job_log_observation_is_baseline_then_independent_deltas() {
             validation_progress: None,
             test_count_evidence: None,
             format_mutation: None,
+            build_artifacts: None,
             activity: None,
             finished: false,
         })
@@ -1112,6 +1118,7 @@ async fn agent_job_log_replays_partial_lines_until_each_stream_completes() {
             validation_progress: None,
             test_count_evidence: None,
             format_mutation: None,
+            build_artifacts: None,
             activity: None,
             finished: false,
         })
@@ -1150,6 +1157,7 @@ async fn agent_job_log_replays_partial_lines_until_each_stream_completes() {
             validation_progress: None,
             test_count_evidence: None,
             format_mutation: None,
+            build_artifacts: None,
             activity: None,
             finished: true,
         })

@@ -630,6 +630,7 @@ pub(crate) fn snapshot_from_detached_record(
         validation_progress: None,
         test_count_evidence: None,
         format_mutation: None,
+        build_artifacts: None,
         activity,
     })
 }

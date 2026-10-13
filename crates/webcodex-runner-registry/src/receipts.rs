@@ -371,6 +371,7 @@ fn capture(job: &ShellJobRecord) -> Option<RetainedJobReceipt> {
             // evidence, so keep it only in Runner-owned snapshots/inventory.
             test_count_evidence: None,
             format_mutation: job.format_mutation,
+            build_artifacts: job.build_artifacts.clone(),
             activity: None,
         },
     };

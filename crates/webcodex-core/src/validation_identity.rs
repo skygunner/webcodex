@@ -27,6 +27,8 @@ pub enum ToolValidationIdentityKind {
     PythonRuffFormat,
     NodeScriptCheck,
     NodeNativeTest,
+    NodeVitestTest,
+    NodeJestTest,
     Project,
 }
 
@@ -44,6 +46,8 @@ impl ToolValidationIdentityKind {
             Self::PythonRuffFormat => Some("python:ruff:format"),
             Self::NodeScriptCheck => Some("node:script:check"),
             Self::NodeNativeTest => Some("node:tap:test"),
+            Self::NodeVitestTest => Some("node:vitest:test"),
+            Self::NodeJestTest => Some("node:jest:test"),
         }
     }
 }
@@ -225,7 +229,9 @@ pub fn structured_validation_target_identity(
             }
             serde_json::json!({"tool": tool_name, "kind": "check", "cwd": cwd, "script": script, "engine": "node-native-run-v1"})
         }
-        ToolValidationIdentityKind::NodeNativeTest => {
+        ToolValidationIdentityKind::NodeNativeTest
+        | ToolValidationIdentityKind::NodeVitestTest
+        | ToolValidationIdentityKind::NodeJestTest => {
             serde_json::json!({"tool":tool_name,"kind":"test","cwd":cwd})
         }
         ToolValidationIdentityKind::PythonPytest => {

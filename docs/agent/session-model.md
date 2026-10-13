@@ -192,6 +192,12 @@ evidence. `include_workspace`, `include_validation`, `include_checkpoints`, and
 `limit` continue to select bounded observations; omitted/unavailable evidence is
 reported truthfully in the brief. There is no implicit handoff or ACK baseline.
 
+Task context also carries source-referenced relevant files, failure locations,
+recorded decisions/progress, advisory next steps, and an exact continuation entry.
+The [bounded task-context contract](../implementation/task-context-recovery.md)
+defines its 4 KiB envelope, task-boundary identity and conservative repeated-failure
+diagnostic. These recovery pointers do not become execution or completion proof.
+
 Handoff assembly captures an internal Session snapshot fence before gathering
 workspace/Job/Session evidence and compares it again afterwards. The Session fence
 has exactly two independent mutation dimensions: `events_observed` for ledger event

@@ -419,10 +419,10 @@ mod tests {
         let desktop = PathBuf::from("/not-the-desktop");
         // Inject a detected full installer target so classification does not
         // depend on this host's package manager or os-release family.
-        let target = unified::InstallerTarget::for_platform(
-            unified::RuntimePlatform::current().unwrap_or(unified::RuntimePlatform::LinuxX64),
+        let target = Some(unified::InstallerTarget::new(
+            unified::RuntimePlatform::LinuxX64,
             unified::PackageFormat::Rpm,
-        );
+        ));
         let (kind, context) = assess_installation_for_target(
             build.clone(),
             None,

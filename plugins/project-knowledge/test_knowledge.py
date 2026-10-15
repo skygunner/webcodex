@@ -108,6 +108,19 @@ class KnowledgeTests(Fixture):
         self.assertEqual(self.provider.status()["coverage"], coverage)
         self.assertFalse(list(self.root.glob("**/*sqlite*")))
 
+    def test_stale_ranked_candidates_do_not_hide_later_current_hits(self):
+        for index in range(85):
+            self.write(f"docs/candidate-{index:03}.md", "needle\n")
+        self.git("add", ".")
+        self.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "candidates")
+        self.provider.index()
+        for index in range(80):
+            self.write(f"docs/candidate-{index:03}.md", "changed\n")
+        result = self.provider.search("needle", 5)
+        self.assertEqual(len(result["hits"]), 5)
+        self.assertTrue(all(int(hit["path"][-6:-3]) >= 80 for hit in result["hits"]))
+        self.assertEqual(result["stale_candidates_omitted"], 80)
+
     def test_changed_deleted_and_untracked_hits_are_never_returned_as_current(self):
         self.provider.index()
         old_hit = self.provider.search("parseHTTPRequest")["hits"][0]

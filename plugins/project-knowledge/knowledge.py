@@ -477,13 +477,18 @@ class Knowledge:
             revision = self.revision(deadline)
             connection.set_progress_handler(lambda: int(time.monotonic() >= deadline), 10000)
             match = " OR ".join('"' + term.replace('"', '""') + '"' for term in query_terms)
-            rows = connection.execute(
-                "SELECT c.path, c.start_line, c.end_line, s.source_hash, bm25(search) AS rank FROM search JOIN chunks c ON c.id = search.rowid JOIN sources s ON s.path = c.path WHERE search MATCH ? ORDER BY rank, c.path, c.start_line LIMIT ?",
-                (match, MAX_RESULTS * 4),
-            ).fetchall()
-            result = {"query": query, "hits": [], "stale_candidates_omitted": 0, "results_truncated": len(rows) == MAX_RESULTS * 4, "coverage": coverage}
+            cursor = connection.execute(
+                "SELECT c.path, c.start_line, c.end_line, s.source_hash, bm25(search) AS rank FROM search JOIN chunks c ON c.id = search.rowid JOIN sources s ON s.path = c.path WHERE search MATCH ? ORDER BY rank, c.path, c.start_line",
+                (match,),
+            )
+            result = {"query": query, "hits": [], "stale_candidates_omitted": 0, "results_truncated": False, "coverage": coverage}
             verified = {}
-            for row in rows:
+            scanned = 0
+            while scanned < MAX_FILES * 4:
+                row = cursor.fetchone()
+                if row is None:
+                    break
+                scanned += 1
                 if time.monotonic() >= deadline:
                     result["results_truncated"] = True
                     break
@@ -517,6 +522,8 @@ class Knowledge:
                     result["hits"].pop()
                     result["results_truncated"] = True
                     break
+            else:
+                result["results_truncated"] = cursor.fetchone() is not None
             return result
         except sqlite3.Error:
             raise KnowledgeError("Derived search index is unavailable; rebuild the index.") from None

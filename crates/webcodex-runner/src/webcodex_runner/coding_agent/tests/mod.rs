@@ -101,7 +101,10 @@ for line in sys.stdin:
    while not os.path.exists(release): time.sleep(0.01)
   send({'jsonrpc':'2.0','id':rid,'result':{'protocolVersion':1,'agentCapabilities':{}}})
  elif method=='session/new':
-  if scenario=='slow_configs':
+  if scenario=='diag_oversized':
+   opts=[{'id':'opt_%d'%i,'name':'L'*300,'type':'select','currentValue':'a','options':[{'value':'v%d_%d'%(i,j),'name':'C'*40} for j in range(100)]} for i in range(40)]
+   send({'jsonrpc':'2.0','id':rid,'result':{'sessionId':'s1','configOptions':opts}})
+  elif scenario=='slow_configs':
    opts=[{'id':k,'name':k.title(),'type':'select','currentValue':config_values[k],'options':[{'value':'a','name':'A'},{'value':'b','name':'B'}]} for k in ('one','two','three','four')]
   elif scenario in ('forced_configs','forced_not_applied','forced_reset_by_caller','forced_duplicate'):
    opts=[

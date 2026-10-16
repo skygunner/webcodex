@@ -225,8 +225,13 @@ pub(crate) struct CodingAgentManager {
     admission: Mutex<()>,
     runs: Mutex<HashMap<String, Arc<RunEntry>>>,
     accepting: AtomicBool,
+    /// Serializes the ephemeral live ACP probe so concurrent Diagnose
+    /// requests cannot multiply provider processes.
+    live_probe_permit: Mutex<()>,
     workers: ActivityTracker,
     worker_threads: BackgroundThreads,
+    #[cfg(test)]
+    probe_test_budget: Mutex<Option<Duration>>,
     #[cfg(test)]
     admission_test_barrier: Mutex<Option<Arc<std::sync::Barrier>>>,
     #[cfg(test)]
@@ -382,8 +387,11 @@ impl CodingAgentManager {
             admission: Mutex::new(()),
             runs: Mutex::new(HashMap::new()),
             accepting: AtomicBool::new(true),
+            live_probe_permit: Mutex::new(()),
             workers: ActivityTracker::default(),
             worker_threads: BackgroundThreads::default(),
+            #[cfg(test)]
+            probe_test_budget: Mutex::new(None),
             #[cfg(test)]
             admission_test_barrier: Mutex::new(None),
             #[cfg(test)]
@@ -423,8 +431,11 @@ impl CodingAgentManager {
             admission: Mutex::new(()),
             runs: Mutex::new(HashMap::new()),
             accepting: AtomicBool::new(true),
+            live_probe_permit: Mutex::new(()),
             workers: ActivityTracker::default(),
             worker_threads: BackgroundThreads::default(),
+            #[cfg(test)]
+            probe_test_budget: Mutex::new(None),
             #[cfg(test)]
             admission_test_barrier: Mutex::new(None),
             #[cfg(test)]
@@ -563,12 +574,16 @@ impl CodingAgentManager {
                         "reobserve",
                     );
                 }
+                let live_acp = request
+                    .include_live_acp
+                    .then(|| self.run_live_acp_probe(&request, provider));
                 CodingAgentResponse::success(CodingAgentResponsePayload::Diagnose {
                     provider_id: request.provider_id.clone(),
                     provider_instance_id: provider.instance_id.clone(),
                     env_presence: self
                         .declared_provider_env_presence(&request.provider_id)
                         .expect("selected configured provider was checked above"),
+                    live_acp,
                 })
             }
             CodingAgentRequest::Observe(request) => {
@@ -845,6 +860,7 @@ impl CodingAgentManager {
     }
 }
 
+mod diagnose;
 mod lifecycle;
 mod protocol;
 mod run;

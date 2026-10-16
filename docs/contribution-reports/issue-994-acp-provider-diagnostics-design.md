@@ -103,3 +103,59 @@ than silently accepting unsupported Diagnose requests. The second
 stage live ACP initialize/session-new probe is not implemented. Do not
 advertise this internal Runner request branch as complete #994 or open
 a completion PR without these pieces.
+
+## Verified live ACP probe stage (2026-10-16)
+
+Stage two of the maintainer-endorsed plan is now implemented on the same
+branch, still behind the explicit, typed `CodingAgentRequest::Diagnose`
+fence.
+
+- The request carries `include_live_acp` (serde default `false`). Without
+  it, Diagnose remains the no-spawn env-presence operation and the
+  response carries `live_acp: null`.
+- With it, the Runner launches the provider exactly like a Coding Run
+  (explicit `env_from_env` resolution, `env_clear`, authorized Project
+  cwd, managed process group), performs **only** `initialize` then
+  `session/new`, projects the live `config_options`, and always
+  terminates the whole process tree via a drop guard on every exit path
+  (success, fault, timeout, Runner shutdown).
+- The projection is a closed bounded identity view: option id/label,
+  `select`/`boolean` kind, safe current selection, and choice values with
+  labels. Budgets: 32 options, 64 choices per option, 128-byte
+  identities, 256-byte labels (truncated). Options outside the identity
+  vocabulary are dropped and reported through `options_truncated` /
+  `choices_truncated` rather than widening the contract.
+- Failures never carry provider text: a closed
+  `CodingAgentDiagnoseOutcome` (`ok`, `env_unavailable`, `spawn_failed`,
+  `process_exited`, `transport_failed`, `rejected`,
+  `protocol_unsupported`, `invalid_response`, `timeout`, `interrupted`)
+  plus the reached `CodingAgentDiagnosePhase` are the only fault
+  vocabulary. A failed probe always reports empty options. stderr is
+  drained to a sink and never captured.
+- One live probe runs at a time per Runner (`live_probe_permit`), under
+  a single bounded budget (30s total, matching `ACP_SETUP_TIMEOUT`).
+- `validate_response_for_request` rejects unrequested `live_acp`, a
+  missing `live_acp` when authorized, non-v1 protocol versions, options
+  on failed outcomes, and any identity/label outside the budgets.
+- New Runner regressions cover: exactly `initialize` + `session/new` on
+  the wire with no prompt/config writes and no Run persistence; env
+  source missing without spawn; the full fault matrix (rpc/malformed/
+  oversized/eof at both stages) staying classified and secret-free;
+  timeout terminating the whole tree including a spawned descendant;
+  provider exit classified without leaking the status code; and the
+  oversized-options projection passing end-to-end response validation.
+  Core regressions cover the authorized/unauthorized `live_acp` wire
+  fencing and the closed budgets.
+
+Focused x86 verification (2026-10-16):
+- `cargo test --locked -p webcodex-core --lib diagnostic`: 12 passed.
+- `cargo test --locked -p webcodex-runner --bin webcodex-runner
+  diagnostics::`: 18 passed / 0 failed.
+
+**Still intentionally out of this branch:** no Server/ToolRuntime or UI
+surface invokes Diagnose yet; the registry fence
+(`enqueue_coding_agent`) already type-checks the operation, but the
+future Server entry must still independently resolve and authorize the
+exact Project and Runner before forwarding it. That presentation work,
+plus ARM64/E2E confirmation and maintainer review of the probe, remains
+before #994 acceptance can be claimed.

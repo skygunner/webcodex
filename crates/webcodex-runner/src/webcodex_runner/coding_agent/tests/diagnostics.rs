@@ -524,6 +524,7 @@ fn acp_diagnose_runner_request_is_identity_fenced_read_only_and_no_spawn() {
             project_root: project_root.to_string_lossy().to_string(),
             provider_id: "codex".into(),
             provider_instance_id: instance.clone(),
+            include_live_acp: false,
         })
     };
     let valid_request = make_request();
@@ -533,6 +534,7 @@ fn acp_diagnose_runner_request_is_identity_fenced_read_only_and_no_spawn() {
         provider_id,
         provider_instance_id,
         env_presence,
+        live_acp,
     }) = response.payload
     else {
         panic!(
@@ -540,10 +542,11 @@ fn acp_diagnose_runner_request_is_identity_fenced_read_only_and_no_spawn() {
             response.error
         );
     };
+    assert_eq!(live_acp, None);
     assert_eq!(provider_id, "codex");
     assert_eq!(provider_instance_id, instance);
-    assert_eq!(env_presence["KNOWN_DEST"], true);
-    assert_eq!(env_presence["MISSING_DEST"], false);
+    assert!(env_presence["KNOWN_DEST"]);
+    assert!(!env_presence["MISSING_DEST"]);
     let serialized = serde_json::to_string(&env_presence).unwrap();
     assert!(!serialized.contains("WEBCODEX_TEST_994_MISSING_SOURCE"));
     assert!(!serialized.contains("never-launch-this-acp-binary"));
@@ -597,4 +600,400 @@ fn acp_diagnose_runner_request_is_identity_fenced_read_only_and_no_spawn() {
         project_root.to_string_lossy().as_ref()
     ));
     assert!(manager.runs.lock().unwrap().is_empty());
+}
+
+#[cfg(unix)]
+fn live_diagnose_request(
+    manager: &CodingAgentManager,
+    root: &Path,
+    run: &str,
+    include_live_acp: bool,
+) -> CodingAgentRequest {
+    use webcodex_core::coding_agent::CodingAgentDiagnoseRequest;
+    let provider = manager.providers().remove(0);
+    CodingAgentRequest::Diagnose(CodingAgentDiagnoseRequest {
+        run_id: run.to_string(),
+        runtime_project_id: "agent:test:demo".to_string(),
+        project_root: root.to_string_lossy().to_string(),
+        provider_id: provider.provider_id,
+        provider_instance_id: provider.provider_instance_id,
+        include_live_acp,
+    })
+}
+
+#[test]
+#[cfg(unix)]
+fn acp_diagnose_live_probe_reports_live_options_with_only_initialize_and_session_new() {
+    use webcodex_core::coding_agent::{
+        validate_response_for_request, CodingAgentDiagnoseOutcome, CodingAgentDiagnosePhase,
+    };
+    let temp = crate::tests::executable_tempdir();
+    let (exe, args) = fake_agent(&temp, "end");
+    let mut config = fake_config(exe.clone(), args);
+    // The declared source exists in the Runner process, but its name and
+    // value must never appear in the live projection either.
+    config.agents[0].env_from_env =
+        BTreeMap::from([("CODEX_PATH".to_string(), "PATH".to_string())]);
+    let manager = CodingAgentManager::with_store(&config, temp.path().join("store")).unwrap();
+    let projects = project_fixture(&temp);
+    let root = temp.path().join("repo");
+    let request = live_diagnose_request(&manager, &root, "wc_agent_run_diagnoselive01", true);
+    let response = manager.handle(request.clone(), &projects);
+    validate_response_for_request(&request, &response).unwrap();
+    let serialized = serde_json::to_string(&response).unwrap();
+    assert!(!serialized.contains("never-spawn-this-binary"));
+    let Some(CodingAgentResponsePayload::Diagnose {
+        env_presence,
+        live_acp,
+        ..
+    }) = response.payload
+    else {
+        panic!(
+            "live diagnose should return a typed payload: {:?}",
+            response.error
+        );
+    };
+    assert!(env_presence["CODEX_PATH"]);
+    let live = live_acp.expect("explicitly authorized live probe result");
+    assert_eq!(live.outcome, CodingAgentDiagnoseOutcome::Ok);
+    assert_eq!(live.phase, CodingAgentDiagnosePhase::Projection);
+    assert_eq!(live.protocol_version, Some(1));
+    assert!(!live.options_truncated);
+    assert_eq!(live.options.len(), 1);
+    assert_eq!(live.options[0].id, "mode");
+    assert_eq!(live.options[0].kind, "select");
+    assert_eq!(live.options[0].current.as_deref(), Some("agent"));
+    assert_eq!(live.options[0].choices.len(), 2);
+    assert_eq!(live.options[0].choices[0].value, "agent");
+    // Only the two setup methods were ever sent: no prompt, no config write,
+    // and no provider tool call.
+    assert_eq!(
+        received_methods(&wire_log(&temp)),
+        vec!["initialize".to_string(), "session/new".to_string()]
+    );
+    // No CodingAgentRun was created or persisted by the probe.
+    assert!(manager.inventory().runs.is_empty());
+    // The ephemeral provider process did not survive the probe.
+    #[cfg(target_os = "linux")]
+    {
+        let startup = wire_log(&temp)[0]
+            .get("startup_pid")
+            .and_then(Value::as_u64)
+            .expect("fake provider logged its startup pid");
+        wait_for_proc_exit(startup);
+    }
+    assert_eq!(
+        manager
+            .drain_workers_until(Instant::now() + Duration::from_secs(3))
+            .timed_out,
+        0
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn acp_diagnose_live_probe_missing_env_source_fails_closed_without_spawn() {
+    use webcodex_core::coding_agent::{
+        validate_response_for_request, CodingAgentDiagnoseOutcome, CodingAgentDiagnosePhase,
+    };
+    let temp = crate::tests::executable_tempdir();
+    let mut config = fake_config("never-launch-this-acp-binary".into(), Vec::new());
+    config.agents[0].env_from_env = BTreeMap::from([(
+        "CODEX_PATH".to_string(),
+        "WEBCODEX_TEST_994_MISSING_SOURCE".to_string(),
+    )]);
+    let manager = CodingAgentManager::with_store(&config, temp.path().join("store")).unwrap();
+    let projects = project_fixture(&temp);
+    let request = live_diagnose_request(
+        &manager,
+        &temp.path().join("repo"),
+        "wc_agent_run_diagnoseenvmiss01",
+        true,
+    );
+    let response = manager.handle(request.clone(), &projects);
+    validate_response_for_request(&request, &response).unwrap();
+    let Some(CodingAgentResponsePayload::Diagnose { live_acp, .. }) = response.payload else {
+        panic!(
+            "diagnose should return a typed payload: {:?}",
+            response.error
+        );
+    };
+    let live = live_acp.expect("explicitly authorized live probe result");
+    assert_eq!(live.outcome, CodingAgentDiagnoseOutcome::EnvUnavailable);
+    assert_eq!(live.phase, CodingAgentDiagnosePhase::Environment);
+    assert!(live.options.is_empty());
+    let serialized = serde_json::to_string(&live).unwrap();
+    assert!(!serialized.contains("WEBCODEX_TEST_994_MISSING_SOURCE"));
+    assert!(!serialized.contains("never-launch-this-acp-binary"));
+    assert!(wire_log(&temp).is_empty());
+    assert!(manager.runs.lock().unwrap().is_empty());
+}
+
+#[test]
+#[cfg(unix)]
+fn acp_diagnose_live_probe_faults_stay_classified_bounded_and_prompt_free() {
+    use webcodex_core::coding_agent::{
+        validate_response_for_request, CodingAgentDiagnoseOutcome, CodingAgentDiagnosePhase,
+    };
+    let transport = CodingAgentDiagnoseOutcome::TransportFailed;
+    let cases = [
+        (
+            "initialize",
+            "rpc",
+            CodingAgentDiagnoseOutcome::Rejected,
+            CodingAgentDiagnosePhase::Initialize,
+        ),
+        (
+            "session/new",
+            "rpc",
+            CodingAgentDiagnoseOutcome::Rejected,
+            CodingAgentDiagnosePhase::SessionNew,
+        ),
+        (
+            "initialize",
+            "malformed",
+            transport,
+            CodingAgentDiagnosePhase::Initialize,
+        ),
+        (
+            "initialize",
+            "oversized",
+            transport,
+            CodingAgentDiagnosePhase::Initialize,
+        ),
+        (
+            "initialize",
+            "eof",
+            transport,
+            CodingAgentDiagnosePhase::Initialize,
+        ),
+        (
+            "session/new",
+            "malformed",
+            transport,
+            CodingAgentDiagnosePhase::SessionNew,
+        ),
+        (
+            "session/new",
+            "oversized",
+            transport,
+            CodingAgentDiagnosePhase::SessionNew,
+        ),
+        (
+            "session/new",
+            "eof",
+            transport,
+            CodingAgentDiagnosePhase::SessionNew,
+        ),
+    ];
+    for (stage, fault, expected_outcome, expected_phase) in cases {
+        let temp = crate::tests::executable_tempdir();
+        let (exe, args) = diagnostic_agent(&temp, stage, fault);
+        let manager =
+            CodingAgentManager::with_store(&fake_config(exe, args), temp.path().join("store"))
+                .unwrap();
+        let projects = project_fixture(&temp);
+        let request = live_diagnose_request(
+            &manager,
+            &temp.path().join("repo"),
+            "wc_agent_run_diagnosefault01",
+            true,
+        );
+        let response = manager.handle(request.clone(), &projects);
+        validate_response_for_request(&request, &response).unwrap();
+        let Some(CodingAgentResponsePayload::Diagnose { live_acp, .. }) = response.payload else {
+            panic!(
+                "diagnose should return a typed payload: {:?}",
+                response.error
+            );
+        };
+        let live = live_acp.expect("explicitly authorized live probe result");
+        assert_eq!(live.outcome, expected_outcome, "{stage}/{fault}");
+        assert_eq!(live.phase, expected_phase, "{stage}/{fault}");
+        assert!(live.options.is_empty(), "{stage}/{fault}");
+        let serialized = serde_json::to_string(&live).unwrap();
+        assert!(
+            !serialized.contains(PRIVATE_DIAGNOSTIC),
+            "{stage}/{fault} leaked provider-controlled secret text"
+        );
+        assert!(
+            !serialized.contains("-32001"),
+            "{stage}/{fault} leaked numeric RPC detail"
+        );
+        // The diagnostic never dispatches a prompt and never creates a Run.
+        assert!(!temp.path().join("prompt-dispatched").exists());
+        assert!(manager.runs.lock().unwrap().is_empty());
+        assert_eq!(
+            manager
+                .drain_workers_until(Instant::now() + Duration::from_secs(3))
+                .timed_out,
+            0
+        );
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn acp_diagnose_live_probe_timeout_terminates_the_whole_provider_tree() {
+    use webcodex_core::coding_agent::{
+        validate_response_for_request, CodingAgentDiagnoseOutcome, CodingAgentDiagnosePhase,
+    };
+    let temp = crate::tests::executable_tempdir();
+    let (exe, args) = fake_agent(&temp, "block_initialize_tree");
+    let manager =
+        CodingAgentManager::with_store(&fake_config(exe, args), temp.path().join("store")).unwrap();
+    *manager.probe_test_budget.lock().unwrap() = Some(Duration::from_millis(400));
+    let projects = project_fixture(&temp);
+    let started = Instant::now();
+    let request = live_diagnose_request(
+        &manager,
+        &temp.path().join("repo"),
+        "wc_agent_run_diagnosetimeout01",
+        true,
+    );
+    let response = manager.handle(request.clone(), &projects);
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the probe must honor its bounded budget, took {:?}",
+        started.elapsed()
+    );
+    validate_response_for_request(&request, &response).unwrap();
+    let Some(CodingAgentResponsePayload::Diagnose { live_acp, .. }) = response.payload else {
+        panic!(
+            "diagnose should return a typed payload: {:?}",
+            response.error
+        );
+    };
+    let live = live_acp.expect("explicitly authorized live probe result");
+    assert_eq!(live.outcome, CodingAgentDiagnoseOutcome::Timeout);
+    assert_eq!(live.phase, CodingAgentDiagnosePhase::Initialize);
+    assert!(live.options.is_empty());
+    assert!(manager.inventory().runs.is_empty());
+    // The whole ephemeral process tree, including the spawned descendant, is
+    // already gone by the time the classified result is observable.
+    #[cfg(target_os = "linux")]
+    {
+        let log = wire_log(&temp);
+        let startup = log[0]
+            .get("startup_pid")
+            .and_then(Value::as_u64)
+            .expect("fake provider logged its startup pid");
+        wait_for_proc_exit(startup);
+        let descendant = log
+            .iter()
+            .find_map(|entry| entry.get("descendant_pid"))
+            .expect("blocked provider logged its descendant pid")
+            .as_u64()
+            .expect("descendant pid");
+        wait_for_proc_exit(descendant);
+    }
+    assert_eq!(
+        manager
+            .drain_workers_until(Instant::now() + Duration::from_secs(3))
+            .timed_out,
+        0
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn acp_diagnose_live_probe_provider_exit_is_classified_without_status_leak() {
+    use webcodex_core::coding_agent::{
+        validate_response_for_request, CodingAgentDiagnoseOutcome, CodingAgentDiagnosePhase,
+    };
+    let temp = crate::tests::executable_tempdir();
+    let (exe, args) = fake_agent(&temp, "crash_before_prompt");
+    let manager =
+        CodingAgentManager::with_store(&fake_config(exe, args), temp.path().join("store")).unwrap();
+    let projects = project_fixture(&temp);
+    let request = live_diagnose_request(
+        &manager,
+        &temp.path().join("repo"),
+        "wc_agent_run_diagnosecrash01",
+        true,
+    );
+    let response = manager.handle(request.clone(), &projects);
+    validate_response_for_request(&request, &response).unwrap();
+    let Some(CodingAgentResponsePayload::Diagnose { live_acp, .. }) = response.payload else {
+        panic!(
+            "diagnose should return a typed payload: {:?}",
+            response.error
+        );
+    };
+    let live = live_acp.expect("explicitly authorized live probe result");
+    assert_eq!(live.outcome, CodingAgentDiagnoseOutcome::ProcessExited);
+    assert_eq!(live.phase, CodingAgentDiagnosePhase::Initialize);
+    assert!(live.options.is_empty());
+    let serialized = serde_json::to_string(&live).unwrap();
+    assert!(
+        !serialized.contains('9'),
+        "exit status must not be projected"
+    );
+    assert!(manager.inventory().runs.is_empty());
+    assert_eq!(
+        manager
+            .drain_workers_until(Instant::now() + Duration::from_secs(3))
+            .timed_out,
+        0
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn acp_diagnose_live_probe_projects_advertised_options_within_closed_bounds() {
+    use webcodex_core::coding_agent::{
+        validate_response_for_request, CodingAgentDiagnoseOutcome, CodingAgentDiagnosePhase,
+        CODING_AGENT_MAX_CONFIG_LABEL_BYTES, CODING_AGENT_MAX_CONFIG_OPTIONS,
+        CODING_AGENT_MAX_CONFIG_SELECT_CHOICES,
+    };
+    let temp = crate::tests::executable_tempdir();
+    let (exe, args) = fake_agent(&temp, "diag_oversized");
+    let manager =
+        CodingAgentManager::with_store(&fake_config(exe, args), temp.path().join("store")).unwrap();
+    let projects = project_fixture(&temp);
+    let request = live_diagnose_request(
+        &manager,
+        &temp.path().join("repo"),
+        "wc_agent_run_diagnoselarge01",
+        true,
+    );
+    let response = manager.handle(request.clone(), &projects);
+    // Response validation itself enforces the closed budgets end to end.
+    validate_response_for_request(&request, &response).unwrap();
+    let Some(CodingAgentResponsePayload::Diagnose { live_acp, .. }) = response.payload else {
+        panic!(
+            "diagnose should return a typed payload: {:?}",
+            response.error
+        );
+    };
+    let live = live_acp.expect("explicitly authorized live probe result");
+    assert_eq!(live.outcome, CodingAgentDiagnoseOutcome::Ok);
+    assert_eq!(live.phase, CodingAgentDiagnosePhase::Projection);
+    assert_eq!(live.options.len(), CODING_AGENT_MAX_CONFIG_OPTIONS);
+    assert!(live.options_truncated);
+    let option = &live.options[0];
+    assert_eq!(option.id, "opt_0");
+    assert_eq!(option.kind, "select");
+    assert!(option
+        .label
+        .as_ref()
+        .is_some_and(|label| label.len() <= CODING_AGENT_MAX_CONFIG_LABEL_BYTES));
+    assert_eq!(option.choices.len(), CODING_AGENT_MAX_CONFIG_SELECT_CHOICES);
+    assert!(option.choices_truncated);
+    assert_eq!(option.choices[0].value, "v0_0");
+    assert!(option.choices[0]
+        .label
+        .as_ref()
+        .is_some_and(|label| label.len() <= CODING_AGENT_MAX_CONFIG_LABEL_BYTES));
+    assert_eq!(
+        received_methods(&wire_log(&temp)),
+        vec!["initialize".to_string(), "session/new".to_string()]
+    );
+    assert!(manager.inventory().runs.is_empty());
+    assert_eq!(
+        manager
+            .drain_workers_until(Instant::now() + Duration::from_secs(3))
+            .timed_out,
+        0
+    );
 }

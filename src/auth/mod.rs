@@ -85,7 +85,10 @@ pub use scopes::{
 #[cfg(test)]
 pub use scopes::{SCOPE_ACCOUNT_MANAGE, SCOPE_JOB_DETACH};
 
-pub(crate) use scopes::{is_agent_scope, scopes_to_string, validate_agent_scopes, validate_scopes};
+pub(crate) use scopes::{
+    is_agent_scope, oauth_mcp_security_scheme_scopes, scopes_to_string, validate_agent_scopes,
+    validate_scopes,
+};
 
 pub(crate) use middleware::{
     bearer_token, get_config, get_db, json_error, oauth_insufficient_scope_challenge,

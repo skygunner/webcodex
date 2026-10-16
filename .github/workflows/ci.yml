@@ -354,6 +354,8 @@ jobs:
           fi
       - name: Test optional Codex observation adapter
         run: python3 -m unittest discover -s integrations/codex -p 'test_*.py' -v
+      - name: Test optional project knowledge provider
+        run: python3 -B -m unittest discover -s plugins/project-knowledge -p 'test_*.py' -v
       - name: Test configured model API ACP adapter
         run: python3 -m unittest discover -s integrations/model_gateway/tests -p 'test_*.py' -v
       # Keep the cheap deterministic release gate ahead of the optional full

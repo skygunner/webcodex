@@ -57,6 +57,12 @@ function taskTone(task: GoalTask): string {
   return "quiet";
 }
 
+function continuationConditionsLabel(continuity: GoalDetailResponse["goal_plan"]["continuity"]): string {
+  if (continuity.state === "not_applicable") return "Not applicable";
+  if (continuity.state === "not_configured") return "Not configured";
+  return continuity.production_auto_resume_available ? "Ready · not a guarantee" : "Not ready · continue manually";
+}
+
 function waitLabel(wait: GoalWait): string {
   return `${wait.mode.toUpperCase()} ${wait.match_count} / ${wait.source_count}`;
 }
@@ -274,8 +280,9 @@ function GoalDetail({
                 <button className="goal-link-card" type="button" onClick={() => onOpenAgent(plan.controller_agent_id!)}><span><strong>{shortId(plan.controller_agent_id)}</strong><small>{t("Controller identity")}</small></span><ArrowUpRight size={14} /></button>
               ) : <div className="empty-inline compact">{t("No controller configured")}</div>}
               <div className="goal-status-facts">
-                <span>{t("Auto-resume")}</span><strong>{continuity.production_auto_resume_available ? t("Ready") : t("Not ready")}</strong>
+                <span>{t("Continuation conditions")}</span><strong>{t(continuationConditionsLabel(continuity))}</strong>
               </div>
+              <p>{t("The chat application may require confirmation or delay continuation. Only a confirmed fresh turn proves this continuation ran.")}</p>
             </section>
             <section className="goal-status-card">
               <div className="goal-section-title"><Clock3 size={16} /><strong>{t("Continuity")}</strong></div>
@@ -391,7 +398,7 @@ function GoalInspector({ detail, controller, language, onOpenAgent }: { detail: 
       <section className="inspector-section"><h3>{t("Goal identity")}</h3><div className="fact-list"><div><span>{t("Goal")}</span><strong><code>{goal.summary.goal_id}</code></strong></div><div><span>{t("Revision")}</span><strong>{plan.revision}</strong></div><div><span>{t("Checkpoint")}</span><strong>{absoluteTime(plan.checkpoint_at_unix_ms || undefined)}</strong></div><div><span>{t("Updated")}</span><strong>{absoluteTime(plan.updated_at_unix_ms)}</strong></div></div></section>
       <section className="inspector-section"><h3>{t("Projects")}</h3><div className="goal-inspector-list">{detail.projects.map((project) => <div key={project.id}><strong>{projectDisplayName(project.name, project.id, project.path)}</strong><small>{displayProjectPath(project.path) || project.id}</small></div>)}{!detail.projects.length && <div className="empty-inline">{t("No authorized Project correlation")}</div>}</div></section>
       <section className="inspector-section"><h3>{t("Completion conditions")}</h3><ol className="goal-condition-list">{goal.plan.completion_conditions.map((condition, index) => <li key={index}>{condition}</li>)}</ol></section>
-      <section className="inspector-section"><h3>{t("Controller")}</h3>{controller ? <button className="goal-inspector-agent" type="button" onClick={() => onOpenAgent(controller.agent_id)}><Bot size={15} /><span><strong>{controller.display_name || controller.handle}</strong><small>{plan.continuity.production_auto_resume_available ? t("Auto-resume ready") : t("Auto-resume not ready")}</small></span><ArrowUpRight size={13} /></button> : <div className="empty-inline">{t("No controller configured")}</div>}</section>
+      <section className="inspector-section"><h3>{t("Controller")}</h3>{controller ? <button className="goal-inspector-agent" type="button" onClick={() => onOpenAgent(controller.agent_id)}><Bot size={15} /><span><strong>{controller.display_name || controller.handle}</strong><small>{t(continuationConditionsLabel(plan.continuity))}</small></span><ArrowUpRight size={13} /></button> : <div className="empty-inline">{t("No controller configured")}</div>}</section>
     </>
   );
 }

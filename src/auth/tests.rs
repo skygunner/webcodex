@@ -2282,6 +2282,33 @@ async fn auth_middleware_unauthorized_includes_resource_metadata() {
 }
 
 #[tokio::test]
+async fn invalid_oauth_token_challenges_reauthorization_without_exposing_token() {
+    let _env = crate::auth::AuthEnvGuard::auth_required();
+    let mut config = gate_test_config_oauth2(Some("test-token"));
+    Arc::get_mut(&mut config).unwrap().oauth2.issuer =
+        Some("https://codex.example.com".to_string());
+    let (_tmp, db) = gate_test_db();
+    let service = salvo::Service::new(gate_router(config, db));
+    let resp = salvo::test::TestClient::post("http://localhost/api/runtime/status")
+        .add_header("authorization", "Bearer wc_oat_invalid", true)
+        .send(&service)
+        .await;
+    assert_eq!(resp.status_code, Some(StatusCode::UNAUTHORIZED));
+    let challenge = resp
+        .headers
+        .get("www-authenticate")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(challenge.contains(
+        "resource_metadata=\"https://codex.example.com/.well-known/oauth-protected-resource\""
+    ));
+    assert!(challenge.contains("error=\"invalid_token\""));
+    assert!(challenge.contains("error_description=\"Authentication is required\""));
+    assert!(!challenge.contains("wc_oat_invalid"));
+}
+
+#[tokio::test]
 async fn auth_middleware_unauthorized_includes_resource_metadata_with_issuer() {
     let _env = crate::auth::AuthEnvGuard::auth_required();
     let mut config_inner = gate_test_config_oauth2(Some("test-token"));

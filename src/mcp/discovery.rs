@@ -12,8 +12,22 @@ pub(super) const INPUT_DESCRIPTION_MAX_CHARS: usize = 180;
 
 pub(super) fn compact_tool(tool: &mut Value) {
     let name = tool["name"].as_str().unwrap_or_default().to_string();
+    let workbench_app_only = tool.pointer("/_meta/ui/visibility")
+        == Some(&serde_json::json!(["app"]))
+        && super::workbench::CANONICAL_TOOLS.contains(&name.as_str());
     if let Some(description) = tool["description"].as_str() {
         let selection = match name.as_str() {
+            "list_runners" if workbench_app_only => "List authorized Runner status and capabilities. Inventory is observation, not execution authority.",
+            "list_project_files" if workbench_app_only => "List authorized project paths with bounded paging; file contents require exact resource reads.",
+            "get_goal" if workbench_app_only => "Read one owned Goal, revision, completion criteria and associated work.",
+            "create_goal" if workbench_app_only => "Create a caller-owned Goal with bounded completion criteria. Reuse the same key and unchanged input on uncertain results.",
+            "update_goal" if workbench_app_only => "Edit an owned nonterminal Goal using its expected revision. Conflicts preserve the draft; reread before changing the revision. Replay only the same keyed input.",
+            "read_agent_task" if workbench_app_only => "Read an owned canonical Task and its attempts; observation never authorizes redispatch.",
+            "observe_coding_agent" if workbench_app_only => "Observe an authorized exact coding run. Uncertain execution requires observation, not redispatch.",
+            "cancel_coding_agent" if workbench_app_only => "Request cancellation of an authorized exact run. Request acceptance is not terminal cancellation; observe the same run.",
+            "get_session_assignment" if workbench_app_only => "Read an authorized exact Session todo and current assignment fence; no implicit Session selection.",
+            "complete_session_message" if workbench_app_only => "Complete an exact authorized todo with the current assignment fence. Reuse the same completion key and answer after uncertainty; stale fences fail closed.",
+            "reconcile_agent_task_coding_run" if workbench_app_only => "Reconcile an owned exact Task/Attempt with its original coding run. Never starts or retries execution.",
             "work_on_project" if tool.pointer("/inputSchema/properties/_wc").is_none() => "Start file, data, diagnostic or coding work in a Project; Git optional. Omit session_id for a fresh Session; supply exact session_id to resume. Read applicable AGENTS.md/CLAUDE.md with read_files. Reuse workspace branch/HEAD/status and sufficient catalogs; refresh stale/incomplete facts before dependent work.",
             "work_on_project" => "File/data/diagnostic/coding work; Git optional. Fresh: omit session_id; exact resumes. Fresh/uncertain: _wc.context=[\"project.instructions\",\"webcodex.workflow\"]; project.instructions includes AGENTS.md/CLAUDE.md. Reuse complete instructions, branch/HEAD/status, semantic navigation, sufficient catalogs; refresh stale/incomplete.",
             "present_pdf" => "View one authorized project PDF in a dedicated reader. Use for PDF viewing, present_work_result for coding progress. Supply project and relative path; unchanged/untracked files supported, no Git/Session required. Pins size/SHA (20 MiB max); private App reads fail on version changes. Explicitly reopen to select a new version. Requires MCP Apps Host.",
@@ -70,6 +84,12 @@ pub(super) fn compact_tool(tool: &mut Value) {
             );
         }
         compact_discovery_validation_annotations(schema);
+        if workbench_app_only {
+            // These exact schemas are consumed by the bundled controller, not
+            // model selection. Keep every validation constraint without repeating
+            // canonical field prose in the Host discovery transport.
+            strip_schema_descriptions(schema);
+        }
     }
 }
 

@@ -8,6 +8,7 @@ mod request_policy;
 mod resources;
 mod response;
 mod tools;
+mod workbench;
 
 #[cfg(test)]
 pub(crate) use tools::adaptive_runtime_gateway_input_schema_for_test;
@@ -1350,8 +1351,15 @@ async fn handle_mcp_request_with_lifecycle(
         }
         "ping" if !stateless_2026 => rpc_result(id, json!({})),
         "tools/list" => {
-            return tools::handle_list(id, auth, stateless_2026, compact_schemas, mcp_app_enabled)
-                .await;
+            return tools::handle_list_with_runtime(
+                runtime,
+                id,
+                auth,
+                stateless_2026,
+                compact_schemas,
+                mcp_app_enabled,
+            )
+            .await;
         }
         "resources/list" if runtime_resource_method => {
             return resources::handle_list(runtime, id, mcp_app_enabled);
@@ -1413,8 +1421,14 @@ fn scope_forbidden(
     required_scope: Option<&'static str>,
     description: impl Into<String>,
 ) -> McpOutcome {
+    let mut body = crate::auth::scope_forbidden_body(auth, required_scope, description);
+    if body["error"] == "insufficient_scope" {
+        body["_meta"] = serde_json::json!({
+            "mcp/www_authenticate": [crate::auth::oauth_insufficient_scope_challenge(required_scope)],
+        });
+    }
     McpOutcome::Forbidden {
-        body: crate::auth::scope_forbidden_body(auth, required_scope, description),
+        body,
         required_scope,
     }
 }

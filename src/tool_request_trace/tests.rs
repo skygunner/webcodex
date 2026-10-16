@@ -1282,3 +1282,44 @@ fn completion_timing_preserves_subsecond_monotonic_precision() {
         i64::try_from(timing.elapsed_ms).unwrap()
     );
 }
+
+#[test]
+fn continuation_timing_ids_are_bounded_and_exclude_payloads() {
+    let wake_id = "wc_wake_AAAAAAAAAAAAAAAA";
+    let attempt_id = "wc_wake_attempt_BBBBBBBBBBBBBBBB";
+    let source = json!({"agent_continuation": {"wake": {"wake_id": wake_id, "attempt_id": attempt_id,
+        "consume_token": "private-token", "automatic_message": "private-message", "client_window": "private-window"}},
+        "prompt": "private-prompt"});
+    assert_eq!(
+        lifecycle::continuation_ids(&source),
+        json!({"wake_id": wake_id, "attempt_id": attempt_id})
+    );
+    assert_eq!(
+        lifecycle::continuation_ids(
+            &json!({"wake_id": wake_id, "dispatch_observation": "dispatch_accepted", "state": "consumed"})
+        ),
+        json!({"wake_id": wake_id, "dispatch_observation": "dispatch_accepted", "consumed": true})
+    );
+    assert_eq!(
+        lifecycle::continuation_ids(
+            &json!({"wake_id": wake_id, "dispatch_observation": "private-message", "state": "private-token"})
+        ),
+        json!({"wake_id": wake_id})
+    );
+    for invalid in [
+        "wc_wake_short",
+        "wc_wake_AAAAAAAAAAAAAAAA\nprivate",
+        "private-token",
+    ] {
+        assert_eq!(
+            lifecycle::continuation_ids(&json!({"wake_id": invalid})),
+            json!({})
+        );
+    }
+    assert_eq!(
+        lifecycle::continuation_ids(
+            &json!({"attention": {"event_id": "wc_attention_event_CCCCCCCCCCCCCCCC", "wake_id": wake_id}})
+        ),
+        json!({"event_id": "wc_attention_event_CCCCCCCCCCCCCCCC", "wake_id": wake_id})
+    );
+}

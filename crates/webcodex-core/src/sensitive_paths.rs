@@ -18,7 +18,7 @@
 //! `ID_RSA.PEM` cannot slip past on a case-preserving filesystem.
 
 /// Credential trees and Git integrity-sensitive control data.
-const SECRET_COMPONENTS: &[&str] = &[
+pub const SECRET_COMPONENTS: &[&str] = &[
     ".git",
     "secrets",
     "tokens",
@@ -31,10 +31,10 @@ const SECRET_COMPONENTS: &[&str] = &[
 /// `.env` as a prefix also covers `.env.local`, `.env.production`, and the
 /// like. Runner config names and `webcodex.env` are prefixes so editor and
 /// backup suffixes (`runner.toml.swp`, `agent.toml.bak`) remain protected.
-const SECRET_PREFIXES: &[&str] = &[".env", "runner.toml", "agent.toml", "webcodex.env"];
+pub const SECRET_PREFIXES: &[&str] = &[".env", "runner.toml", "agent.toml", "webcodex.env"];
 
 /// Conventional dotenv template filenames intended to be public developer examples.
-const PUBLIC_DOTENV_TEMPLATE_COMPONENTS: &[&str] =
+pub const PUBLIC_DOTENV_TEMPLATE_COMPONENTS: &[&str] =
     &[".env.example", ".env.sample", ".env.template", ".env.dist"];
 
 /// True only for the small conventional dotenv template allowlist.
@@ -46,7 +46,7 @@ pub fn is_public_dotenv_template_component(component: &str) -> bool {
 }
 
 /// Component suffixes that mark key material or a credential backup.
-const SECRET_SUFFIXES: &[&str] = &[".pem", ".key", ".env", ".toml.bak"];
+pub const SECRET_SUFFIXES: &[&str] = &[".pem", ".key", ".env", ".toml.bak"];
 
 /// High-volume trees that search and listing skip. Not secret.
 const BULK_COMPONENTS: &[&str] = &["target", "node_modules"];

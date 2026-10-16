@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 mod reaper;
+mod user_handoff;
 use reaper::Reaper;
 
 // Keep non-image Browser observations below the Server's ordinary 256 KiB
@@ -72,6 +73,11 @@ struct BrowserRuntime {
     elements: HashMap<String, ElementIdentity>,
     generation: u64,
     page_count_floor: usize,
+    user_handoff: Option<user_handoff::UserHandoff>,
+    pending_handoff_snapshot: Option<user_handoff::UserHandoff>,
+    completed_user_handoffs: HashSet<(String, String)>,
+    needs_handoff_snapshot: bool,
+    handoff_snapshot_pages: HashSet<String>,
 }
 
 impl std::fmt::Debug for BrowserSupervisor {
@@ -130,6 +136,8 @@ impl BrowserSupervisor {
             ownership: runtime.backend.ownership(),
             profile: None,
             page_count: 1,
+            user_handoff: None,
+            needs_snapshot: false,
         };
         state.browsers.insert(browser_id, runtime);
         Ok(summary)
@@ -173,6 +181,9 @@ impl BrowserSupervisor {
                 ownership: runtime.backend.ownership(),
                 profile: runtime.backend.profile_name().map(str::to_owned),
                 page_count: runtime.page_count(),
+                user_handoff: runtime.user_handoff.as_ref().map(|hold| hold.summary()),
+                needs_snapshot: runtime.needs_handoff_snapshot
+                    || !runtime.handoff_snapshot_pages.is_empty(),
             })
             .collect()
     }
@@ -210,6 +221,8 @@ impl BrowserSupervisor {
             // Chromium is launched with one explicit about:blank target. Keep a
             // conservative count floor until pages observation assigns opaque IDs.
             page_count: runtime.page_count(),
+            user_handoff: None,
+            needs_snapshot: false,
         };
         state.browsers.insert(browser_id, runtime);
         Ok(summary)
@@ -264,6 +277,7 @@ impl BrowserSupervisor {
             .browsers
             .get_mut(browser_id)
             .ok_or_else(|| stale_browser(browser_id))?;
+        runtime.admit_automatic_effect(None)?;
         if runtime.page_count() >= MAX_PAGES_PER_BROWSER {
             return Err(BrowserError::not_started(
                 "page_limit",
@@ -401,6 +415,11 @@ impl BrowserSupervisor {
             other => other,
         };
 
+        if runtime.user_handoff.is_none() {
+            runtime.pending_handoff_snapshot = None;
+            runtime.needs_handoff_snapshot = false;
+            runtime.handoff_snapshot_pages.remove(page_id);
+        }
         runtime.generation = runtime.generation.saturating_add(1);
         let generation = runtime.generation;
         runtime.elements.clear();
@@ -725,6 +744,7 @@ impl BrowserSupervisor {
             .browsers
             .get_mut(browser_id)
             .ok_or_else(|| stale_browser(browser_id))?;
+        runtime.admit_automatic_effect(Some(page_id))?;
         let target_id = runtime.page_target(page_id)?;
         // Navigation can replace the document. Fence prior element authority before
         // dispatch; uncertain outcomes remain stale rather than silently retargeting.
@@ -740,6 +760,7 @@ impl BrowserSupervisor {
             .browsers
             .get_mut(browser_id)
             .ok_or_else(|| stale_browser(browser_id))?;
+        runtime.admit_automatic_effect(Some(page_id))?;
         let target_id = runtime.page_target(page_id)?;
         runtime.invalidate_elements_for_page(page_id);
         runtime.backend.reload(&target_id)?;
@@ -896,6 +917,7 @@ impl BrowserSupervisor {
             .browsers
             .get_mut(browser_id)
             .ok_or_else(|| stale_browser(browser_id))?;
+        runtime.admit_automatic_effect(Some(page_id))?;
         let target_id = runtime.page_target(page_id)?;
         runtime.refresh_document_fence(page_id, &target_id)?;
         runtime.backend.key(&target_id, key)?;
@@ -909,11 +931,15 @@ impl BrowserSupervisor {
             .browsers
             .get_mut(browser_id)
             .ok_or_else(|| stale_browser(browser_id))?;
+        // Closing a page is a Browser effect, unlike explicit Browser teardown.
+        // Do not close the user's manual-work page or bypass post-handoff recovery.
+        runtime.admit_automatic_effect(Some(page_id))?;
         let target_id = runtime.page_target(page_id)?;
         runtime.invalidate_elements_for_page(page_id);
         let result = runtime.backend.close_page(&target_id);
         if result.is_ok() {
             runtime.pages.remove(page_id);
+            runtime.handoff_snapshot_pages.remove(page_id);
             runtime.target_to_page.remove(&target_id);
             runtime.page_count_floor = runtime
                 .page_count_floor
@@ -1012,6 +1038,7 @@ impl BrowserSupervisor {
             .browsers
             .get_mut(browser_id)
             .ok_or_else(|| stale_browser(browser_id))?;
+        runtime.admit_automatic_effect(Some(page_id))?;
         let target = runtime.page_target(page_id)?;
         let mut result = BatchResult {
             execution_state: ExecutionState::NotStarted,
@@ -1128,6 +1155,7 @@ impl BrowserSupervisor {
             .browsers
             .get_mut(browser_id)
             .ok_or_else(|| stale_browser(browser_id))?;
+        runtime.admit_automatic_effect(Some(page_id))?;
         let target_id = runtime.page_target(page_id)?;
         let element = runtime.authorized_element(page_id, &target_id, element_id, action)?;
         effect(
@@ -1222,6 +1250,11 @@ impl BrowserRuntime {
             elements: HashMap::new(),
             generation: 0,
             page_count_floor: 1,
+            user_handoff: None,
+            pending_handoff_snapshot: None,
+            completed_user_handoffs: HashSet::new(),
+            needs_handoff_snapshot: false,
+            handoff_snapshot_pages: HashSet::new(),
         }
     }
 
@@ -1240,7 +1273,11 @@ impl BrowserRuntime {
     }
 
     fn expired(&self, now: Instant) -> bool {
-        now.saturating_duration_since(self.last_activity_at) >= BROWSER_IDLE_TIMEOUT
+        (self
+            .user_handoff
+            .as_ref()
+            .is_none_or(|hold| now >= hold.deadline)
+            && now.saturating_duration_since(self.last_activity_at) >= BROWSER_IDLE_TIMEOUT)
             || now.saturating_duration_since(self.created_at) >= MAX_BROWSER_LIFETIME
     }
 
@@ -1602,6 +1639,7 @@ mod tests {
     mod frames;
     mod lifecycle;
     mod query;
+    mod user_handoff;
     mod widgets;
     use super::*;
     use crate::cdp::{
@@ -1670,6 +1708,7 @@ mod tests {
         page_created: bool,
         structured_controls: bool,
         compact_select_page: bool,
+        managed: bool,
         control_state_page: bool,
         iframe_control_state: bool,
     }
@@ -1702,6 +1741,7 @@ mod tests {
                 page_created: false,
                 structured_controls: false,
                 compact_select_page: false,
+                managed: false,
                 control_state_page: false,
                 iframe_control_state: false,
             }
@@ -1759,10 +1799,27 @@ mod tests {
 
     impl BrowserBackend for FakeBackend {
         fn ownership(&self) -> crate::BrowserOwnership {
+            if self.managed {
+                return crate::BrowserOwnership::OwnedManagedPersistent;
+            }
             self.shutdown_probe
                 .as_ref()
                 .map(|probe| probe.ownership)
                 .unwrap_or(crate::BrowserOwnership::OwnedEphemeral)
+        }
+
+        fn live_window_hint(&mut self) -> BrowserResult<crate::BrowserWindowHint> {
+            if self.managed {
+                Ok(crate::BrowserWindowHint {
+                    process_id: 42,
+                    bounds: None,
+                })
+            } else {
+                Err(BrowserError::not_started(
+                    "browser_surface_unavailable",
+                    "No visible fixture window",
+                ))
+            }
         }
 
         fn validate_frame_fence(&mut self, _target_id: &str, fence: &str) -> BrowserResult<()> {

@@ -731,7 +731,7 @@ pub(super) fn finish_suggested_next_actions(
         );
     }
     if facts.jobs.blocking_active_count > 0 {
-        actions.push("stop or await blocking active jobs".into());
+        actions.push("preserve the blocking Job identities; finish independent work, then wait_for_job_readiness and observe_jobs on those same Jobs; cancel only when intended".into());
     }
     if facts.validation.cargo_test_zero_tests {
         actions.push("cargo_test ran zero tests; verify the test filter or command".into());

@@ -918,6 +918,12 @@ runner_capabilities! {
         #[serde(default, skip_serializing_if = "is_false")]
         pub browser_surface_handoff: bool = false;
     }
+    BrowserUserHandoff => RUNNER_CAPABILITY_BROWSER_USER_HANDOFF("browser_user_handoff"),
+    v2_baseline = false {
+        /// Exact managed visible Browser human handoff with automatic input fencing.
+        #[serde(default, skip_serializing_if = "is_false")]
+        pub browser_user_handoff: bool = false;
+    }
     ComputerObserve => RUNNER_CAPABILITY_COMPUTER_OBSERVE("computer_observe"),
     v2_baseline = false {
         /// Native read-only desktop/window observation. Missing on older Runners
@@ -1075,6 +1081,15 @@ runner_capabilities! {
         /// Runner-owned and is observed through the exact `plugin_tool` gateway.
         #[serde(default, skip_serializing_if = "is_false")]
         pub native_tool_plugins: bool = false;
+    }
+    /// Additive capability for resource_link in closed MCP gateway ToolResult
+    /// responses. Provider inventory alone cannot imply that an old Server
+    /// can decode this newly added wire enum variant.
+    McpGatewayResourceLinks => RUNNER_CAPABILITY_MCP_GATEWAY_RESOURCE_LINKS("mcp_gateway_resource_links"),
+    v2_baseline = false {
+        /// Missing on older Runners is false: do not send them the opt-in field.
+        #[serde(default, skip_serializing_if = "is_false")]
+        pub mcp_gateway_resource_links: bool = false;
     }
     /// Runner-local durable managed SSH resource registry. Missing on older Runners
     /// is false and is never inferred from one-shot or persistent SSH execution.
@@ -2345,7 +2360,7 @@ pub struct RunnerResultRequest {
 /// This is transport metadata, not a general execution framework: the Runner
 /// sets it from its actual process-spawn/collection path, while non-command
 /// request results omit it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ShellCommandExecutionState {
     NotStarted,
@@ -2915,6 +2930,7 @@ mod envelope_tests {
                 browser_extension_bridge: false,
                 browser_managed_profile: false,
                 browser_surface_handoff: false,
+                browser_user_handoff: false,
                 computer_observe: false,
                 computer_application_discovery: false,
                 computer_application_launch: false,
@@ -2933,6 +2949,7 @@ mod envelope_tests {
                 job_state_reconciliation: false,
                 coding_agent_runs: false,
                 native_tool_plugins: false,
+                mcp_gateway_resource_links: false,
                 managed_ssh_resources: false,
                 runner_config_control: false,
                 instruction_runtime: false,
@@ -3050,6 +3067,19 @@ mod envelope_tests {
         )
         .unwrap();
         assert!(present.artifact_export_streaming_metadata);
+    }
+
+    #[test]
+    fn mcp_resource_links_are_an_additive_wire_capability() {
+        let legacy: RunnerCapabilities = serde_json::from_str(r#"{"shell":true}"#).unwrap();
+        assert!(!legacy.mcp_gateway_resource_links);
+        assert!(serde_json::to_value(&legacy)
+            .unwrap()
+            .get("mcp_gateway_resource_links")
+            .is_none());
+        let enabled: RunnerCapabilities =
+            serde_json::from_str(r#"{"mcp_gateway_resource_links":true}"#).unwrap();
+        assert!(enabled.supports(RunnerCapabilityId::McpGatewayResourceLinks));
     }
 
     #[test]

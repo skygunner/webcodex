@@ -351,6 +351,7 @@ pub fn generated_runner_config_toml(opts: &RunnerInitOptions) -> Result<String, 
             browser_launch: false,
             browser_managed_profile: false,
             browser_surface_handoff: false,
+            browser_user_handoff: false,
             browser_extension_bridge: false,
             // Desktop observation is a runtime/platform capability and is never
             // claimed by generated static config.
@@ -396,6 +397,9 @@ pub fn generated_runner_config_toml(opts: &RunnerInitOptions) -> Result<String, 
             // Native Tool Plugins are likewise advertised only by a Runner
             // binary that implements the typed local Plugin lifecycle.
             native_tool_plugins: false,
+            // Only an implementing binary may advertise the additive MCP
+            // resource-link result wire; static generated config stays false.
+            mcp_gateway_resource_links: false,
             // Managed SSH resource lifecycle is likewise a running-binary
             // capability and is never implied by generated static SSH config.
             managed_ssh_resources: false,

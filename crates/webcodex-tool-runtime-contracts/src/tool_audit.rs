@@ -753,6 +753,19 @@ impl ToolCallAuditProjection for ToolCall {
                     "idempotency_key": idempotency_key,
                 }),
             ),
+            Self::ReviseGoalPlan {
+                goal_id,
+                expected_revision,
+                steps,
+                reason,
+                idempotency_key,
+            } => serde_json::json!({
+                "goal_id": goal_id,
+                "expected_revision": expected_revision,
+                "step_count": steps.len(),
+                "reason_bytes": reason.len(),
+                "idempotency_key_present": !idempotency_key.is_empty(),
+            }),
             Self::CheckpointGoal {
                 goal_id,
                 expected_revision,
@@ -796,6 +809,7 @@ impl ToolCallAuditProjection for ToolCall {
                 expected_revision,
                 title,
                 objective,
+                completion_conditions: _,
                 controller_agent_id,
                 lifecycle,
                 terminal_reason,

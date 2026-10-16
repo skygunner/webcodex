@@ -22,6 +22,7 @@ fn target_schema() -> Value {
                     "browser_launch": {"type": "boolean"},
                     "browser_managed_profile": {"type": "boolean"},
                     "browser_surface_handoff": {"type": "boolean"},
+                    "browser_user_handoff": {"type": "boolean"},
                     "browser_extension_bridge": {"type": "boolean"}
                 },
                 "required": [
@@ -43,8 +44,16 @@ fn browser_schema() -> Value {
         "properties": {
             "browser_id": {"type": "string", "minLength": 1, "maxLength": 128},
             "page_count": {"type": "integer", "minimum": 0, "maximum": 16},
+            "needs_snapshot": {"type":"boolean"},
             "ownership": {"type": "string", "enum": ["owned_ephemeral", "owned_managed_persistent", "attached_external"]},
-            "profile": {"type": "string", "maxLength": 48}
+            "profile": {"type": "string", "maxLength": 48},
+            "user_handoff": {"type":"object", "additionalProperties":false, "properties": {
+                "session_id":{"type":"string","maxLength":128},
+                "message_id":{"type":"string","maxLength":128},
+                "handoff_fence":{"type":"string","maxLength":128},
+                "surface_id":{"type":"string","maxLength":128},
+                "expires_in_ms":{"type":"integer","minimum":0,"maximum":600000}
+            }, "required":["session_id","message_id","handoff_fence","surface_id","expires_in_ms"]}
         },
         "required": ["browser_id", "page_count"]
     })
@@ -402,6 +411,11 @@ pub fn output_schema_for_tool(name: &str) -> Option<Value> {
                 ("stopped_at_index", json!({"type": "integer", "minimum": 0, "maximum": 31, "description": "Zero-based stopped operation. A post-effect document change stops at the completed operation's index."})),
                 ("remaining_count", json!({"type": "integer", "minimum": 0, "maximum": 32, "description": "Definitely unstarted operations, including a rejected operation but excluding an uncertain operation. Never implies permission to retry."})),
                 ("needs_snapshot", json!({"type": "boolean"})),
+                ("session_id", json!({"type":"string", "maxLength":128})),
+                ("message_id", json!({"type":"string", "maxLength":128})),
+                ("handoff_fence", json!({"type":"string", "maxLength":128})),
+                ("surface_id", json!({"type":"string", "maxLength":128})),
+                ("expires_in_ms", json!({"type":"integer", "minimum":0, "maximum":600000})),
                 ("stopped_execution_state", json!({"type": "string", "enum": ["not_started", "completed", "outcome_unknown"]})),
                 (
                     "browser_id",

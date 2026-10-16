@@ -29,11 +29,12 @@ pub(crate) enum StoreDomain {
     ProjectReference,
     Schema,
     WindowActivity,
+    Workbench,
 }
 
 impl StoreDomain {
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 19] = [
+    pub(crate) const ALL: [Self; 20] = [
         Self::Accounts,
         Self::Activity,
         Self::AdminProjectLifecycle,
@@ -53,6 +54,7 @@ impl StoreDomain {
         Self::ProjectReference,
         Self::Schema,
         Self::WindowActivity,
+        Self::Workbench,
     ];
 
     pub(crate) const fn as_str(self) -> &'static str {
@@ -76,6 +78,7 @@ impl StoreDomain {
             Self::ProjectReference => "project_reference",
             Self::Schema => "schema",
             Self::WindowActivity => "window_activity",
+            Self::Workbench => "workbench",
         }
     }
 }

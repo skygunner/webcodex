@@ -943,7 +943,7 @@ fn git_diff_hunks_paths_include_secret(paths: &[String]) -> bool {
         .any(|path| crate::sensitive_paths::is_secret_path(path))
 }
 
-fn git_diff_hunks_files_include_secret(files: &[Value]) -> bool {
+pub(super) fn git_diff_hunks_files_include_secret(files: &[Value]) -> bool {
     files.iter().any(|file| {
         ["path", "old_path"].into_iter().any(|field| {
             file.get(field)

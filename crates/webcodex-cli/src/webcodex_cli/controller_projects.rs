@@ -33,14 +33,32 @@ fn default_token_file(config_path: &Path, view: &RunnerConfigView) -> Result<Pat
             bases.push(base.to_path_buf());
         }
     }
-    select_default_token(&config_identity, view, &bases)
+    default_token_file_in_bases(config_path, &config_identity, view, &bases)
+}
+
+fn default_token_file_in_bases(
+    config_path: &Path,
+    config_identity: &Path,
+    view: &RunnerConfigView,
+    bases: &[PathBuf],
+) -> Result<PathBuf, String> {
+    if let Some(path) = select_default_token(config_identity, view, bases)? {
+        return Ok(path);
+    }
+    // A flat Runner installation need not have a connection descriptor. Only
+    // zero matches permit this fallback; ambiguity and selected-file failures
+    // must never silently select another credential.
+    Ok(config_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("webcodex-user-token"))
 }
 
 fn select_default_token(
     config_path: &Path,
     view: &RunnerConfigView,
     bases: &[PathBuf],
-) -> Result<PathBuf, String> {
+) -> Result<Option<PathBuf>, String> {
     let mut candidates = Vec::new();
     for base in bases {
         for connection in connections::connections_for_server(base, &view.server_url) {
@@ -65,15 +83,33 @@ fn select_default_token(
         })
         .collect::<Vec<_>>();
     if exact.len() == 1 {
-        return Ok(exact[0].user_token.clone());
+        return Ok(Some(exact[0].user_token.clone()));
     }
     if candidates.len() == 1 {
-        return Ok(candidates[0].user_token.clone());
+        return Ok(Some(candidates[0].user_token.clone()));
+    }
+    if candidates.is_empty() {
+        return Ok(None);
     }
     Err(
-        "Cannot identify one default user credential for this Runner; pass --user-token-file PATH"
+        "Ambiguous default user credentials for this Runner; pass --user-token-file PATH"
             .to_string(),
     )
+}
+
+pub(super) fn read_user_token(
+    config: &ControllerConfig,
+    view: &RunnerConfigView,
+    explicit: Option<&Path>,
+) -> Result<String, String> {
+    let path = match explicit.or(config.runner.user_token_file.as_deref()) {
+        Some(path) => path.to_path_buf(),
+        None => default_token_file(&config.runner.config, view)?,
+    };
+    let token = read_optional_token(&Some(path), "user credential")?
+        .ok_or("User credential is missing; pass --user-token-file PATH")?;
+    validate_user_api_token(&token)?;
+    Ok(token)
 }
 
 struct ProjectClient {
@@ -81,9 +117,26 @@ struct ProjectClient {
     client_id: String,
     token: String,
     http: ServerHttpOptions,
+    #[cfg(unix)]
+    target_fence: Option<(ControllerConfig, String)>,
 }
 
 impl ProjectClient {
+    async fn check_target(&self) -> Result<(), String> {
+        #[cfg(unix)]
+        if let Some((config, generation)) = &self.target_fence {
+            let state = super::wsl2_startup::active_target(config).await?;
+            if state.generation.as_ref() != Some(generation)
+                || state.effective_url.as_deref() != Some(&self.server)
+            {
+                return Err(
+                    "controller_target_changed: observe the active target before retrying".into(),
+                );
+            }
+        }
+        Ok(())
+    }
+
     async fn call(&self, tool: &str, params: Value, mutation: bool) -> Result<Value, String> {
         self.request(
             "/api/tools/call",
@@ -94,6 +147,7 @@ impl ProjectClient {
     }
 
     async fn request(&self, path: &str, body: Value, mutation: bool) -> Result<Value, String> {
+        self.check_target().await?;
         let response = tokio::time::timeout(
             // The Server's project-op wait is 32 seconds; leave time for its terminal response.
             Duration::from_secs(45),
@@ -141,28 +195,18 @@ impl ProjectClient {
     }
 
     async fn require_online(&self) -> Result<Value, String> {
-        let output = self
-            .call(
-                "list_runners",
-                json!({
-                    "client_id":self.client_id,"summary_only":false,"include_projects":false
-                }),
-                false,
-            )
-            .await?;
-        let runners = output
-            .get("runners")
-            .and_then(Value::as_array)
-            .ok_or("invalid_runner_response: missing runners")?;
-        let runner = runners.iter().find(|runner| runner["client_id"].as_str() == Some(&self.client_id))
-            .ok_or_else(|| format!("runner_not_visible: Runner {} is not registered or is not visible to this credential", self.client_id))?;
-        if runner["status"].as_str() != Some("online") {
+        self.check_target().await?;
+        let observed =
+            super::runner_query::query(&self.server, &self.client_id, &self.token, &self.http)
+                .await
+                .map_err(|error| error.to_string())?;
+        if !observed.online {
             return Err(format!(
                 "runner_offline: Runner {} is not online; project commands are unavailable",
                 self.client_id
             ));
         }
-        Ok(runner["project_inventory"].clone())
+        Ok(observed.project_inventory)
     }
 
     async fn list(&self, exact_project: Option<&str>) -> Result<Value, String> {
@@ -337,18 +381,28 @@ async fn run_inner(
     }
     let view = runner_view(&config.runner.config)?;
     let server = connections::canonical_server_url(&view.server_url)?.url;
-    if server != connections::canonical_server_url(&configured_server_url(config)?)?.url {
-        return Err("Runner server_url does not match the Controller Server".to_string());
-    }
-    let token_file = match token_file {
-        Some(path) => path.to_path_buf(),
-        None => default_token_file(&config.runner.config, &view)?,
+    #[cfg(unix)]
+    let (server, target_fence) = if config.server.mode == super::ServerMode::Wsl2Nat {
+        let state = super::wsl2_startup::active_target(config).await?;
+        (
+            state.effective_url.ok_or("wsl2_nat_target_unresolved")?,
+            Some((
+                config.clone(),
+                state.generation.ok_or("wsl2_nat_target_unresolved")?,
+            )),
+        )
+    } else {
+        super::validate_runner_target(&view, &configured_server_url(config)?)?;
+        (server, None)
     };
-    let token = read_optional_token(&Some(token_file), "--user-token-file")?
-        .ok_or("User credential is missing; pass --user-token-file PATH")?;
-    validate_user_api_token(&token)?;
+    #[cfg(not(unix))]
+    if server != connections::canonical_server_url(&configured_server_url(config)?)?.url {
+        return Err("Runner server_url does not match the Controller Server".into());
+    }
+    let token = read_user_token(config, &view, token_file)?;
     let http = ServerHttpOptions {
-        no_system_proxy: project::server_url_is_loopback(&server),
+        no_system_proxy: config.server.mode == super::ServerMode::Wsl2Nat
+            || project::server_url_is_loopback(&server),
         ..ServerHttpOptions::default()
     };
     ProjectClient {
@@ -356,6 +410,8 @@ async fn run_inner(
         client_id: view.client_id,
         token,
         http,
+        #[cfg(unix)]
+        target_fence,
     }
     .execute(action)
     .await

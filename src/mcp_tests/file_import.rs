@@ -560,7 +560,7 @@ fn mcp_file_import_trust_decision_reports_exact_failure_stage() {
     );
     assert_eq!(
         trusted_loopback.trust,
-        HostFileImportTrust::TrustedMcpHostFile
+        HostFileImportTrust::LoopbackTrustedMcpHostFile
     );
 
     let bootstrap_auth = crate::auth::AuthContext {
@@ -578,7 +578,7 @@ fn mcp_file_import_trust_decision_reports_exact_failure_stage() {
     );
     assert_eq!(
         trusted_bootstrap.trust,
-        HostFileImportTrust::TrustedMcpHostFile
+        HostFileImportTrust::LoopbackTrustedMcpHostFile
     );
 
     let mut bootstrap_flag_disabled_config = loopback_api_token_config.clone();
@@ -926,6 +926,9 @@ async fn loopback_api_token_mcp_file_import_saves_pptx_when_explicitly_enabled_i
     ))
     .await;
     let _network = McpImportNetworkOverride::set(server.base_url.clone());
+    crate::tool_runtime::conversation_import::set_import_test_resolved_ips(Some(vec![
+        "198.18.0.42".parse().unwrap(),
+    ]));
 
     let (_db_tmp, db) = test_db();
     let user = seed_user(&db, "alice");
@@ -936,7 +939,8 @@ async fn loopback_api_token_mcp_file_import_saves_pptx_when_explicitly_enabled_i
     config.oauth2.trust_loopback_api_token_mcp_file_import = true;
     let service = Service::new(build_test_router(Arc::new(config), db, runtime));
     let agent = tokio::spawn(complete_mcp_import_save(registry, pptx.clone()));
-    let temporary_url = "https://download.example/temporary-secret-token/loopback-import.pptx";
+    let temporary_url =
+        "https://files.oaiusercontent.com/temporary-secret-token/loopback-import.pptx";
 
     let (status, body, _) = oauth_mcp_request(
         &service,
@@ -966,7 +970,10 @@ async fn loopback_api_token_mcp_file_import_saves_pptx_when_explicitly_enabled_i
         decision.reason,
         HostFileImportTrustReason::TrustedLoopbackApiToken
     );
-    assert_eq!(decision.trust, HostFileImportTrust::TrustedMcpHostFile);
+    assert_eq!(
+        decision.trust,
+        HostFileImportTrust::LoopbackTrustedMcpHostFile
+    );
     tokio::time::timeout(std::time::Duration::from_secs(5), agent)
         .await
         .expect("save_project_artifact fixture timed out")
@@ -1045,7 +1052,10 @@ async fn loopback_bootstrap_mcp_file_import_saves_pptx_when_explicitly_enabled_i
         decision.reason,
         HostFileImportTrustReason::TrustedLoopbackBootstrap
     );
-    assert_eq!(decision.trust, HostFileImportTrust::TrustedMcpHostFile);
+    assert_eq!(
+        decision.trust,
+        HostFileImportTrust::LoopbackTrustedMcpHostFile
+    );
     tokio::time::timeout(std::time::Duration::from_secs(5), agent)
         .await
         .expect("save_project_artifact fixture timed out")

@@ -426,6 +426,7 @@ async fn dispatched_bridge_disconnect_is_outcome_unknown_and_not_replayed() {
                     output_schema: None,
                     annotations: None,
                 },
+                allow_resource_links: false,
             },
             Some(&alice),
             "test".to_string(),

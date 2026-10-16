@@ -139,7 +139,7 @@ Important current invariants:
 - project-scoped Memory is unchanged; Agent-scoped Memory is only a future boundary.
 - durable Goals are independent high-level intent/control truth; Goal identity, ownership, lifecycle, revision, and correlations grant no Project, Runner, filesystem, Workflow Session, AgentTaskAttempt, CodingAgentRun, or Job authority.
 
-G3 adds an optional production ChatGPT MCP App Host carrier on top of this substrate. It is deliberately a pull bridge rather than a fake Server callback: one explicit `present_agent_continuation(agent_id, endpoint_id, expected_controller_generation)` card binds the current `ui://webcodex/agent-continuation/v16` resource, while ModelHidden app-only operations establish one exact process-local View binding, renew the exact Endpoint, acquire through the existing Wake claim state machine, cross the existing durable dispatch fence, and record Host dispatch acceptance or uncertainty. The View itself performs `ui/message` only after prepare succeeds. The process-local `binding_id` fences the current iframe instance but grants no authority and is not durable execution truth. The Store retains its identity-bound SHA-256 fingerprint as the no-Window restart fallback plus an optional canonical hashed ClientWindow key as Host-window continuity; raw Host session metadata is never persisted. Natural Endpoint expiry is a separate bounded path: only the same authenticated principal + durable ClientWindow may ask the App-only recovery operation to atomically replace the exact expired generation with its immediate successor. v16 retains v15's independently idempotent predecessor recovery edges and at-most-eight exact `generation+1` successor hops; an old selector never skips directly to a later generation.
+G3 adds an optional production ChatGPT MCP App Host carrier on top of this substrate. It is deliberately a pull bridge rather than a fake Server callback: one explicit `present_agent_continuation(agent_id, endpoint_id, expected_controller_generation)` card binds the current `ui://webcodex/agent-continuation/v21` resource, while ModelHidden app-only operations establish one exact process-local View binding, renew the exact Endpoint, acquire through the existing Wake claim state machine, cross the existing durable dispatch fence, and record Host dispatch acceptance or uncertainty. The View itself performs `ui/message` only after prepare succeeds. The process-local `binding_id` fences the current iframe instance but grants no authority and is not durable execution truth. The Store retains its identity-bound SHA-256 fingerprint as the no-Window restart fallback plus an optional canonical hashed ClientWindow key as Host-window continuity; raw Host session metadata is never persisted. Natural Endpoint expiry is a separate bounded path: only the same authenticated principal + durable ClientWindow may ask the App-only recovery operation to atomically replace the exact expired generation with its immediate successor. v16 retains v15's independently idempotent predecessor recovery edges and at-most-eight exact `generation+1` successor hops; an old selector never skips directly to a later generation.
 
 Every bridge operation re-runs ordinary communication authorization and exact Agent/Endpoint/controller-generation validation. Ordinary push bindings still require an Endpoint freshly attached in the current Server process. For MCP Apps, successful bind persists the current identity-bound recovery fingerprint and the optional canonical ClientWindow key already derived by the protocol adapter. Server takeover clears process-local bindings and `wake_capable` but preserves both. With no local binding, the exact fingerprint remains sufficient; when a canonical Window is present, the same principal + exact current Endpoint/generation + same Window may also receive the normal `success=true` recovery projection and create a new iframe fence after refresh. Exact unbind clears the current fingerprint but preserves a matching Window key; natural expiry also preserves only that Window key for the dedicated expired-Endpoint replacement operation. Explicit detach (including after expiry), ordinary Endpoint replacement, and push transition clear both recovery values. Replacement replay re-checks the successor's retained Window key, so a historical replay record cannot undo that revocation. Only a newly committed replacement populates `attached_endpoints`; replay and restart recovery never recreate fresh push-attachment authority. Missing or malformed Window metadata grants nothing beyond the exact fingerprint fallback, and another Window, stale generation, expiry, detach, foreign principal, malformed result, or generic bridge failure remains fail-closed. The strict published continuation projection schema still requires `recovery` on every result (`null` normally, the sole fixed restart-loss object when recoverable), so Host schema projection cannot discard the observation. Replacing or withdrawing a View reuses existing Wake reconciliation: a pre-fence claim is revoked and the logical Wake returns to `pending`, while a prepared/delivered Attempt becomes `delivery_unknown`. The App never blindly resends after the dispatch fence. Host `ui/message` success means only `dispatch_accepted`; only later exact `consume_agent_wake` proves that a continuation model turn actually ran. A consume-before-ACK race is valid and late ACK is idempotent. v16 keeps the slower bounded heartbeat cadence while hidden but allows the same acquire -> prepare -> `ui/message` -> finish path in background. Visibility transitions are scheduling observations only: they do not by themselves create `delivery_unknown`. Host scheduling remains best effort/non-immediate, and correctness still depends on the durable Wake and exact consume rather than timer liveness.
 
@@ -152,7 +152,7 @@ substrate support asynchronous Agent work without introducing a scheduler.
 
 ## Durable Goal workflow — G4/G6/G7
 
-Goal is high-level **durable workflow/progress truth**: fixed bounded completion
+Goal is high-level **durable workflow/progress truth**: revision-fenced bounded completion
 intent and mechanical milestones, an explicit controller routing identity, and an
 `active | completed | cancelled` lifecycle. Workflow Session is the concrete
 current-work context: Project, validation, Jobs, provenance, and recovery. Task /
@@ -247,8 +247,8 @@ Goal
     checkpoint_at_unix_ms?
 ```
 
-The full encoded plan is at most 32 KiB. Conditions and step structure are fixed at
-creation; all steps initially are pending. Natural-language conditions are durable
+The full encoded plan is at most 32 KiB. Completion conditions remain fixed at
+creation; the initial plan starts pending and unfinished structure can be revised. Natural-language conditions are durable
 completion intent, not predicates the Server claims to evaluate.
 
 `checkpoint_goal(goal_id, expected_revision, idempotency_key,
@@ -262,6 +262,34 @@ one in the same batch. Unknown, duplicate, invalid or contradictory selectors fa
 closed. Stale revisions reject the write. Exact keyed replay is read-only (including
 historical replay after terminalization); changed reuse conflicts. Every new-key
 checkpoint is one new recovery point, even when its selected steps are unchanged.
+
+`revise_goal_plan(goal_id, expected_revision, idempotency_key, reason, steps)`
+replaces the entire ordered step list of an exact owned active Goal. It preserves
+completion intent, checkpoint summary/time and retained step statuses/timestamps.
+Every completed id and its exact title must remain; completed steps may be reordered
+but cannot be deleted, renamed or regressed. Unfinished steps may be renamed,
+reordered or removed, and new ids start pending. Removing the current step leaves
+no current step; a later explicit checkpoint may select one. Existing step count,
+id/title and encoded-plan limits still apply. The bounded reason is 1..2048 UTF-8
+bytes. Validation, replacement, exactly one revision increment, prior snapshot and
+keyed replay record commit in one IMMEDIATE transaction. Stale revisions require
+re-reading current truth and reconsidering the plan; same-key exact replay is inert,
+including after terminalization, while changed reuse conflicts. Terminal Goals are
+immutable. No Task, execution, Session or continuation authority is implied.
+
+The Store retains the eight most recent prior plan snapshots with their prior Goal
+revision, revision reason and replacement time. `get_goal` and mutation results add
+`plan_history`: newest-first `revisions`, lifetime `total_count`, `returned_count`
+and `truncated`. Retention pruning never removes keyed replay identity. Reads pin
+current plan and history to one SQLite snapshot. Reads bound
+each plan to 32 KiB and reason to 2 KiB before DB text materialization/JSON decoding,
+inspect at most nine rows to detect overflow, and return only a newest contiguous
+prefix under a separate 64 KiB serialized-snapshot budget. Omitted entries are
+explicitly truncated; malformed retained history fails closed even when it would
+be outside the output budget. Current Goal Plan cards, handoff and closeout derive
+from the same current plan and keep their existing sparse/read budgets. Additive
+schema migration gives pre-existing Goals zero history without rewriting their
+plans or saved identities; see [compatibility policy](../compatibility-policy.md).
 
 Persisted plans are bounded before decoding and validate the sole field shape,
 unique ids, closed status values, timestamp/checkpoint consistency and single

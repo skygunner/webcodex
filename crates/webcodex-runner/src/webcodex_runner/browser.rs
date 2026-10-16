@@ -89,6 +89,22 @@ struct BrowserRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct BeginUserHandoffRequest {
+    browser_id: String,
+    session_id: String,
+    message_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FinishUserHandoffRequest {
+    browser_id: String,
+    session_id: String,
+    handoff_fence: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PagesRequest {
     browser_id: String,
     #[serde(default = "default_page_limit")]
@@ -318,6 +334,66 @@ pub(crate) fn handle_browser_operation(
                     .launch_managed(&request.profile)
                     .map(|value| json!(value))
             }),
+        RunnerBrowserOperationKind::BeginUserHandoff => {
+            parse::<BeginUserHandoffRequest>(&operation.payload).and_then(|request| {
+                if !cfg!(any(target_os = "macos", windows)) || super::computer_session::configured()
+                {
+                    return Err(BrowserError::not_started(
+                        "browser_user_handoff_unavailable",
+                        "Exact native user handoff is unavailable on this Runner",
+                    ));
+                }
+                supervisor.begin_user_handoff(
+                    &request.browser_id,
+                    &request.session_id,
+                    &request.message_id,
+                    |hint, fence| {
+                        let bounds = hint.bounds.map(|b| (b.x, b.y, b.width, b.height));
+                        let computer = super::computer::computer_runtime();
+                        let surface = computer
+                            .surface_for_process_window(hint.process_id, bounds)
+                            .map_err(|m| {
+                                BrowserError::not_started("browser_surface_unavailable", m)
+                            })?;
+                        let surface_id = surface
+                            .get("surface_id")
+                            .and_then(serde_json::Value::as_str)
+                            .ok_or_else(|| {
+                                BrowserError::not_started(
+                                    "browser_surface_unavailable",
+                                    "Exact surface is missing",
+                                )
+                            })?;
+                        computer
+                            .begin_browser_user_handoff(surface_id, fence)
+                            .map_err(|m| {
+                                BrowserError::not_started("browser_user_handoff_unavailable", m)
+                            })?;
+                        Ok(surface_id.to_owned())
+                    },
+                    Box::new(|fence| {
+                        let _ =
+                            super::computer::computer_runtime().cancel_browser_user_handoff(fence);
+                    }),
+                )
+            })
+        }
+        RunnerBrowserOperationKind::FinishUserHandoff => {
+            parse::<FinishUserHandoffRequest>(&operation.payload).and_then(|request| {
+                supervisor
+                    .finish_user_handoff(
+                        &request.browser_id,
+                        &request.session_id,
+                        &request.handoff_fence,
+                        |fence| {
+                            super::computer::computer_runtime()
+                                .finish_browser_user_handoff(fence)
+                                .map_err(|m| BrowserError::not_started("stale_user_handoff", m))
+                        },
+                    )
+                    .map(|_| json!({"browser_id": request.browser_id, "needs_snapshot": true}))
+            })
+        }
         RunnerBrowserOperationKind::ResolveSurface => parse::<BrowserRequest>(&operation.payload)
             .and_then(|request| {
                 if super::computer_session::configured() {
@@ -585,6 +661,7 @@ fn parse<T: DeserializeOwned>(payload: &str) -> BrowserResult<T> {
 #[cfg(test)]
 mod tests {
     mod batch;
+    mod user_handoff;
     use super::*;
     use webcodex_core::runner_operation::RunnerBrowserOperationKind;
 

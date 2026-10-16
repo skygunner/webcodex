@@ -504,6 +504,17 @@ impl Database {
         candidate: &GoalStallCandidate,
         clock: impl FnOnce() -> i64,
     ) -> Result<Option<GoalStallAttention>, CommunicationStoreError> {
+        self.record_goal_workflow_stalled_diagnosed(principal, candidate, clock, |_, _, _| {})
+    }
+
+    /// Optional bounded observation of the existing decisions, never an eligibility input.
+    pub fn record_goal_workflow_stalled_diagnosed(
+        &self,
+        principal: &CommunicationPrincipal,
+        candidate: &GoalStallCandidate,
+        clock: impl FnOnce() -> i64,
+        observe: impl Fn(&'static str, Option<i64>, Option<i64>),
+    ) -> Result<Option<GoalStallAttention>, CommunicationStoreError> {
         validate_communication_principal(principal)?;
         if !valid_observation_identity(
             &candidate.observed_window_key,
@@ -530,6 +541,7 @@ impl Database {
                     && correlation.reference_id == candidate.workflow_session_id
             })
         {
+            observe("goal_changed", None, None);
             return Ok(None);
         }
         require_owned_attention_target(&transaction, principal, &candidate.controller_agent_id)?;
@@ -567,12 +579,14 @@ impl Database {
             rows.collect::<Result<Vec<_>, _>>().map_err(store_error)?
         };
         let Some((session_id, project, linked_at)) = relations.first() else {
+            observe("relation_missing", None, None);
             return Ok(None);
         };
         if session_id != &candidate.workflow_session_id
             || project.as_deref() != Some(candidate.project_id.as_str())
             || relations.get(1).is_some_and(|(_, _, at)| at >= linked_at)
         {
+            observe("relation_changed", None, None);
             return Ok(None);
         }
 
@@ -601,6 +615,7 @@ impl Database {
             )
             .map_err(store_error)?;
         if *linked_at > now || invalid_latest_relation {
+            observe("relation_invalid", None, None);
             return Ok(None);
         }
 
@@ -633,6 +648,7 @@ impl Database {
         if windows.len() > GOAL_ACTIVITY_WINDOW_SCAN_LIMIT
             || !windows.contains(&candidate.observed_window_key)
         {
+            observe("coverage_changed", None, None);
             return Ok(None);
         }
         let mut last_work = None::<i64>;
@@ -654,6 +670,7 @@ impl Database {
                 )
                 .map_err(store_error)?;
             if malformed != 0 {
+                observe("malformed_activity", None, None);
                 return Ok(None);
             }
             if let Some(latest) = latest {
@@ -662,6 +679,7 @@ impl Database {
         }
         if last_work != Some(candidate.last_meaningful_activity_at_ms) {
             // New persisted work or changed coverage invalidates the snapshot.
+            observe("activity_changed", None, None);
             return Ok(None);
         }
         let (last_seen, latest_gap): (Option<i64>, Option<i64>) = transaction.query_row(
@@ -693,11 +711,26 @@ impl Database {
             |row| Ok((row.get(0)?, row.get(1)?)),
         ).map_err(store_error)?;
         let Some(last_seen) = last_seen else {
+            observe("observation_missing", None, None);
             return Ok(None);
         };
+        observe(
+            "observation_checked",
+            Some(now.saturating_sub(last_seen)),
+            Some(GOAL_CARD_OBSERVATION_LEASE_MS.saturating_sub(now.saturating_sub(last_seen))),
+        );
         if !live_quiet_observation(candidate.last_meaningful_activity_at_ms, last_seen, now)
             || latest_gap.is_some_and(|gap| gap >= *linked_at)
         {
+            observe(
+                if latest_gap.is_some_and(|gap| gap >= *linked_at) {
+                    "recorder_gap"
+                } else {
+                    "observation_ineligible"
+                },
+                None,
+                None,
+            );
             return Ok(None);
         }
 
@@ -741,6 +774,7 @@ impl Database {
             || previous_attention_at
                 .is_some_and(|previous| previous >= candidate.last_meaningful_activity_at_ms)
         {
+            observe("epoch_not_advanced", None, None);
             return Ok(None);
         }
         let event_id = allocate_identity(

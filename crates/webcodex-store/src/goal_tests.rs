@@ -94,6 +94,7 @@ fn goal_query_filters_owned_title_and_objective_before_pagination() {
         &first.goal.summary.goal_id,
         1,
         GoalPatch {
+            completion_conditions: None,
             title: None,
             objective: None,
             controller_agent_id: None,
@@ -176,6 +177,7 @@ fn create_read_list_update_and_terminal_replay_are_durable_and_revisioned() {
                 &created.goal.summary.goal_id,
                 1,
                 GoalPatch {
+                    completion_conditions: None,
                     title: Some("Ship Goal foundation".to_string()),
                     objective: None,
                     controller_agent_id: None,
@@ -196,6 +198,7 @@ fn create_read_list_update_and_terminal_replay_are_durable_and_revisioned() {
                 &created.goal.summary.goal_id,
                 1,
                 GoalPatch {
+                    completion_conditions: None,
                     title: Some("Different title under same key".to_string()),
                     objective: None,
                     controller_agent_id: None,
@@ -214,6 +217,7 @@ fn create_read_list_update_and_terminal_replay_are_durable_and_revisioned() {
                 &created.goal.summary.goal_id,
                 2,
                 GoalPatch {
+                    completion_conditions: None,
                     title: None,
                     objective: None,
                     controller_agent_id: None,
@@ -238,6 +242,7 @@ fn create_read_list_update_and_terminal_replay_are_durable_and_revisioned() {
                 &created.goal.summary.goal_id,
                 2,
                 GoalPatch {
+                    completion_conditions: None,
                     title: None,
                     objective: None,
                     controller_agent_id: None,

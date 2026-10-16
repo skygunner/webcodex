@@ -153,9 +153,15 @@ agent 辅助阅读、修改和验证仓库。
 Bug 报告需要提供哪些信息、自助修复流程、验证要求与 PR 说明见
 [CONTRIBUTING.zh-CN.md](CONTRIBUTING.zh-CN.md)。
 
-## 支持 WebCodex
+## 支持 WebCodex ☕
 
-WebCodex 以开放方式持续开发。如果你希望支持长期维护、测试、发布基础设施或跨平台工作，可参阅[赞助与项目支持](docs/SPONSORSHIP.zh-CN.md)。我们更倾向透明、面向项目的支持和基础设施合作，并让这些内容与正常产品使用保持分离。
+如果 WebCodex 对你有所帮助，欢迎自愿扫码请维护者喝杯咖啡；不赞助也完全不影响使用，Star、反馈问题和贡献代码同样很有帮助。[赞赏说明](docs/SPONSORSHIP.zh-CN.md)。
+
+| 微信赞赏 | 支付宝收款 |
+| :---: | :---: |
+| <a href="docs/assets/sponsor/vx.png"><img src="docs/assets/sponsor/vx.png" alt="微信赞赏二维码" width="260"></a> | <a href="docs/assets/sponsor/zfb.png"><img src="docs/assets/sponsor/zfb.png" alt="支付宝个人收款界面及二维码" width="320"></a> |
+
+点击图片可以打开或保存高清二维码，方便使用手机相册识别。付款前请在支付应用中核对收款人；这是向维护者个人的自愿赞赏，不由 GitHub 代收。
 
 ## 致谢
 

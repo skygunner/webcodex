@@ -271,12 +271,29 @@ pub struct BrowserWindowHint {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct UserHandoffSummary {
+    pub session_id: String,
+    pub message_id: String,
+    pub handoff_fence: String,
+    pub surface_id: String,
+    pub expires_in_ms: u64,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct BrowserSummary {
     pub browser_id: String,
     pub ownership: BrowserOwnership,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
     pub page_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_handoff: Option<UserHandoffSummary>,
+    #[serde(skip_serializing_if = "is_false")]
+    pub needs_snapshot: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

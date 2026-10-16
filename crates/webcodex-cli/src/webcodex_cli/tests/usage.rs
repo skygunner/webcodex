@@ -1,6 +1,24 @@
 use super::support::*;
 
 #[test]
+fn controller_tui_help_describes_read_only_overview_without_stage_labels() {
+    for args in [
+        vec!["controller", "--help"],
+        vec!["controller", "tui", "--help"],
+    ] {
+        match cli_action(args) {
+            CliAction::Exit { code, stdout, .. } => {
+                assert_eq!(code, 0);
+                assert!(stdout.contains("read-only overview"));
+                assert!(stdout.contains("--user-token-file PATH"));
+                assert!(!stdout.contains("V0"));
+            }
+            other => panic!("expected Controller help, got {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn bare_interactive_repo_defaults_to_share_only_on_supported_desktop_unix() {
     let temp = tempfile::tempdir().unwrap();
     let repo = temp.path().join("repo");

@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Mutex;
 use std::time::Duration;
+use webcodex_core::runner_protocol::RunnerCapabilityId;
 
 pub(crate) const MCP_TOOL_NAME: &str = "mcp_tool";
 const MAX_SCHEMA_OBSERVATIONS: usize = 512;
@@ -81,6 +82,7 @@ struct ResolvedProvider {
     provider_id: String,
     provider_instance_id: String,
     name: String,
+    allow_resource_links: bool,
 }
 
 #[derive(Debug)]
@@ -399,6 +401,7 @@ async fn call_upstream(
             name: tool_name.to_string(),
             arguments,
             expected_schema,
+            allow_resource_links: provider.allow_resource_links,
         },
         auth,
     )
@@ -492,6 +495,9 @@ async fn visible_provider_candidates(
                     provider_id: provider.provider_id.clone(),
                     provider_instance_id: provider.provider_instance_id.clone(),
                     name: provider.name.clone(),
+                    allow_resource_links: client
+                        .capabilities
+                        .supports(RunnerCapabilityId::McpGatewayResourceLinks),
                 });
         }
     }
@@ -907,6 +913,7 @@ mod tests {
             provider_id: "server".to_string(),
             provider_instance_id: instance_id.to_string(),
             name: "Server".to_string(),
+            allow_resource_links: false,
         };
         let candidates = BTreeMap::from([
             (

@@ -9,7 +9,7 @@ use super::jobs::{
 use super::reconciliation::validate_stream_snapshot;
 use super::requests::{
     capability_upgrade_error, enqueue_pending_request_locked, next_request_id,
-    notify_runner_locked, remove_pending_request_locked,
+    notify_runner_locked, retire_job_request_locked,
 };
 use super::state::{
     DetachedIdempotencyIntent, JobLifecycleState, JobObservationState, JobRecoveryPhase,
@@ -1989,8 +1989,7 @@ impl RunnerRegistry {
         }
         if job.lifecycle == JobLifecycleState::Queued {
             if let Some(request_id) = job.request_id.as_deref() {
-                remove_pending_request_locked(&mut inner, request_id);
-                inner.request_to_job.remove(request_id);
+                retire_job_request_locked(&mut inner, &job.client_id, request_id);
             }
             inner.jobs_by_id.remove(job_id);
             return Ok(true);
@@ -2050,11 +2049,7 @@ impl RunnerRegistry {
             return false;
         };
         if let Some(request_id) = job.request_id {
-            inner.request_to_job.remove(&request_id);
-            inner.pending_by_id.remove(&request_id);
-            if let Some(queue) = inner.queues_by_runner.get_mut(&job.client_id) {
-                queue.retain(|id| id != &request_id);
-            }
+            retire_job_request_locked(&mut inner, &job.client_id, &request_id);
         }
         true
     }
@@ -2108,11 +2103,7 @@ impl RunnerRegistry {
             .jobs_by_id
             .remove(job_id)
             .expect("projected hidden Job was checked under the registry lock");
-        inner.request_to_job.remove(&request_id);
-        inner.pending_by_id.remove(&request_id);
-        if let Some(queue) = inner.queues_by_runner.get_mut(&removed.client_id) {
-            queue.retain(|id| id != &request_id);
-        }
+        retire_job_request_locked(&mut inner, &removed.client_id, &request_id);
         true
     }
 
@@ -2240,38 +2231,33 @@ impl RunnerRegistry {
                 && shell_job_visible_to_auth(auth, &inner, job)
                 && client_id.is_none_or(|id| job.client_id == id)
         }) {
-            let status = job.public_status();
-            let lifecycle =
-                webcodex_core::runner_job_lifecycle::RunnerJobLifecycle::from_wire(status);
-            let active = super::job_status::job_status_is_active(status);
-            let running =
-                matches!(
-                lifecycle,
-                Ok(webcodex_core::runner_job_lifecycle::RunnerJobLifecycle::Running
-                    | webcodex_core::runner_job_lifecycle::RunnerJobLifecycle::StartedLegacy)
-            );
-            let queued = matches!(
-                lifecycle,
-                Ok(
-                    webcodex_core::runner_job_lifecycle::RunnerJobLifecycle::Queued
-                        | webcodex_core::runner_job_lifecycle::RunnerJobLifecycle::RunnerQueued
-                )
-            );
-            let in_slot = lifecycle.is_ok_and(|state| state.occupies_execution_slot());
+            // Aggregate the Registry's typed facts, not a wire-status round trip.
+            // Recovery masks visible execution/queue counts here; the separate
+            // capacity aggregate deliberately retains underlying slot ownership.
+            let lifecycle = job.lifecycle;
+            let recovering = job.recovery_active();
+            let active = lifecycle.is_active();
+            let running = !recovering
+                && matches!(
+                    lifecycle,
+                    JobLifecycleState::Running | JobLifecycleState::StartedLegacy
+                );
+            let queued = !recovering
+                && matches!(
+                    lifecycle,
+                    JobLifecycleState::Queued | JobLifecycleState::RunnerQueued
+                );
+            let in_slot = !recovering && lifecycle.occupies_execution_slot();
             result.active_count += usize::from(active);
             result.running_count += usize::from(running);
             result.queued_count += usize::from(queued);
-            result.recovering_count += usize::from(status == "recovering");
+            result.recovering_count += usize::from(recovering);
             result.lost_after_reconcile_count += usize::from(
-                status == "lost"
-                    && matches!(
-                        job.recovery.public_reason(),
-                        Some(
-                            "runner_inventory_missing"
-                                | "runner_instance_replaced"
-                                | "runner_recovery_deadline_exceeded"
-                        )
-                    ),
+                lifecycle == JobLifecycleState::Lost
+                    && job
+                        .recovery
+                        .reason
+                        .is_some_and(JobRecoveryReason::implies_lost_after_reconcile),
             );
             if active || in_slot || queued {
                 let runner = result.by_runner.entry(job.client_id.clone()).or_default();
@@ -2988,8 +2974,7 @@ impl RunnerRegistry {
         match job.lifecycle {
             JobLifecycleState::Queued => {
                 if let Some(request_id) = &job.request_id {
-                    remove_pending_request_locked(&mut inner, request_id);
-                    inner.request_to_job.remove(request_id);
+                    retire_job_request_locked(&mut inner, &job.client_id, request_id);
                 }
                 let job = inner.jobs_by_id.get_mut(job_id).expect("job exists");
                 let terminal_now = now_ts();

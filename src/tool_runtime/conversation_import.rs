@@ -28,6 +28,7 @@ pub(crate) const MAX_IMPORT_FILE_BYTES: usize = MAX_PROJECT_ARTIFACT_UPLOAD_BYTE
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ConversationImportDownloadPolicy {
     AuthenticatedMcpOpenAiHostFile,
+    LoopbackTrustedMcpHostFile,
     TrustedMcpHostFile,
 }
 
@@ -176,6 +177,11 @@ fn validate_openai_download_url(download_link: &str) -> Result<reqwest::Url, Str
     Ok(url)
 }
 
+fn ipv4_is_rfc2544_benchmark(ip: Ipv4Addr) -> bool {
+    let [a, b, _c, _d] = ip.octets();
+    a == 198 && (b == 18 || b == 19)
+}
+
 fn ipv4_is_public(ip: Ipv4Addr) -> bool {
     let [a, b, c, _d] = ip.octets();
     if a == 0
@@ -188,7 +194,7 @@ fn ipv4_is_public(ip: Ipv4Addr) -> bool {
         || (a == 192 && b == 0 && c == 2)
         || (a == 192 && b == 88 && c == 99)
         || (a == 192 && b == 168)
-        || (a == 198 && (b == 18 || b == 19))
+        || ipv4_is_rfc2544_benchmark(ip)
         || (a == 198 && b == 51 && c == 100)
         || (a == 203 && b == 0 && c == 113)
         || a >= 224
@@ -241,6 +247,31 @@ fn ip_is_public(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => ipv4_is_public(ip),
         IpAddr::V6(ip) => ipv6_is_public(ip),
+    }
+}
+
+fn ip_is_rfc2544_benchmark(ip: IpAddr) -> bool {
+    matches!(ip, IpAddr::V4(ip) if ipv4_is_rfc2544_benchmark(ip))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrustedMcpAddressPolicy {
+    PublicOnly,
+    PublicOrOpenAiRfc2544FakeIp,
+}
+
+impl TrustedMcpAddressPolicy {
+    fn allows(self, host: &url::Host<&str>, ip: IpAddr) -> bool {
+        if ip_is_public(ip) {
+            return true;
+        }
+        if self != Self::PublicOrOpenAiRfc2544FakeIp || !ip_is_rfc2544_benchmark(ip) {
+            return false;
+        }
+        matches!(
+            host,
+            url::Host::Domain(domain) if is_openai_download_host(&domain.to_ascii_lowercase())
+        )
     }
 }
 
@@ -305,6 +336,7 @@ async fn resolve_download_domain(host: &str) -> Result<Vec<IpAddr>, String> {
 
 async fn validate_trusted_mcp_download_url(
     download_link: &str,
+    address_policy: TrustedMcpAddressPolicy,
 ) -> Result<TrustedDownloadTarget, String> {
     let url = reqwest::Url::parse(download_link)
         .map_err(|_| "invalid host-provided download URL".to_string())?;
@@ -338,7 +370,11 @@ async fn validate_trusted_mcp_download_url(
     if ips.is_empty() {
         return Err("host-provided download URL resolved to no addresses".to_string());
     }
-    if ips.iter().copied().any(|ip| !ip_is_public(ip)) {
+    if ips
+        .iter()
+        .copied()
+        .any(|ip| !address_policy.allows(&host, ip))
+    {
         return Err("host-provided download URL resolves to a non-public address".to_string());
     }
     let mut pinned_addrs = Vec::with_capacity(ips.len());
@@ -378,12 +414,29 @@ async fn prepare_download_request(
     match policy {
         ConversationImportDownloadPolicy::AuthenticatedMcpOpenAiHostFile => {
             validate_openai_download_url(download_link)?;
-            let target = validate_trusted_mcp_download_url(download_link).await?;
+            let target = validate_trusted_mcp_download_url(
+                download_link,
+                TrustedMcpAddressPolicy::PublicOnly,
+            )
+            .await?;
+            let client = build_download_client(Some(&target))?;
+            Ok((client, request_url_for_download(target.url)))
+        }
+        ConversationImportDownloadPolicy::LoopbackTrustedMcpHostFile => {
+            let target = validate_trusted_mcp_download_url(
+                download_link,
+                TrustedMcpAddressPolicy::PublicOrOpenAiRfc2544FakeIp,
+            )
+            .await?;
             let client = build_download_client(Some(&target))?;
             Ok((client, request_url_for_download(target.url)))
         }
         ConversationImportDownloadPolicy::TrustedMcpHostFile => {
-            let target = validate_trusted_mcp_download_url(download_link).await?;
+            let target = validate_trusted_mcp_download_url(
+                download_link,
+                TrustedMcpAddressPolicy::PublicOnly,
+            )
+            .await?;
             let client = build_download_client(Some(&target))?;
             Ok((client, request_url_for_download(target.url)))
         }
@@ -849,6 +902,9 @@ impl ToolRuntime {
             (SessionTransport::Mcp, HostFileImportProvenance::TrustedMcpHostFile) => {
                 ConversationImportDownloadPolicy::TrustedMcpHostFile
             }
+            (SessionTransport::Mcp, HostFileImportProvenance::LoopbackTrustedMcpHostFile) => {
+                ConversationImportDownloadPolicy::LoopbackTrustedMcpHostFile
+            }
             (SessionTransport::Mcp, HostFileImportProvenance::AuthenticatedMcpOpenAiHostFile) => {
                 ConversationImportDownloadPolicy::AuthenticatedMcpOpenAiHostFile
             }
@@ -997,6 +1053,8 @@ mod tests {
             "192.168.1.1",
             "169.254.1.1",
             "100.64.0.1",
+            "198.18.0.1",
+            "198.19.255.254",
             "0.0.0.0",
             "224.0.0.1",
         ] {
@@ -1021,7 +1079,7 @@ mod tests {
             "https://[fc00::1]/file",
             "https://[fe80::1]/file",
         ] {
-            let error = validate_trusted_mcp_download_url(url)
+            let error = validate_trusted_mcp_download_url(url, TrustedMcpAddressPolicy::PublicOnly)
                 .await
                 .expect_err("unsafe target must fail closed");
             assert!(
@@ -1029,9 +1087,12 @@ mod tests {
                 "error leaked full temporary URL: {error}"
             );
         }
-        let target = validate_trusted_mcp_download_url("https://8.8.8.8/file")
-            .await
-            .expect("public HTTPS literal should be accepted");
+        let target = validate_trusted_mcp_download_url(
+            "https://8.8.8.8/file",
+            TrustedMcpAddressPolicy::PublicOnly,
+        )
+        .await
+        .expect("public HTTPS literal should be accepted");
         assert_eq!(target.pinned_addrs, vec!["8.8.8.8:443".parse().unwrap()]);
     }
 
@@ -1093,6 +1154,111 @@ mod tests {
         reset_import_test_dns_resolution_count();
     }
 
+    #[test]
+    fn rfc2544_exception_matches_exact_ipv4_benchmark_boundaries() {
+        for ip in ["198.18.0.0", "198.18.0.42", "198.19.255.255"] {
+            assert!(ipv4_is_rfc2544_benchmark(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in ["198.17.255.255", "198.20.0.0", "198.51.100.42"] {
+            assert!(!ipv4_is_rfc2544_benchmark(ip.parse().unwrap()), "{ip}");
+        }
+        // Mapped IPv6 does not qualify for the IPv4-only fake-IP exception.
+        assert!(!ip_is_rfc2544_benchmark(
+            "::ffff:198.18.0.42".parse().unwrap()
+        ));
+    }
+
+    #[tokio::test]
+    async fn loopback_trusted_mcp_policy_allows_rfc2544_only_for_openai_hosts() {
+        let _lock = lock_import_test_network().await;
+        let fake_ip: IpAddr = "198.18.0.42".parse().unwrap();
+
+        set_import_test_resolved_ips(Some(vec![fake_ip]));
+        reset_import_test_dns_resolution_count();
+        let (_client, url) = prepare_download_request(
+            "https://files.oaiusercontent.com/file",
+            ConversationImportDownloadPolicy::LoopbackTrustedMcpHostFile,
+        )
+        .await
+        .expect("loopback trusted OpenAI host may use RFC 2544 fake-IP DNS");
+        assert_eq!(url.host_str(), Some("files.oaiusercontent.com"));
+        assert_eq!(import_test_dns_resolution_count(), 1);
+
+        for private_ip in ["127.0.0.1", "10.0.0.1", "169.254.169.254", "192.168.1.1"] {
+            set_import_test_resolved_ips(Some(vec![private_ip.parse().unwrap()]));
+            let error = prepare_download_request(
+                "https://files.oaiusercontent.com/file",
+                ConversationImportDownloadPolicy::LoopbackTrustedMcpHostFile,
+            )
+            .await
+            .expect_err("real private/sensitive addresses must still fail closed");
+            assert!(error.contains("non-public address"), "{error}");
+        }
+
+        // One forbidden address poisons the entire DNS answer set; no
+        // connection may fall back to the permitted fake IP in this case.
+        set_import_test_resolved_ips(Some(vec![fake_ip, "169.254.169.254".parse().unwrap()]));
+        let error = prepare_download_request(
+            "https://files.oaiusercontent.com/file",
+            ConversationImportDownloadPolicy::LoopbackTrustedMcpHostFile,
+        )
+        .await
+        .expect_err("mixed fake-IP and metadata-service DNS answers must fail closed");
+        assert!(error.contains("non-public address"), "{error}");
+
+        set_import_test_resolved_ips(Some(vec![fake_ip]));
+        for literal in [
+            "https://198.18.0.42/file",
+            "https://[::ffff:198.18.0.42]/file",
+        ] {
+            let error = prepare_download_request(
+                literal,
+                ConversationImportDownloadPolicy::LoopbackTrustedMcpHostFile,
+            )
+            .await
+            .expect_err("literal and mapped IPs must not impersonate an OpenAI hostname");
+            assert!(error.contains("non-public address"), "{error}");
+        }
+
+        set_import_test_resolved_ips(Some(vec![fake_ip]));
+        reset_import_test_dns_resolution_count();
+        let error = prepare_download_request(
+            "https://download.example/file",
+            ConversationImportDownloadPolicy::LoopbackTrustedMcpHostFile,
+        )
+        .await
+        .expect_err("RFC 2544 exception must not broaden arbitrary hosts");
+        assert!(error.contains("non-public address"), "{error}");
+        assert_eq!(import_test_dns_resolution_count(), 1);
+
+        for policy in [
+            ConversationImportDownloadPolicy::AuthenticatedMcpOpenAiHostFile,
+            ConversationImportDownloadPolicy::TrustedMcpHostFile,
+        ] {
+            set_import_test_resolved_ips(Some(vec![fake_ip]));
+            let url = if policy == ConversationImportDownloadPolicy::TrustedMcpHostFile {
+                "https://download.example/file"
+            } else {
+                "https://files.oaiusercontent.com/file"
+            };
+            let error = prepare_download_request(url, policy)
+                .await
+                .expect_err("remote/trusted policies must keep public-only DNS admission");
+            assert!(error.contains("non-public address"), "{error}");
+        }
+
+        set_import_test_resolved_ips(Some(vec!["8.8.8.8".parse().unwrap()]));
+        prepare_download_request(
+            "https://download.example/file",
+            ConversationImportDownloadPolicy::LoopbackTrustedMcpHostFile,
+        )
+        .await
+        .expect("loopback trusted public HTTPS behavior must remain compatible");
+
+        set_import_test_resolved_ips(None);
+        reset_import_test_dns_resolution_count();
+    }
+
     #[tokio::test]
     async fn trusted_mcp_domain_resolution_fails_closed_on_empty_or_non_public_results() {
         let _lock = lock_import_test_network().await;
@@ -1105,9 +1271,12 @@ mod tests {
         ] {
             set_import_test_resolved_ips(Some(ips));
             reset_import_test_dns_resolution_count();
-            let error = validate_trusted_mcp_download_url("https://download.example/file")
-                .await
-                .expect_err("unsafe DNS result must fail closed");
+            let error = validate_trusted_mcp_download_url(
+                "https://download.example/file",
+                TrustedMcpAddressPolicy::PublicOnly,
+            )
+            .await
+            .expect_err("unsafe DNS result must fail closed");
             assert!(
                 error.contains("resolved to no addresses")
                     || error.contains("resolves to a non-public address"),

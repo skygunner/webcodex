@@ -141,6 +141,47 @@ fn runtime_error_updates_are_kind_scoped_and_cancellation_is_not_a_failure() {
 }
 
 #[test]
+fn successful_runner_observation_reconciles_only_stale_runner_offline_error() {
+    use DesktopOperationKind::*;
+    let offline = DesktopError::new("runner_offline", "Runner offline", "Retry setup");
+    let other = failure();
+    let ready = aggregate_readiness(
+        ServerReadiness::Ready,
+        RunnerReadiness::Ready,
+        ExposureReadiness::Disabled,
+        ProjectReadiness::Configured,
+    );
+    let connecting = aggregate_readiness(
+        ServerReadiness::Ready,
+        RunnerReadiness::Connecting,
+        ExposureReadiness::Disabled,
+        ProjectReadiness::Configured,
+    );
+    let observation = OperationCompletion::new(RuntimeRefresh, None);
+    let mut snapshot = DesktopStateSnapshot::default();
+    snapshot.runtime_error = Some(offline.clone());
+    snapshot.readiness = connecting;
+    assert!(!observation.apply_runtime_error(&mut snapshot, None));
+    assert_eq!(snapshot.runtime_error.as_ref(), Some(&offline));
+
+    snapshot.readiness = ready;
+    assert!(observation.apply_runtime_error(&mut snapshot, None));
+    assert!(snapshot.runtime_error.is_none());
+    assert!(!observation.apply_runtime_error(&mut snapshot, None));
+
+    snapshot.runtime_error = Some(other.clone());
+    assert!(!observation.apply_runtime_error(&mut snapshot, None));
+    assert_eq!(snapshot.runtime_error.as_ref(), Some(&other));
+
+    snapshot.runtime_error = Some(offline.clone());
+    assert!(!OperationCompletion::new(RuntimeRefresh, Some(&other))
+        .apply_runtime_error(&mut snapshot, None));
+    assert_eq!(snapshot.runtime_error.as_ref(), Some(&offline));
+    assert!(!OperationCompletion::new(RuntimeProbe, None).apply_runtime_error(&mut snapshot, None));
+    assert_eq!(snapshot.runtime_error.as_ref(), Some(&offline));
+}
+
+#[test]
 fn successful_switch_preserves_durable_rollback_or_recovery_diagnostics_only() {
     for outcome in ["rolled_back", "recovery_required", "switched"] {
         let switch = RuntimeSwitchResult {

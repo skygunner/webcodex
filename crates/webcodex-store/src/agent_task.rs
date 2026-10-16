@@ -5,8 +5,9 @@ use super::agent_wake::{
     WAKE_TRIGGER_AGENT_TASK_ATTEMPT,
 };
 use super::communication::{
-    authorize_conversation_access, ConversationAccess, CONVERSATION_ID_PREFIX,
-    CONVERSATION_MESSAGE_ID_PREFIX, DURABLE_AGENT_ID_PREFIX,
+    authorize_conversation_access, require_current_endpoint, ConversationAccess,
+    AGENT_ENDPOINT_ID_PREFIX, CONVERSATION_ID_PREFIX, CONVERSATION_MESSAGE_ID_PREFIX,
+    DURABLE_AGENT_ID_PREFIX,
 };
 use super::store_primitives::{
     allocate_identity, digest_json, digest_text, lookup_idempotent_resource, new_proof,

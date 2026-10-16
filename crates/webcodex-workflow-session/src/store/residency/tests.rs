@@ -27,6 +27,96 @@ fn encoded(store: &SessionStore, id: &str) -> Value {
 }
 
 #[test]
+fn retained_permission_updates_preserve_hot_cold_evidence_and_snapshots() {
+    for closed in [false, true] {
+        for cold in [false, true] {
+            let store = SessionStore::new(1, 20);
+            let id = store.start_session(Some("project".into()), None).session_id;
+            let mut start = store
+                .record_tool_call_started(
+                    Some(&id),
+                    SessionTransport::Api,
+                    "read_file",
+                    &json!({"project":"project", "path":"src/lib.rs"}),
+                    SessionToolContract {
+                        risk_class: "read",
+                        read_like: true,
+                        write_like: false,
+                        shell_like: false,
+                        git_like: false,
+                        change_summary_like: false,
+                        project_write: false,
+                        path_hint: crate::events::SessionPathHint::SinglePath,
+                    },
+                )
+                .unwrap();
+            if closed {
+                store.close_session(&id).unwrap();
+                if !cold {
+                    // Exercise the transient Closed/Hot branch before coldification.
+                    let record = store
+                        .with_record_for_query(&id, |record, _| record.clone())
+                        .unwrap();
+                    store
+                        .inner
+                        .lock()
+                        .unwrap()
+                        .sessions
+                        .insert(id.clone(), StoredSession::Hot(record));
+                }
+            } else if cold {
+                churn(&store);
+            }
+            assert_eq!(store.cold_payload_bytes_for_test(&id).is_some(), cold);
+            let before = encoded(&store, &id);
+            let old_event = store
+                .with_record_for_query(&id, |record, _| {
+                    record
+                        .events
+                        .iter()
+                        .find(|event| event.event_id == start.event_id)
+                        .unwrap()
+                        .clone()
+                })
+                .unwrap();
+            let permission = PermissionDecision {
+                required: true,
+                policy: "approval_required".into(),
+                request_id: "test-request".into(),
+                status: "approved".into(),
+                reason: "test approval".into(),
+                risk: "read".into(),
+                tool_name: "read_file".into(),
+                project: Some("project".into()),
+            };
+            store.record_permission_decision(&mut start, permission.clone());
+            assert_eq!(start.permission.as_ref(), Some(&permission));
+            assert!(
+                old_event.permission.is_none(),
+                "retained Arc snapshot was mutated"
+            );
+            let mut expected = before;
+            let event = expected["events"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|event| event["event_id"] == start.event_id)
+                .unwrap();
+            event["permission"] = serde_json::to_value(&permission).unwrap();
+            assert_eq!(
+                encoded(&store, &id),
+                expected,
+                "closed={closed}, cold={cold}"
+            );
+            assert_eq!(store.cold_payload_bytes_for_test(&id).is_some(), closed);
+            assert!(!store.set_event_permission(&id, "missing-event", permission.clone()));
+            assert_eq!(encoded(&store, &id), expected);
+            assert!(!store.set_event_permission("missing-session", &start.event_id, permission));
+        }
+    }
+}
+
+#[test]
 fn active_residency_capacity_keeps_identity_and_queries_do_not_promote() {
     let store = SessionStore::new(2, 20);
     let ids: Vec<_> = (0..12)

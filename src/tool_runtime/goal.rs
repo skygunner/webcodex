@@ -736,6 +736,33 @@ impl ToolRuntime {
         }
     }
 
+    pub(crate) fn revise_goal_plan(
+        &self,
+        auth: Option<&AuthContext>,
+        goal_id: String,
+        expected_revision: i64,
+        replacement: crate::db::GoalPlanReplacement,
+        idempotency_key: String,
+    ) -> ToolResult {
+        let principal = match goal_principal(auth) {
+            Ok(principal) => principal,
+            Err(result) => return result,
+        };
+        let Some(db) = self.communication_db.as_ref() else {
+            return goal_store_unavailable();
+        };
+        match db.revise_goal_plan(
+            &principal,
+            &goal_id,
+            expected_revision,
+            replacement,
+            &idempotency_key,
+        ) {
+            Ok(result) => serialized_goal_success(result),
+            Err(error) => goal_error(error, RecoveryKind::RetrySame),
+        }
+    }
+
     pub(crate) fn get_goal(&self, auth: Option<&AuthContext>, goal_id: String) -> ToolResult {
         let principal = match goal_principal(auth) {
             Ok(principal) => principal,
@@ -1087,7 +1114,10 @@ impl ToolRuntime {
             Ok(goal) => goal,
             Err(error) => return goal_error(error, RecoveryKind::Reobserve),
         };
-        let ineligible = || ToolResult::ok(json!({"attention": null, "state_changed": false}));
+        let ineligible = |reason| {
+            crate::tool_request_trace::record_goal_timing(reason, None, None, None, None, None);
+            ToolResult::ok(json!({"attention": null, "state_changed": false}))
+        };
         if !auth.is_some_and(|auth| {
             [
                 SCOPE_COMMUNICATION_READ,
@@ -1100,49 +1130,70 @@ impl ToolRuntime {
             .all(|scope| auth.has_scope(scope))
         }) || goal.summary.lifecycle != GoalLifecycle::Active
         {
-            return ineligible();
+            return ineligible("scope_or_lifecycle");
         }
         let (Some(window), Some(controller_agent_id), Some(activity_db)) = (
             window,
             goal.controller_agent_id.as_ref(),
             self.window_activity_db.as_ref(),
         ) else {
-            return ineligible();
+            return ineligible("context_missing");
         };
         // Atomic attention revalidation requires the existing shared action/Goal
         // database, not a second liveness store or a cross-database best effort.
         if !std::sync::Arc::ptr_eq(db, activity_db) {
-            return ineligible();
+            return ineligible("database_mismatch");
         }
         let Some(activity_fence) = self.window_activity.meaningful_revision() else {
-            return ineligible();
+            return ineligible("activity_fence_unavailable");
         };
         let activity = self
             .goal_activity_observation_at(auth, &goal, clock())
             .await;
+        crate::tool_request_trace::record_goal_timing(
+            "activity_checked",
+            None,
+            None,
+            activity.quiet_for_ms,
+            Some(activity.coverage_partial),
+            activity.active_meaningful_request_count,
+        );
         if !activity.available
             || activity.coverage_partial
             || activity.state != GoalActivityState::AttentionNeeded
             || activity.active_meaningful_request_count != Some(0)
         {
-            return ineligible();
+            return ineligible(if !activity.available {
+                "activity_unavailable"
+            } else if activity.coverage_partial {
+                "activity_coverage_partial"
+            } else if activity
+                .active_meaningful_request_count
+                .is_some_and(|count| count > 0)
+            {
+                "meaningful_request_active"
+            } else if activity.active_meaningful_request_count.is_none() {
+                "meaningful_request_count_unavailable"
+            } else {
+                "activity_not_quiet"
+            });
         }
         let Some(last_work) = activity.last_meaningful_activity_at_ms else {
-            return ineligible();
+            return ineligible("meaningful_activity_missing");
         };
         let (observation_kind, observation_id) = match super::runtime_observation_principal(auth) {
             Ok(principal) => principal,
-            Err(_) => return ineligible(),
+            Err(_) => return ineligible("principal_unavailable"),
         };
         let observation_principal = Some((observation_kind.as_str(), observation_id.as_str()));
         let relations =
             match activity_db.list_window_workflow_sessions(window.key(), observation_principal, 2)
             {
                 Ok(relations) => relations,
-                Err(_) => return ineligible(),
+                Err(_) => return ineligible("relation_read_failed"),
             };
         let Some(relation) = relations.first() else {
-            return ineligible();
+            return ineligible("relation_missing");
         };
         if relations
             .get(1)
@@ -1152,24 +1203,24 @@ impl ToolRuntime {
                     && correlation.reference_id == relation.workflow_session_id
             })
         {
-            return ineligible();
+            return ineligible("relation_ambiguous_or_uncorrelated");
         }
         let session_id = &relation.workflow_session_id;
         let Some((Some(project), owner_fingerprint)) =
             self.sessions.session_target_authority(session_id)
         else {
-            return ineligible();
+            return ineligible("session_authority_missing");
         };
         let resolved = match self
             .authorize_session_target(session_id, "sync_goal_plan", auth)
             .await
         {
             Ok(Some(resolved)) => resolved,
-            _ => return ineligible(),
+            _ => return ineligible("session_unauthorized"),
         };
         if resolved.resolved_id != project || relation.project.as_deref() != Some(project.as_str())
         {
-            return ineligible();
+            return ineligible("project_changed");
         }
         let candidate = crate::db::GoalStallCandidate {
             goal_id,
@@ -1195,13 +1246,32 @@ impl ToolRuntime {
                         session_id,
                         &project,
                         &owner_fingerprint,
-                        || db.record_goal_workflow_stalled(&principal, &candidate, &clock),
+                        || {
+                            db.record_goal_workflow_stalled_diagnosed(
+                                &principal,
+                                &candidate,
+                                &clock,
+                                |reason, age, margin| {
+                                    crate::tool_request_trace::record_goal_timing(
+                                        reason,
+                                        age,
+                                        margin,
+                                        activity.quiet_for_ms,
+                                        Some(activity.coverage_partial),
+                                        activity.active_meaningful_request_count,
+                                    );
+                                },
+                            )
+                        },
                     )
                 },
             )
             .flatten();
         match committed {
             Some(Ok(Some(attention))) => {
+                crate::tool_request_trace::record_continuation_ids(
+                    &json!({"attention": attention}),
+                );
                 if attention.created {
                     if let Some(controller) = self.agent_continuations.as_ref() {
                         controller.schedule_agent(controller_agent_id);
@@ -1213,7 +1283,7 @@ impl ToolRuntime {
                 )
             }
             Some(Err(error)) => target_authorization_error(error),
-            Some(Ok(None)) | None => ineligible(),
+            Some(Ok(None)) | None => ineligible("fence_or_store_rejected"),
         }
     }
 
@@ -1376,6 +1446,7 @@ impl ToolRuntime {
             title,
             objective,
             None,
+            None,
             lifecycle,
             terminal_reason,
             idempotency_key,
@@ -1390,6 +1461,7 @@ impl ToolRuntime {
         expected_revision: i64,
         title: Option<String>,
         objective: Option<String>,
+        completion_conditions: Option<Vec<String>>,
         controller_agent_id: Option<String>,
         lifecycle: Option<String>,
         terminal_reason: Option<String>,
@@ -1417,6 +1489,7 @@ impl ToolRuntime {
             GoalPatch {
                 title,
                 objective,
+                completion_conditions,
                 controller_agent_id,
                 lifecycle,
                 terminal_reason,

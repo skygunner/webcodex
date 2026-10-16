@@ -33,6 +33,8 @@ h1 { margin: 0; font-size: 15px; font-weight: 650; overflow-wrap: anywhere; }
     <span>Wake revision <b id="revision">—</b></span>
     <span>Dispatch <b id="dispatch">Idle</b></span>
   </div>
+  <button id="timing-toggle" type="button">Enable timing diagnostics</button>
+  <pre id="timing-log" hidden style="max-height:12em;overflow:auto;white-space:pre-wrap;font-size:11px"></pre>
 </main>
 <script>
 (() => {
@@ -96,6 +98,23 @@ h1 { margin: 0; font-size: 15px; font-weight: 650; overflow-wrap: anywhere; }
   let waitRevision = 0;
   let waitMatchCount = 0;
   const el = id => document.getElementById(id);
+  let timingEnabled = false;
+  const timingRing = [];
+  function timing(event, fields = {}) {
+    if (!timingEnabled) return;
+    // Only call-site supplied timing numbers, closed labels and validated App ids.
+    timingRing.push(JSON.stringify(Object.assign({ event, at_ms: performance.now(), hidden: document.hidden }, fields)));
+    if (timingRing.length > 64) timingRing.shift();
+    el("timing-log").textContent = timingRing.join("\n");
+  }
+  el("timing-toggle").onclick = () => {
+    timingEnabled = !timingEnabled;
+    timingRing.length = 0;
+    el("timing-log").textContent = "";
+    el("timing-log").hidden = !timingEnabled;
+    el("timing-toggle").textContent = timingEnabled ? "Disable timing diagnostics" : "Enable timing diagnostics";
+  };
+
   el("diagnostics").hidden = !DEBUG_DIAGNOSTICS;
   el("status").textContent = "Connecting…";
   // One secure random fence per View, stable across response-loss retries.
@@ -529,13 +548,17 @@ h1 { margin: 0; font-size: 15px; font-weight: 650; overflow-wrap: anywhere; }
 
   async function callTool(name, args) {
     const diagnostic = appCallArguments(args);
+    const startedAt = performance.now();
+    timing("rpc_start", { app_call_id: diagnostic.appCallId });
     try {
       const result = await request("tools/call", { name, arguments: diagnostic.arguments });
+      timing("rpc_complete", { app_call_id: diagnostic.appCallId, duration_ms: performance.now() - startedAt });
       if (diagnostic.appCallId && result && typeof result === "object") {
         resultAppCallIds.set(result, diagnostic.appCallId);
       }
       return result;
     } catch (error) {
+      timing("rpc_error", { app_call_id: diagnostic.appCallId, duration_ms: performance.now() - startedAt });
       if (diagnostic.appCallId && error && typeof error === "object") error.appCallId = diagnostic.appCallId;
       throw error;
     }
@@ -583,11 +606,15 @@ h1 { margin: 0; font-size: 15px; font-weight: 650; overflow-wrap: anywhere; }
     if (tornDown) return;
     if (timer !== null) clearTimeout(timer);
     const scheduledEpoch = identityEpoch;
+    const scheduledAt = performance.now();
+    const delayMs = document.hidden ? HIDDEN_HEARTBEAT_MS : VISIBLE_POLL_MS;
+    timing("poll_scheduled", { delay_ms: delayMs });
     timer = setTimeout(() => {
       timer = null;
+      timing("poll_actual", { delay_ms: delayMs, timer_gap_ms: performance.now() - scheduledAt - delayMs });
       if (scheduledEpoch !== identityEpoch) return scheduleNext();
       if (bindingId) void reconcile(); else void maybeStartBinding();
-    }, document.hidden ? HIDDEN_HEARTBEAT_MS : VISIBLE_POLL_MS);
+    }, delayMs);
   }
 
   async function bind() {
@@ -930,6 +957,7 @@ h1 { margin: 0; font-size: 15px; font-weight: 650; overflow-wrap: anywhere; }
   }
 
   function teardown() {
+    timing("teardown");
     if (tornDown) return;
     bestEffortUnbind();
     tornDown = true;
@@ -976,6 +1004,7 @@ h1 { margin: 0; font-size: 15px; font-weight: 650; overflow-wrap: anywhere; }
   });
 
   addEventListener("visibilitychange", () => {
+    timing("visibility");
     el("visibility").textContent = document.hidden ? "Background" : "Foreground";
     if (timer !== null) clearTimeout(timer);
     timer = null;
@@ -986,7 +1015,7 @@ h1 { margin: 0; font-size: 15px; font-weight: 650; overflow-wrap: anywhere; }
 
   request("ui/initialize", {
     protocolVersion: APP_PROTOCOL,
-    appInfo: { name: "webcodex-agent-continuation-app", title: "WebCodex Agent Continuation", version: "20.0.0" },
+    appInfo: { name: "webcodex-agent-continuation-app", title: "WebCodex Agent Continuation", version: "21.0.0" },
     appCapabilities: {},
   }).then(() => {
     if (tornDown) return;

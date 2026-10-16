@@ -7,6 +7,28 @@ names and Workflow Sessions belong to that runtime. For local development of the
 WebCodex repository with another host's tools, follow [CONTRIBUTING.md](../CONTRIBUTING.md)
 and [AGENTS.md](../AGENTS.md). This guide does not require installing WebCodex to contribute.
 
+## Plan and continue
+
+For substantial development, first inspect relevant rules/code and define observable
+completion conditions. Show a short plan organized by outcomes, then continue
+with authorized implementation; do not stop merely to ask whether to proceed.
+Ask only when a material requirement or authority is missing. Tiny work needs no
+plan, and a visible plan does not require a durable Goal. Existing Goal selection
+preferences remain unchanged.
+
+Choose the next action from actual tool results. Revise the remaining approach
+when evidence disproves a hypothesis or the user changes requirements; retain
+useful decisions/progress in the established Session. Never pre-complete tests or
+repeat the same failure without new diagnosis. Keep one Job for each execution.
+A truncated read uses its returned continuation, a stale edit needs a fresh read,
+and an uncertain effect needs reconciliation rather than replay.
+
+A Project selector rejection is input validation, not proof of an offline Runner
+or a missing Session. For an already registered Project use its canonical id or
+issued `project_ref`. If unknown, use authorized `list_projects` discovery; do not
+guess a Runner from a filesystem path. `client_id + path` remains an explicit
+bootstrap form, with the same authorization as before.
+
 ## Normal loop
 
 The ordinary WebCodex coding loop is intentionally small:
@@ -26,6 +48,18 @@ Its bounded workspace snapshot reuses the same startup Git observation for branc
 
 For substantial coding, present the exact Workflow Session once with `present_work_result(project, session_id)` after it becomes materially stateful (for example after the first meaningful source mutation or when long-running validation begins). The mounted MCP App performs bounded live Workspace / Validation / Review reads itself, so do not repeatedly present it or spend model turns polling solely to keep it current. Tiny and read-only work does not need a progress card. A non-blocking `finish_coding_task` seals eligible final changes at closeout; the already-mounted card discovers that immutable snapshot on a later App refresh. If no card was mounted and closeout returns the explicit presentation suggestion, present it once then.
 By default it also returns a small bounded `extensions` catalog for selection: Skill metadata comes from the canonical project/configured/managed Skill union, and Plugin metadata is restricted to ready providers whose configured working directory matches the Project root. This metadata grants no authority and does not load Skill bodies or create Plugin bindings; use `read_skill_file` for Skill text, `run_skill_resource` only for trusted Runner-configured live `scripts/` resources guarded by `expected_definition_revision` or Runner-installed managed resources additionally fenced by `expected_package_revision`, or `plugin_tool describe -> call` after selecting a relevant entry. Configured resource bytes remain live until execution rather than being package-revision-pinned. Set `include_extension_catalog=false` only when the current model context already retains that discovery metadata.
+
+For substantial cross-turn work, a durable Goal can record the objective and completion conditions without requiring user-managed steps. `update_goal` edits an active Goal with an exact `expected_revision` and `idempotency_key`: omitted `completion_conditions` preserves the list, while `[]` clears it. Replacement conditions use the same bounds as creation (at most eight, each nonempty after trimming and at most 512 UTF-8 bytes). Editing conditions preserves existing steps, checkpoints and progress; it does not evaluate acceptance, resume execution or reopen a completed/cancelled Goal. Re-observe a revision conflict; reuse the same key and exact request after an uncertain result.
+
+## Workbench app
+
+The **Projects & Resources** Workbench adds Files, Work and Goals views to the existing Project and Session resource browser. Files are read-only previews and references; choosing **Add selected references** updates the Host model context when the Host advertises a supported modality. It does not edit Project files. Goals belong to the current communication account and remain available across Projects.
+
+The Workbench instance label defaults to `WebCodex`. Set `WEBCODEX_INSTANCE_NAME` on the Server to choose a shared instance name. Each authenticated account can also save a personal display-name override in Workbench settings; clearing it returns to the configured instance name. If the Workbench commands do not appear after upgrading, refresh the Host's tool list or reconnect the Server so it can discover the current App tools. Native Host rendering has separate capability requirements; a local fixture test does not certify a live Host.
+
+Submitting work requires an explicitly selected Project, an owned Agent, and one exact currently available route: a verified continuation in this chat, or a provider exposed by that Project's Runner. The Workbench creates the canonical AgentTask and Attempt and dispatches through that existing route. It does not accept a free-form command or create a new execution backend. If submission returns an uncertain result, retry the same draft with the same key and unchanged fields; inspect the returned Task or reconcile it before starting a different submission. Optional Goal association uses the selected caller-owned Goal.
+
+Session todos appear only after selecting both a Project and one authorized Workflow Session. The Workbench does not infer a Session from recent activity. Historical 32-hex Goal identifiers came from pre-stable development; supported stable versions use compact `wc_goal_` identifiers. Do not rewrite database IDs by hand. If an older development database produces an invalid Goal ID or storage error, preserve a backup and report the WebCodex version and sanitized error to the maintainer for version-specific migration guidance; do not delete or reset the database as a first step. See the [Workbench implementation notes](implementation/workbench-resource-references.md).
 
 ## Start or continue a task
 

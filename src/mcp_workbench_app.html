@@ -77,35 +77,81 @@ footer { padding: 12px 24px; border-top: 1px solid var(--border); color: var(--m
   :root[data-display-mode=fullscreen] .card { min-height: calc(100dvh - 24px); }
 }
 @media (pointer: coarse) { button, select, input { min-height: 44px; } }
+
+.shell { display:grid; grid-template-columns:205px minmax(0,1fr); min-height:600px; }
+.workspace { min-width:0; }
+:root[data-display-mode=inline] .shell { min-height:0; }
+.sidebar { border-right:1px solid var(--border); background:var(--surface); padding:18px 12px; min-width:0; }
+.sidebar > button, #projectNav button { display:block; width:100%; text-align:left; margin:4px 0; overflow-wrap:anywhere; border-color:transparent; background:transparent; }
+.sidebar button[aria-pressed=true] { background:Canvas; border-color:var(--border); font-weight:600; }
+.sidebar h2 { margin:24px 8px 8px; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.05em; }
+.sidebar .selection { display:block; padding:0; }
+.sidebar label { margin:12px 0; }
+.sidebar .discovery { padding:10px 0; border:0; }
+.sidebar .toolbar input { width:100%; }
+.body { grid-template-columns:minmax(0,1fr); }
+.side { border:0; border-top:1px solid var(--border); padding:14px 24px; }
+.side h2 { margin-bottom:4px; }
+#references { display:flex; flex-wrap:wrap; gap:10px; }
+#references .row { border:0; padding:4px 0; max-width:100%; }
+#references .row-copy { flex:auto; }
+#preview { background:var(--surface); padding:20px; border-radius:10px; }
+.section-head { display:flex; align-items:center; flex-wrap:wrap; gap:10px; justify-content:space-between; margin:0 0 16px; }
+.project-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr)); gap:12px; margin:12px 0 24px; }
+.project-card { padding:16px; border:1px solid var(--border); border-radius:10px; min-width:0; }
+.project-card button { margin-top:12px; }
+.work-card { padding:18px 0; border-bottom:1px solid var(--border); }
+.work-card strong { font-weight:600; }
+.work-card summary { color:var(--muted); cursor:pointer; }
+.badge { display:inline-block; font-size:11px; border:1px solid var(--border); border-radius:5px; padding:2px 6px; margin-left:8px; }
+.attention { border:1px solid var(--border); border-radius:10px; padding:14px; margin:16px 0; }
+.editor { padding:18px; border:1px solid var(--border); border-radius:10px; margin:16px 0; background:var(--surface); }
+.editor label { margin:12px 0; }
+.editor textarea { min-height:80px; font-family:inherit; font-size:13px; }
+#instanceForm { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+#instanceName { font-size:18px; font-weight:600; }
+#instanceInput { width:180px; }
+#fileSelection { margin-top:8px; }
+.file-check { flex:none; width:16px; height:16px; }
+#markdownPreview { overflow-wrap:anywhere; }
+#markdownPreview p { white-space:pre-wrap; }
+@media(min-width:1100px) { .body.with-detail { grid-template-columns:minmax(0,1fr) 330px; } .body.with-detail #preview { border-left:1px solid var(--border); margin:0; border-radius:0; } }
+@media(max-width:700px) { .shell { grid-template-columns:1fr; } .sidebar { border-right:0; border-bottom:1px solid var(--border); padding:12px 16px; } #projectNav { display:flex; flex-wrap:wrap; gap:4px; } #projectNav button { width:auto; max-width:100%; } .sidebar .selection { display:grid; grid-template-columns:1fr; } .main { padding:20px 16px; } header { flex-wrap:wrap; } }
 </style>
 </head>
 <body>
 <div class="card">
-<header><div><h1>Projects &amp; Resources</h1><p class="muted">Choose a project to explore its files, work and references.</p></div><button id="refresh" type="button">Refresh</button></header>
+<header><div><h1 id="instanceName">WebCodex Workbench</h1><p class="muted">Projects, work and shared attention</p></div><div class="toolbar"><button id="renameInstance" type="button">Rename</button><button id="refresh" type="button">Refresh</button></div><form id="instanceForm" hidden><input id="instanceInput" aria-label="Instance name" maxlength="80"/><button id="saveInstance" type="button">Save name</button><button id="resetInstance" type="button">Use default</button><button id="closeInstance" type="button">Close</button></form></header>
+<div class="shell"><aside class="sidebar" aria-label="Workbench navigation"><button id="homeNav" type="button" aria-pressed="true">Home</button><button id="goalsNav" type="button">Goals</button><h2>Projects</h2><div id="projectNav"></div>
 <div class="selection"><label for="runnerSelect">Runner<select id="runnerSelect"><option value="">Choose a Runner</option></select></label><label for="projectSelect">Project<select id="projectSelect"><option value="">Choose a Project</option></select></label><label for="sessionSelect">Workflow Session<select id="sessionSelect"><option value="">Project overview · no Session selected</option></select></label><button id="sessionsMore" type="button" hidden>More Sessions</button></div>
 <details class="discovery"><summary>Find a Runner or Project</summary>
-<form id="runnerSearchForm" class="toolbar"><input id="runnerQuery" aria-label="Find Runners" placeholder="Find a Runner" maxlength="200"/><button id="runnerSearch" type="submit">Find Runners</button></form>
-<form id="projectSearchForm" class="toolbar"><input id="projectQuery" aria-label="Find Projects" placeholder="Find a Project" maxlength="200"/><button id="projectSearch" type="submit">Find Projects</button><button id="projectsMore" type="button" hidden>More Projects</button></form>
-</details>
-<nav role="tablist" aria-label="Workbench areas"><button id="tabOverview" role="tab" aria-controls="panelOverview">Overview</button><button id="tabFiles" role="tab" aria-controls="panelFiles">Files</button><button id="tabGoals" role="tab" aria-controls="panelGoals">Goals</button><button id="tabArtifacts" role="tab" aria-controls="panelArtifacts">Artifacts</button></nav>
-<div class="body"><main class="main">
+<form id="runnerSearchForm" class="toolbar"><input id="runnerQuery" aria-label="Find Runners" placeholder="Find a Runner" maxlength="200"/><button id="runnerSearch" type="button">Find Runners</button></form>
+<form id="projectSearchForm" class="toolbar"><input id="projectQuery" aria-label="Find Projects" placeholder="Find a Project" maxlength="200"/><button id="projectSearch" type="button">Find Projects</button><button id="projectsMore" type="button" hidden>More Projects</button></form>
+</details></aside><div class="workspace">
+<nav id="projectTabs" role="tablist" aria-label="Project areas"><button id="tabOverview" role="tab" aria-controls="panelOverview">Overview</button><button id="tabFiles" role="tab" aria-controls="panelFiles">Files</button><button id="tabWork" role="tab" aria-controls="panelWork">Work</button><button id="tabGoals" hidden role="tab" aria-controls="panelGoals">Goals</button><button id="tabArtifacts" role="tab" aria-controls="panelArtifacts">Artifacts</button></nav>
+<div class="body" id="contentBody"><main class="main">
 <p id="selectionState" class="muted">Choose a Runner to begin.</p><p id="targetSummary" class="muted"></p><button id="useContext" type="button" hidden>Use selected context</button>
+<section id="homePanel"><div class="section-head"><h2>Home</h2><button id="newHomeWork" type="button">New work</button></div><div id="sharedAttention" class="attention" hidden></div><section id="todoDetail" class="editor" hidden></section><h2 id="recentProjectsTitle">Available projects</h2><div id="recentProjects" class="project-grid"></div><h2 id="homeWorkHeading">Work progress · all Projects</h2><div id="homeWork"></div><p id="homeEmpty" class="muted">Loading work…</p><p id="homeWorkCoverage" class="muted"></p><button id="homeWorkMore" type="button" hidden>More work</button></section>
+<section id="workEditor" class="editor" hidden><div class="section-head"><h2>Submit work</h2><button id="closeWork" type="button">Close</button></div><form id="workForm"><label>Project<select id="workProject" required></select></label><label>Executor<select id="workExecutor" required><option value="">Choose an executor</option></select></label><label>Provider / route<select id="workProvider"><option value="">Choose a route</option></select></label><p id="executionHint" class="muted"></p><label>Title<input id="workTitle" maxlength="200" required/></label><label>Instruction<textarea id="workInstruction" maxlength="8192" required rows="4"></textarea></label><label>Goal (optional)<select id="workGoal"><option value="">No Goal</option></select></label><button id="submitWork" type="button">Submit work</button><p id="workTaskIdentity" class="muted" hidden></p><button id="inspectWorkTask" type="button" hidden>Inspect submitted Task</button><div id="submittedTaskDetail" hidden></div><div id="workRecovery" class="attention" hidden><p id="workRecoveryWarning">This submission may already have created work. Inspect or reconcile the original Task before discarding this retry; discarding can create a second Task.</p><button id="discardWorkAttempt" type="button">Discard retry and start different work</button><button id="confirmDiscardWork" type="button" hidden>I inspected or reconciled it — unlock different work</button></div><p id="workStatus" role="status"></p></form></section>
+<section id="goalEditor" class="editor" hidden><div class="section-head"><h2 id="goalEditorTitle">Create Goal</h2><button id="closeGoal" type="button">Close</button></div><form id="goalForm"><label>Title<input id="goalTitle" maxlength="200" required/></label><label>Objective<textarea id="goalObjective" maxlength="8192" required rows="4"></textarea></label><label>Completion conditions · one per line<textarea id="goalConditions" maxlength="4096" rows="4"></textarea></label><button id="saveGoal" type="button">Save Goal</button><button id="reloadGoal" type="button" hidden>Load latest revision</button><p id="goalAttemptIdentity" class="muted" hidden></p><button id="inspectGoalAttempt" type="button" hidden>Inspect original Goal</button><div id="goalAttemptDetail" hidden></div><div id="goalRecovery" class="attention" hidden><p id="goalRecoveryWarning">This Goal creation may already have taken effect. Inspect the original Goal before discarding; starting again can create a duplicate.</p><button id="discardGoalAttempt" type="button">Discard retry and start different Goal</button><button id="confirmDiscardGoal" type="button" hidden>I inspected it — unlock different Goal</button></div><p id="goalStatus" role="status"></p></form></section>
+<section id="panelWork" role="tabpanel" aria-labelledby="tabWork" hidden><div class="section-head"><h2>Project work</h2><button id="newWork" type="button">New work</button></div><div id="projectWork"></div><p id="workCoverage" class="muted"></p><button id="workMore" type="button" hidden>More work</button></section>
 <section id="panelOverview" role="tabpanel" aria-labelledby="tabOverview"><h2>Project overview</h2><div id="overview" class="summary"></div><button id="projectReference" type="button" hidden>Add Project reference</button></section>
-<section id="panelFiles" role="tabpanel" aria-labelledby="tabFiles" hidden><h2>Project files</h2><p class="muted">Read a file to see a bounded preview.</p></section>
-<section id="panelGoals" role="tabpanel" aria-labelledby="tabGoals" hidden><h2>Your Goals</h2><p class="muted">Your Goals are shared across Projects.</p></section>
+<section id="panelFiles" role="tabpanel" aria-labelledby="tabFiles" hidden><h2>Project files</h2><p class="muted">Browse a directory or search file names. Previews are bounded.</p><form id="pathForm" class="toolbar"><button id="parentPath" type="button">Up</button><input id="filePath" aria-label="Directory path" placeholder="Project root" maxlength="4096"/><button id="openDirectory" type="button">Open directory</button></form><p id="pathCrumbs" class="muted"></p><button id="fileSelection" type="button" hidden>Add selected references</button></section>
+<section id="panelGoals" role="tabpanel" aria-labelledby="tabGoals" hidden><div class="section-head"><h2>Your Goals</h2><button id="newGoal" type="button">Create Goal</button></div><p class="muted">Your Goals are shared across Projects.</p></section>
 <section id="panelArtifacts" role="tabpanel" aria-labelledby="tabArtifacts" hidden><h2>Session artifacts</h2><p class="muted">Observed outputs from the explicitly selected Workflow Session.</p></section>
-<div id="browser" hidden><form id="searchForm" class="toolbar"><input id="query" aria-label="Search resources" placeholder="Filter by name" maxlength="200"/><button type="submit">Search</button></form><div id="rows"></div><p id="coverage" class="muted"></p><button id="more" type="button" hidden>Show more</button></div>
-<section id="preview" class="preview" hidden aria-label="Resource preview"><h2 id="previewTitle"></h2><p id="previewMeta" class="muted"></p><pre id="previewContent"></pre><button id="closePreview" type="button">Close preview</button></section>
-</main><aside class="side" aria-label="Selected references"><h2>References</h2><p id="referenceHint" class="muted">References are added only when you choose them.</p><div id="references"></div><p id="referenceStatus" role="status" class="muted"></p><label id="copyLabel" for="referenceText" hidden>Copy references<textarea id="referenceText" readonly rows="6"></textarea></label></aside></div>
-<footer id="status" role="status" aria-live="polite">Connecting to Host…</footer>
+<div id="browser" hidden><form id="searchForm" class="toolbar"><input id="query" aria-label="Search resources" placeholder="Filter by name" maxlength="200"/><button id="searchResources" type="button">Search</button></form><div id="rows"></div><p id="coverage" class="muted"></p><button id="more" type="button" hidden>Show more</button></div>
+
+</main><section id="preview" class="preview" hidden aria-label="Resource preview"><h2 id="previewTitle"></h2><p id="previewMeta" class="muted"></p><pre id="previewContent"></pre><div id="markdownPreview" hidden></div><button id="closePreview" type="button">Close preview</button></section></div><aside class="side" aria-label="Selected references"><h2>References</h2><p id="referenceHint" class="muted">References are added only when you choose them.</p><div id="references"></div><p id="referenceStatus" role="status" class="muted"></p><label id="copyLabel" for="referenceText" hidden>Copy references<textarea id="referenceText" readonly rows="6"></textarea></label></aside>
+</div></div><footer id="status" role="status" aria-live="polite">Connecting to Host…</footer>
 </div>
 <script>
 (() => {
   "use strict";
   const el = id => document.getElementById(id);
-  const AREAS = ["Overview", "Files", "Goals", "Artifacts"];
+  const AREAS = ["Overview", "Files", "Work", "Goals", "Artifacts"];
   const KINDS = { Files: "file", Goals: "goal", Artifacts: "artifact" };
   const MAX_JSON = 262144, MAX_PREVIEW = 24576, MAX_REFERENCE = 4096, MAX_REFERENCES = 12;
+  let home = true;
   let ready = false, disposed = false, rpcId = 0, scope = 0, listGeneration = 0, previewGeneration = 0;
   let selectedProjectLink = null, selectionCopy = "";
   let runner = "", runners = [], runnerGeneration = 0, runnersLoaded = false;
@@ -133,7 +179,7 @@ footer { padding: 12px 24px; border-top: 1px solid var(--border); color: var(--m
     } catch(error){if(!disposed&&local===runnerGeneration)el("status").textContent=errorMessage(error);}
   }
   async function chooseRunner(value) {
-    clearScope();runner=value;project="";session="";selectedProjectLink=null;
+    home=true;clearScope();runner=value;project="";session="";selectedProjectLink=null;
     projects=[];sessions=[];sessionNext=null;projectNext=null;projectGeneration++;projectSearchStarted=false;projectDiscoveryMessage="";
     el("projectQuery").value="";el("query").value="";el("projectsMore").hidden=true;
     renderRunners();renderProjects();updateControls();
@@ -200,7 +246,7 @@ footer { padding: 12px 24px; border-top: 1px solid var(--border); color: var(--m
   }
   async function tool(name, args, generation = scope) {
     const result = envelope(await rpc("tools/call", {name,arguments:args}, generation));
-    if (!result.success) throw new Error(typeof result.error === "string" ? result.error.slice(0,512) : "Tool failed");
+    if (!result.success) {const error=new Error(typeof result.error === "string" ? result.error.slice(0,512) : "Tool failed");if(object(result.output))error.toolOutput=result.output;throw error;}
     if (!object(result.output)) throw new Error("Invalid tool output");
     return result.output;
   }
@@ -213,6 +259,7 @@ footer { padding: 12px 24px; border-top: 1px solid var(--border); color: var(--m
     const selected = projects.find(item => [item._meta?.project_ref,item._meta?.project,item.uri].includes(project));
     if (project && !selected) el("projectSelect").append(option(project, project));
     el("projectSelect").value = selected ? value(selected) : project;
+    renderProjectNavigation();
   }
   function renderSessions() {
     el("sessionSelect").replaceChildren(option("", "Project overview · no Session selected"));
@@ -231,7 +278,7 @@ footer { padding: 12px 24px; border-top: 1px solid var(--border); color: var(--m
     }
     reads.clear(); busyOverview = false; listNext = null;
     el("rows").replaceChildren(); el("overview").replaceChildren(); el("coverage").textContent = "";
-    el("preview").hidden = true; el("previewContent").textContent = ""; el("previewTitle").textContent = "";
+    el("preview").hidden = true;el("contentBody").className="body"; el("previewContent").textContent = ""; el("previewTitle").textContent = "";
     el("more").hidden = true; stopRefresh();
   }
   function updateControls() {
@@ -243,33 +290,39 @@ footer { padding: 12px 24px; border-top: 1px solid var(--border); color: var(--m
     el("projectsMore").disabled = !ready || disposed;
     renderSessions();
     const validSelection = area === "Goals" || !!project && (area !== "Artifacts" || !!session);
-    el("browser").hidden = area === "Overview" || !validSelection;
+    el("browser").hidden = home || ["Overview","Work"].includes(area) || !validSelection;
+    el("homePanel").hidden=!home;el("projectTabs").hidden=home||area==="Goals";
+    for(const name of AREAS) el("panel"+name).hidden=home || name!==area;
+    el("homeNav").setAttribute("aria-pressed",String(home));
+    el("selectionState").hidden=home; el("targetSummary").hidden=home;
+    el("newWork").disabled=!ready||!project||disposed; el("newGoal").disabled=!ready||disposed;
     el("selectionState").textContent = area === "Goals" ? "Your Goals · across Projects" : !runner ? projectDiscoveryMessage || "Choose a Runner to begin." : !project ? projectDiscoveryMessage || "Choose a Project to begin." : area === "Artifacts" && !session ? "Choose a Workflow Session to browse its artifacts." : "Project · " + project + (session ? " · Session · " + session : " · No Session selected");
     const selected=projectLink(), git=selected?._meta?.git;
     el("targetSummary").textContent=project ? [runner,selected?._meta?.path,git?.branch,git?.head?.slice(0,8),git?.dirty===true?"changed":git?.dirty===false?"clean":"Git unknown",git?"Runner inventory · not freshly checked":""].filter(Boolean).join(" · ") : "";
     el("useContext").hidden=!project;
     el("useContext").disabled=!ready||disposed||contextBusy||queuedReferences>0;
     el("projectReference").hidden = !selected;
+    el("renameInstance").disabled=workbench.capabilities.settings!==true;el("newGoal").disabled=!ready||disposed||workbench.capabilities.manage_goals!==true;el("newWork").disabled=el("newHomeWork").disabled=!ready||disposed||workbench.capabilities.submit_work!==true;
     el("projectReference").textContent = acceptsReferences() ? "Add Project reference" : "Prepare Project reference text";
     el("projectReference").disabled = !ready || disposed;
   }
   function projectLink() { return projects.find(item => [item._meta?.project_ref,item._meta?.project,item.uri].includes(project)) || selectedProjectLink; }
   async function chooseProject(value, selectedSession = "") {
     if (disposed) return;
-    clearScope(); selectedProjectLink = projects.find(item => [item._meta?.project_ref,item._meta?.project,item.uri].includes(value)) || null; project = value; runner = linkRunner(selectedProjectLink) || projectRunner(value) || runner; session = selectedSession; sessions = []; sessionNext = null; renderRunners();
+    home=false; clearScope(); selectedFiles.clear(); fileDirectory=""; el("filePath").value=""; selectedProjectLink = projects.find(item => [item._meta?.project_ref,item._meta?.project,item.uri].includes(value)) || null; project = value;if(selectedProjectLink){const old=recentProjects.findIndex(item=>item.uri===selectedProjectLink.uri);if(old>=0)recentProjects.splice(old,1);recentProjects.unshift(selectedProjectLink);recentProjects.length=Math.min(recentProjects.length,12);} runner = linkRunner(selectedProjectLink) || projectRunner(value) || runner; session = selectedSession;if(value&&selectedSession)selectedSessions.set(value,selectedSession); sessions = []; sessionNext = null; renderRunners();
     el("query").value = ""; renderProjects(); updateControls();
     if (!ready || !project && area !== "Goals") return;
     if (project) void loadSessions(false);
     void loadArea(false);
   }
   function chooseSession(value) {
-    clearScope(); session = value; el("query").value = ""; updateControls();
+    clearScope(); session = value;if(project&&value){selectedSessions.delete(project);selectedSessions.set(project,value);} el("query").value = ""; updateControls();
     if (ready && (project || area === "Goals")) void loadArea(false);
   }
   function selectArea(value, focus = false) {
-    area = value; listGeneration++; previewGeneration++; listNext = null;
+    home=false; area = value; selectedFiles.clear();directoryMode=false;updateFileSelection(); listGeneration++; previewGeneration++; listNext = null;
     el("rows").replaceChildren(); el("coverage").textContent = ""; el("more").hidden = true; el("query").value = "";
-    el("preview").hidden = true; el("previewContent").textContent = "";
+    el("preview").hidden = true;el("contentBody").className="body"; el("previewContent").textContent = "";
     for (const name of AREAS) { el("panel"+name).hidden = name !== area; el("tab"+name).setAttribute("aria-selected", String(name === area)); el("tab"+name).setAttribute("tabindex", name === area ? "0" : "-1"); }
     updateControls(); stopRefresh();
     if (focus) el("tab"+value).focus?.();
@@ -335,16 +388,361 @@ footer { padding: 12px 24px; border-top: 1px solid var(--border); color: var(--m
     } catch(error) { if (!disposed && generation === scope && local === overviewGeneration && area === "Overview") el("status").textContent=errorMessage(error); }
     finally { if (generation === scope) {busyOverview=false; scheduleRefresh();} }
   }
+  // This adapter consumes canonical runtime pages. Missing capabilities fail closed.
+  let workbench = {capabilities:{},tasks:{tasks:[]},goals:{goals:[]},agents:{agents:[]},providers:[],todos:[],errors:{}}, workGeneration=0, workNext=null;
+  const selectedSessions=new Map();let homeAttentionScope="",homeAttentionProject="",todoSelection=null,todoFence=null,todoDraftPayload=null,todoCompletionKey=null,todoSubmitting=false,todoDiscardArmed=false,todoAnswerNode=null,todoStatusNode=null;
+  let executionState=null,executors=[], workSubmitting=false, workKey=null, workPayload=null,workSubmittedPayload=null,workUncertain=false,workDiscardArmed=false,workTaskId=null,workPriorTaskId=null;
+  const cancelReceipts=new Map();
+  let editingGoal=null, goalGeneration=0, goalSaving=false, goalKey=null, goalPayload=null,goalSubmittedPayload=null,goalUncertain=false,goalDiscardArmed=false,goalUncertainId=null,goalPriorId=null;
+  let fileDirectory="", directoryMode=false, settingsSaving=false, executionGeneration=0;
+  const selectedFiles=new Map(),recentProjects=[];
+  const textNode=(tag,text,className="")=>{const node=document.createElement(tag);node.textContent=String(text??"");node.className=className;return node;};
+  function action(label,callback) {const node=textNode("button",label);node.type="button";node.onclick=callback;return node;}
+  function renderProjectNavigation() {
+    el("projectNav").replaceChildren(); el("recentProjects").replaceChildren();
+    const visible=projects.filter(item=>!runner||linkRunner(item)===runner).slice(0,100);
+    const recent=recentProjects.length?recentProjects:visible;el("recentProjectsTitle").textContent=recentProjects.length?"Recent projects":"Available projects";
+    for(const item of visible) {
+      const value=item._meta?.project || item._meta?.project_ref;
+      const open=()=>{userSelected=true;void chooseProject(value);};
+      const button=action(item.title||item.name,open);button.setAttribute("aria-pressed",String(!home&&value===project));el("projectNav").append(button);
+      }
+    for(const item of recent.slice(0,12)){
+      const open=()=>{userSelected=true;void chooseProject(item._meta?.project||item._meta?.project_ref);};
+      const card=document.createElement("div");card.className="project-card";
+      card.append(textNode("strong",item.title||item.name),textNode("p",item._meta?.path||"","muted"),action("Open project",open));el("recentProjects").append(card);
+    }
+    if(!recent.length)el("recentProjects").append(textNode("p","Choose a Runner or find a project to begin.","muted"));
+  }
+  function validWorkbench(output) {
+    if(!object(output)||!object(output.settings)||!object(output.capabilities)||!object(output.errors))throw new Error("Invalid Workbench state");
+    for(const [key,field] of [["tasks","tasks"],["goals","goals"],["agents","agents"]]) {
+      if(output[key]!==null && output[key]!==undefined && (!object(output[key])||!Array.isArray(output[key][field])||output[key][field].length>100))throw new Error("Invalid "+key+" page");
+    }
+    if(output.execution_options!==undefined&&(!Array.isArray(output.execution_options)||output.execution_options.length>100))throw new Error("Invalid execution options");
+    if(!Array.isArray(output.providers)||output.providers.length>100||!Array.isArray(output.todos)||output.todos.length>100)throw new Error("Invalid execution inventory");
+    // A failed optional section must not discard successful sections. Keep server
+    // diagnostics as bounded display strings regardless of their wire shape.
+    for(const [key,value] of Object.entries(output.errors)) output.errors[key]=object(value)?String(value.message||value.error||"Section unavailable"):String(value||"");
+    return output;
+  }
+  async function loadWorkbench(append=false) {
+    if(!ready||disposed||document.hidden)return;
+    const generation=scope,local=++workGeneration,homeSnapshot=home,projectSnapshot=project,sessionSnapshot=session,lastProject=Array.from(selectedSessions.keys()).filter(Boolean).at(-1)||"",homeSessionProject=lastProject,homeSession=homeSessionProject?selectedSessions.get(homeSessionProject)||"":"",selected=homeSnapshot?"":projectSnapshot,selectedSession=homeSnapshot?"":sessionSnapshot,offset=append?workNext:0;
+    if(offset===null)return;
+    try {
+      const output=validWorkbench(await tool("read_workbench_state",{...(selected?{project:selected}:{}),...(selectedSession?{session_id:selectedSession}:{}),offset,limit:20}));
+      if(disposed||generation!==scope||local!==workGeneration||homeSnapshot!==home||projectSnapshot!==project||sessionSnapshot!==session)return;
+      homeAttentionScope="";homeAttentionProject="";
+      if(homeSnapshot&&homeSessionProject&&homeSession){
+        const attentionSelectionCurrent=()=>homeSessionProject===(Array.from(selectedSessions.keys()).filter(Boolean).at(-1)||"")&&homeSession===selectedSessions.get(homeSessionProject);
+      if(attentionSelectionCurrent()) {
+          try {
+            homeAttentionScope="global Tasks + selected Project/Session";
+            const scoped=validWorkbench(await tool("read_workbench_state",{project:homeSessionProject,session_id:homeSession,offset:0,limit:20}));
+            if(disposed||generation!==scope||local!==workGeneration||homeSnapshot!==home||projectSnapshot!==project||sessionSnapshot!==session)return;
+            if(!attentionSelectionCurrent()){homeAttentionScope="";homeAttentionProject="";output.todos=[];}
+            else {
+              if(scoped.project!==homeSessionProject)throw new Error("Session attention Project mismatch");
+              output.todos=scoped.todos;
+              homeAttentionProject=homeSessionProject;
+              if(scoped.errors.todos)output.errors.todos=scoped.errors.todos;
+            }
+          } catch(error) {
+            if(disposed||generation!==scope||local!==workGeneration)return;
+            if(attentionSelectionCurrent())output.errors.todos=errorMessage(error);
+            output.todos=[];homeAttentionScope="";homeAttentionProject="";
+          }
+        }
+      }
+      if(append)output.tasks.tasks=[...(workbench.tasks?.tasks||[]),...(output.tasks?.tasks||[])].slice(0,500);
+      workbench=output;workNext=(output.tasks?.tasks?.length||0)<500&&Number.isSafeInteger(output.tasks?.next_offset)&&output.tasks.next_offset>offset?output.tasks.next_offset:null;
+      renderWorkbench();
+    } catch(error) {if(!disposed&&generation===scope&&local===workGeneration){el("homeEmpty").textContent=errorMessage(error);el("workCoverage").textContent=errorMessage(error);}}
+    finally {if(!disposed&&generation===scope)scheduleRefresh();}
+  }
+  function renderWorkbench() {
+    const settings=workbench.settings;
+    const displayName=settings.display_name||settings.instance_name||"WebCodex Workbench";el("instanceName").textContent=displayName;document.title=displayName;
+    el("renameInstance").disabled=workbench.capabilities.settings!==true;
+    el("newGoal").disabled=workbench.capabilities.manage_goals!==true;
+    el("newWork").disabled=el("newHomeWork").disabled=workbench.capabilities.submit_work!==true;
+    el("homeWork").replaceChildren();el("projectWork").replaceChildren();
+    for(const item of workbench.tasks?.tasks||[]) {
+      if(!object(item)||!bounded(item.task_id,256))continue;
+      el("homeWork").append(workCard(item));el("projectWork").append(workCard(item));
+    }
+    const count=workbench.tasks?.tasks?.length||0;
+    el("homeEmpty").textContent=workbench.errors.tasks?"Work unavailable: "+limitText(workbench.errors.tasks,512):count?"":"No work observed yet.";
+    el("homeEmpty").hidden=count>0&&!workbench.errors.tasks;
+    el("workCoverage").textContent=workbench.errors.tasks?"Work unavailable: "+limitText(workbench.errors.tasks,512):`${home?"All Projects":"Selected Project"} · ${count} work items shown`+(workbench.tasks?.truncated?" · Partial results":"");
+    el("homeWorkCoverage").textContent=el("workCoverage").textContent;
+    el("homeWorkHeading").textContent=home?"Work progress · all Projects":"Work progress";
+    el("workMore").hidden=workNext===null;el("homeWorkMore").hidden=workNext===null;
+    el("sharedAttention").replaceChildren();
+    const attentionTasks=(workbench.tasks?.tasks||[]).filter(item=>item.state==="failed"||["waiting_permission","outcome_unknown","failed"].includes(item.execution_status));
+    const attention=[...(workbench.todos||[]).map(todo=>({kind:"todo",item:todo})),...attentionTasks.map(item=>({kind:"task",item}))].slice(0,50);
+    if(attention.length) {el("sharedAttention").append(textNode("h2",homeAttentionScope?"Shared attention · "+homeAttentionScope:workbench.project?"Shared attention · selected Project":"Shared attention"));for(const entry of attention){const todo=entry.item;
+      if(entry.kind==="task") {const status=["waiting_permission","outcome_unknown","failed"].includes(todo.execution_status)?todo.execution_status:todo.state==="failed"?"failed":todo.execution_status||todo.state;el("sharedAttention").append(textNode("p",`${todo.title||todo.task_id} · ${status}`));continue;}
+      const message=todo.message||todo.content||todo.body||todo.text||todo.title||"Session message";
+      if(bounded(todo.session_id,256)&&bounded(todo.message_id,256)) {const row=document.createElement("div");row.className="attention-item";row.append(textNode("p",message));row.append(action("Review",()=>openTodo(todo)));el("sharedAttention").append(row);}
+      else el("sharedAttention").append(textNode("p",message));
+    }}
+    for(const [section,error] of Object.entries(workbench.errors).slice(0,8))el("sharedAttention").append(textNode("p",section+": "+limitText(error,512),"muted"));
+    el("sharedAttention").hidden=!el("sharedAttention").children.length;
+    if(!executionState || el("workEditor").hidden || workbench.project===el("workProject").value){executionState=workbench;renderExecutors();}renderGoalChoices();
+  }
+  function workCard(item) {
+    const cardScope=scope;
+    const node=document.createElement("article");node.className="work-card";
+    const heading=textNode("div",""),title=textNode("strong",item.title||item.task_id),badge=textNode("span",item.execution_status||item.state||"Unavailable","badge");heading.append(title,badge);node.append(heading);
+    const cancelRunId=bounded(item.workbench_actions?.cancel?.run_id,256)?item.workbench_actions.cancel.run_id:bounded(item.workbench_actions?.observe?.run_id,256)?item.workbench_actions.observe.run_id:null;
+    const terminalRunStates=["completed","failed","cancelled","superseded"];
+    const observedRunState=item.execution_observation?.state;
+    if(cancelRunId&&terminalRunStates.includes(observedRunState))cancelReceipts.delete(cancelRunId);
+    const cancellationPending=item.cancel_requested===true||cancelRunId&&cancelReceipts.has(cancelRunId)&&!terminalRunStates.includes(observedRunState)&&!terminalRunStates.includes(item.execution_status);
+    if(cancellationPending)node.append(textNode("p","Cancellation requested · awaiting terminal observation","muted"));
+    if(item.summary)node.append(textNode("p",item.summary));
+    const current=item.current_action||item.latest_attempt?.terminal_reason;
+    if(current)node.append(textNode("p",current,"muted"));
+    const start=item.latest_attempt?.started_at_unix_ms||item.created_at_unix_ms,end=item.terminal_at_unix_ms||Date.now();
+    if(Number.isFinite(start)&&Number.isFinite(end)&&end>=start)node.append(textNode("p",`Elapsed ${Math.floor((end-start)/60000)} min`,"muted"));
+    const actions=item.workbench_actions;
+    const details=document.createElement("details"),summary=textNode("summary","Work details"),body=document.createElement("div"),observedBody=document.createElement("div");details.append(summary,body);
+    if(object(actions?.observe)&&bounded(actions.observe.project,4096)&&bounded(actions.observe.run_id,256))details.append(action("Observe",()=>{if(scope===cardScope)void observeRun(item,actions.observe,observedBody,cardScope);}),observedBody);
+    if(object(actions)) {
+      const controls=document.createElement("div");controls.className="toolbar";
+      if(object(actions.cancel)&&bounded(actions.cancel.project,4096)&&bounded(actions.cancel.run_id,256)&&!terminalRunStates.includes(observedRunState)&&!terminalRunStates.includes(item.execution_status)) {const cancel=action("Cancel",()=>{if(scope===cardScope&&!cancellationPending)void cancelRun(item,actions.cancel,cardScope);});cancel.disabled=!!cancellationPending;controls.append(cancel);}
+      if(object(actions.reconcile)&&bounded(actions.reconcile.task_id,256)&&bounded(actions.reconcile.attempt_id,256))controls.append(action("Reconcile",()=>{if(scope===cardScope)void reconcileRun(item,actions.reconcile,cardScope);}));
+      if(controls.children.length)node.append(controls);
+    }
+    let loaded=false;
+    details.ontoggle=async()=>{
+      if(!details.open||loaded||disposed)return;loaded=true;const generation=scope;
+      body.replaceChildren(textNode("p","Loading…","muted"));
+      try {const output=await tool("read_agent_task",{task_id:item.task_id});if(disposed||generation!==scope)return;if(output.task?.summary?.task_id!==item.task_id)throw new Error("Task identity mismatch");renderTaskDetail(body,output.task);}
+      catch(error){if(!disposed&&generation===scope){body.replaceChildren(textNode("p",errorMessage(error)));loaded=false;}}
+    };
+    node.append(details);return node;
+  }
+  function renderTaskDetail(body,task) {
+    const summary=task.summary||{},attempt=summary.latest_attempt;
+    body.replaceChildren();
+    if(typeof task.instruction==="string"&&task.instruction.length){body.append(textNode("p","Instruction","muted"),textNode("p",limitText(task.instruction,8192)));}
+    if(object(attempt)) {
+      const state=attempt.state||"unknown";body.append(textNode("p",`Attempt ${attempt.attempt_number||""} · ${state}`.trim(),"muted"));
+      if(bounded(attempt.assignee_agent_id,256))body.append(textNode("p","Assignee · "+attempt.assignee_agent_id,"muted"));
+      if(typeof attempt.terminal_reason==="string"&&attempt.terminal_reason)body.append(textNode("p",limitText(attempt.terminal_reason,1024)));
+      if(typeof attempt.terminal_result==="string"&&attempt.terminal_result)body.append(textNode("p",limitText(attempt.terminal_result,4096)));
+    }
+    if(bounded(summary.execution_status,64))body.append(textNode("p","Execution · "+summary.execution_status,"muted"));
+  }
+  function actionMatches(item,operation) {return operation?.project===item.project||!item.project;}
+  async function cancelRun(item,op,cardScope) {
+    if(scope!==cardScope||!actionMatches(item,op))return;
+    try {const output=await tool("cancel_coding_agent",{run_id:op.run_id},null);if(scope!==cardScope)return;if(output.cancel_requested===true){if(!cancelReceipts.has(op.run_id)&&cancelReceipts.size>=500)cancelReceipts.delete(cancelReceipts.keys().next().value);cancelReceipts.set(op.run_id,true);item.cancel_requested=true;renderWorkbench();void loadWorkbench();}else await loadWorkbench();}
+    catch(error){el("status").textContent=errorMessage(error);}
+  }
+  async function observeRun(item,op,body,cardScope) {
+    if(scope!==cardScope||!actionMatches(item,op))return;body.replaceChildren(textNode("p","Loading run events…","muted"));
+    try {const output=await tool("observe_coding_agent",{run_id:op.run_id,wait_secs:0},null);if(scope!==cardScope)return;if(!object(output)||output.run_id!==op.run_id)throw new Error("Run identity mismatch");
+      const safe=JSON.stringify(output.events||output.log||output,null,2);body.replaceChildren(textNode("pre",limitText(safe,MAX_PREVIEW)));
+    }catch(error){body.replaceChildren(textNode("p",errorMessage(error)));}
+  }
+  async function reconcileRun(item,op,cardScope) {
+    if(scope!==cardScope||op.task_id!==item.task_id)return;
+    try {const result=await tool("reconcile_agent_task_coding_run",{task_id:op.task_id,attempt_id:op.attempt_id},null);if(scope!==cardScope)return;if(result.task_id&&result.task_id!==item.task_id)throw new Error("Task identity mismatch");await loadWorkbench();}
+    catch(error){el("status").textContent=errorMessage(error);}
+  }
+  function openTodo(todo) {
+    if(todoSubmitting)return;
+    const same=todoSelection?.session_id===todo.session_id&&todoSelection?.message_id===todo.message_id;
+    if(same){el("todoDetail").hidden=false;return;}
+    if(todoDraftPayload){if(todoStatusNode)todoStatusNode.textContent="The original completion may have taken effect. Retry it or explicitly discard its recovery before reviewing another message.";el("todoDetail").hidden=false;return;}
+    todoSelection={session_id:todo.session_id,message_id:todo.message_id};todoFence=null;todoDraftPayload=null;todoCompletionKey=null;todoDiscardArmed=false;
+    const panel=el("todoDetail");panel.hidden=false;
+    panel.replaceChildren(textNode("h2","Review session message"),textNode("p",todo.message||todo.content||todo.body||todo.text||"Session message"));
+    const answer=document.createElement("textarea");answer.id="todoAnswer";answer.maxLength=8192;answer.setAttribute("aria-label","Answer");todoAnswerNode=answer;panel.append(answer);
+    const status=textNode("p","");status.id="todoStatus";todoStatusNode=status;panel.append(status,action("Load assignment",()=>void loadTodoAssignment()),action("Complete message",()=>void submitTodo(answer.value)),action("Close",()=>{if(todoSubmitting)return;if(todoDraftPayload&&!todoDiscardArmed){todoDiscardArmed=true;status.textContent="The completion may have taken effect. Inspect its Session message, then click Close again to discard the exact retry.";return;}todoSelection=null;todoFence=null;todoDraftPayload=null;todoCompletionKey=null;todoDiscardArmed=false;todoAnswerNode=null;todoStatusNode=null;panel.replaceChildren();panel.hidden=true;}));
+    const presentationProject=workbench.project||(home?homeAttentionProject:"")||project;if(presentationProject){selectedSessions.delete(presentationProject);selectedSessions.set(presentationProject,todo.session_id);}void loadTodoAssignment();
+  }
+  async function loadTodoAssignment(){if(!todoSelection)return;const selected={...todoSelection};try{const a=await tool("get_session_assignment",selected,null);if(todoSelection?.session_id!==selected.session_id||todoSelection?.message_id!==selected.message_id)return;if(!object(a)||a.session_id!==selected.session_id||a.message_id!==selected.message_id||!bounded(a.assignment_fence,128))throw new Error("Invalid assignment fence");todoFence=a.assignment_fence;}
+    catch(error){if(todoStatusNode)todoStatusNode.textContent=errorMessage(error);}}
+  async function submitTodo(answer){if(!todoSelection||!todoFence||todoSubmitting)return;const draft=String(answer).trim();if(!draft||draft.length>8192)return;
+    if(!todoDraftPayload)todoDraftPayload={session_id:todoSelection.session_id,message_id:todoSelection.message_id,answer:draft,completion_key:crypto.randomUUID(),expected_assignment_fence:todoFence};
+    // A failed call may have taken effect. Always retry that exact payload until success or explicit close.
+    const payload=todoDraftPayload;todoSubmitting=true;try{await tool("complete_session_message",payload,null);todoDraftPayload=null;todoCompletionKey=null;todoFence=null;todoSelection=null;todoDiscardArmed=false;el("todoDetail").replaceChildren();el("todoDetail").hidden=true;todoAnswerNode=null;todoStatusNode=null;await loadWorkbench();}
+    catch(error){if(todoStatusNode)todoStatusNode.textContent=errorMessage(error)+" Retry with the submitted answer to preserve the completion key.";if(todoAnswerNode){todoAnswerNode.value=payload.answer;todoAnswerNode.disabled=true;}}
+    finally{todoSubmitting=false;}
+  }
+  function renderExecutors() {
+    const oldIndex=el("workExecutor").value,old=oldIndex!==""&&executors[Number(oldIndex)]?JSON.stringify(executors[Number(oldIndex)]):null;executors=[];
+    for(const route of executionState?.execution_options||[]) {
+      if(!object(route)||!["chat","runner"].includes(route.kind)||!bounded(route.agent_id,256))continue;
+      if(route.kind==="runner"&&(!bounded(route.provider_id,128)||route.endpoint_id!==undefined||route.expected_controller_generation!==undefined))continue;
+      if(route.kind==="chat"&&(!bounded(route.endpoint_id,256)||!Number.isSafeInteger(route.expected_controller_generation)||route.expected_controller_generation<1||route.provider_id!==undefined))continue;
+      executors.push({kind:route.kind,agent_id:route.agent_id,...(route.provider_id?{provider_id:route.provider_id}:{}),...(route.endpoint_id?{endpoint_id:route.endpoint_id}:{}),...(Number.isSafeInteger(route.expected_controller_generation)?{expected_controller_generation:route.expected_controller_generation}:{})});
+    }
+    const submittedRoute=workUncertain?workSubmittedPayload?.execution:null;
+    if(object(submittedRoute)&&!executors.some(value=>JSON.stringify(value)===JSON.stringify(submittedRoute)))executors.push({...submittedRoute});
+    el("workExecutor").replaceChildren(option("","Choose an executor"));
+    executors.forEach((value,index)=>{const source=(executionState?.execution_options||[]).find(route=>route.kind===value.kind&&route.agent_id===value.agent_id&&route.provider_id===value.provider_id&&route.endpoint_id===value.endpoint_id);const label=bounded(source?.display_name,120)?source.display_name:value.kind==="chat"?"Chat":"Runner";el("workExecutor").append(option(String(index),`${label}${value.kind==="runner"&&value.provider_id?" · "+value.provider_id:""}${workUncertain&&JSON.stringify(value)===JSON.stringify(submittedRoute)?" · original submission route":""}`));});
+    const wanted=old|| (workUncertain&&object(submittedRoute)?JSON.stringify(submittedRoute):null);
+    const next=wanted===null?-1:executors.findIndex(value=>JSON.stringify(value)===wanted);el("workExecutor").value=next<0?"":String(next);
+    renderExecutionRoute();
+  }
+  function currentWorkPayload() {
+    const index=el("workExecutor").value,execution=index!==""?executors[Number(index)]:null,target=el("workProject").value||"",title=(el("workTitle").value||"").trim(),instruction=(el("workInstruction").value||"").trim();
+    if(!execution||!bounded(target,4096)||!bounded(title,200)||!instruction||instruction.length>8192)return null;
+    return {project:target,execution:{...execution},title,instruction,...(el("workGoal").value?{goal_id:el("workGoal").value}:{})};
+  }
+  function sameWorkPayload() {const payload=currentWorkPayload();return !!payload&&JSON.stringify(payload)===workPayload;}
+  function renderWorkSubmissionState() {
+    const identity=workTaskId?`${workUncertain?"Original":"Submitted"} Task ID · ${workTaskId}`:workPriorTaskId?`Prior uncertain Task ID · ${workPriorTaskId}`:"";
+    el("workTaskIdentity").textContent=identity;el("workTaskIdentity").hidden=!identity;
+    el("inspectWorkTask").hidden=!(workTaskId||workPriorTaskId);
+    el("workRecovery").hidden=!workUncertain;el("confirmDiscardWork").hidden=!workDiscardArmed;
+    el("workRecoveryWarning").textContent=workTaskId?`Task ${workTaskId} may already exist. Inspect or reconcile it before discarding this retry; a different submission can create a second Task.`:"This submission may already have created a Task. Inspect or reconcile the original Task first if you can identify it; discarding can create a second Task.";
+    el("submitWork").textContent=workUncertain?"Retry unchanged submission":"Submit work";
+    el("submitWork").disabled=workSubmitting||workbench.capabilities.submit_work!==true||!currentWorkPayload()||workUncertain&&!sameWorkPayload();
+  }
+  function renderExecutionRoute() {
+    const value=el("workExecutor").value,selected=value!==""?executors[Number(value)]:null;
+    el("workProvider").replaceChildren(option("",selected?.kind==="chat"?"Current chat continuation":selected?.provider_id||"Choose an executor first"));
+    el("workProvider").disabled=true;
+    el("executionHint").textContent=selected?selected.kind==="chat"?"Uses this chat’s verified continuation route.":"Runs through provider "+selected.provider_id:"Only currently available execution routes are listed.";
+    for(const id of ["workProject","workExecutor","workTitle","workInstruction","workGoal"])el(id).disabled=workSubmitting;
+    renderWorkSubmissionState();
+  }
+  function renderGoalChoices() {
+    const old=el("workGoal").value;el("workGoal").replaceChildren(option("","No Goal"));
+    for(const goal of workbench.goals?.goals||[])if(goal.lifecycle==="active")el("workGoal").append(option(goal.goal_id,goal.title||goal.goal_id));
+    if((workbench.goals?.goals||[]).some(goal=>goal.goal_id===old))el("workGoal").value=old;
+    else if(workUncertain&&workSubmittedPayload?.goal_id){el("workGoal").append(option(workSubmittedPayload.goal_id,workSubmittedPayload.goal_id+" · original submission"));el("workGoal").value=workSubmittedPayload.goal_id;}
+  }
+  function openWork() {
+    el("workEditor").hidden=false;if(!workUncertain&&!workTaskId)el("workStatus").textContent="";
+    const priorTarget=el("workProject").value||workSubmittedPayload?.project||project;
+    el("workProject").replaceChildren(option("","Choose a Project"));
+    for(const item of projects)el("workProject").append(option(item._meta?.project||item._meta?.project_ref,item.title||item.name));
+    if(priorTarget&&!projects.some(item=>[item._meta?.project,item._meta?.project_ref].includes(priorTarget)))el("workProject").append(option(priorTarget,priorTarget+(workUncertain?" · original submission":"")));
+    el("workProject").value=priorTarget;executionState=workbench.project===priorTarget?workbench:null;renderExecutors();if(priorTarget&&workbench.project!==priorTarget)void loadExecutionOptions();el("workTitle").focus?.();
+  }
+  async function loadExecutionOptions() {
+    const selected=el("workProject").value,local=++executionGeneration;executionState=null;renderExecutors();
+    if(!selected||disposed)return;
+    el("workStatus").textContent="Checking execution routes…";
+    try {const output=validWorkbench(await tool("read_workbench_state",{project:selected,offset:0,limit:20},null));
+      if(disposed||local!==executionGeneration||selected!==el("workProject").value)return;
+      if(output.project!==selected)throw new Error("Execution Project mismatch");executionState=output;renderExecutors();el("workStatus").textContent=output.errors.providers?"Providers unavailable: "+limitText(output.errors.providers,512):"";
+    }catch(error){if(!disposed&&local===executionGeneration)el("workStatus").textContent=errorMessage(error);}
+  }
+  async function submitWork(event) {
+    event.preventDefault();if(workSubmitting||disposed||workbench.capabilities.submit_work!==true)return;
+    const payload=currentWorkPayload();if(!payload){el("workStatus").textContent="Choose a project, executor, title and instruction.";return;}
+    const fingerprint=JSON.stringify(payload);
+    if(workUncertain&&workPayload!==fingerprint){el("workStatus").textContent="The original submission may have taken effect. Restore its exact fields to retry, or inspect/reconcile its Task before explicitly discarding this retry.";renderExecutionRoute();return;}
+    if(!workKey){workPayload=fingerprint;workSubmittedPayload=JSON.parse(JSON.stringify(payload));workKey=crypto.randomUUID();workTaskId=null;}
+    workSubmitting=true;renderExecutionRoute();el("workStatus").textContent="Submitting…";
+    try {
+      const output=await tool("submit_workbench_work",{...workSubmittedPayload,idempotency_key:workKey},null);if(disposed)return;
+      const taskId=output.workbench_submission?.task_id||output.task_id||output.task?.summary?.task_id;
+      if(!bounded(taskId,256)) {const error=new Error("Submission response did not include the exact Task ID");error.toolOutput=output;throw error;}
+      workTaskId=taskId;workPriorTaskId=null;workUncertain=false;workDiscardArmed=false;workKey=null;workPayload=null;workSubmittedPayload=null;
+      el("workTitle").value="";el("workInstruction").value="";el("workGoal").value="";el("workStatus").textContent="Submitted Task "+taskId+".";renderWorkSubmissionState();void loadWorkbench();
+    }
+    catch(error){if(!disposed){workUncertain=true;workTaskId=error.toolOutput?.workbench_submission?.task_id||workTaskId;el("workStatus").textContent=errorMessage(error)+" Retry the exact same submission key and fields. Inspect or reconcile the original Task before discarding.";}}
+    finally{workSubmitting=false;if(!disposed)renderExecutionRoute();}
+  }
+  async function inspectSubmittedTask() {
+    const taskId=workTaskId||workPriorTaskId;if(!bounded(taskId,256))return;const body=el("submittedTaskDetail");body.hidden=false;body.replaceChildren(textNode("p","Loading Task…","muted"));
+    try{const output=await tool("read_agent_task",{task_id:taskId},null);if(output.task?.summary?.task_id!==taskId)throw new Error("Task identity mismatch");renderTaskDetail(body,output.task);}
+    catch(error){body.replaceChildren(textNode("p",errorMessage(error)));}
+  }
+  function discardWorkRetry() {
+    if(!workUncertain||workSubmitting)return;
+    if(!workDiscardArmed){workDiscardArmed=true;renderWorkSubmissionState();return;}
+    workPriorTaskId=workTaskId||workPriorTaskId;workTaskId=null;workUncertain=false;workDiscardArmed=false;workKey=null;workPayload=null;workSubmittedPayload=null;el("workStatus").textContent="Retry guard cleared. The original Task may still exist; verify it before submitting similar work.";renderExecutors();
+  }
+  async function openGoal(goalId=null) {
+    if(goalSaving||disposed)return;
+    if(!goalUncertain){goalKey=null;goalPayload=null;goalSubmittedPayload=null;goalUncertainId=null;}
+    const generation=++goalGeneration;el("goalEditor").hidden=false;el("goalStatus").textContent="";el("reloadGoal").hidden=true;
+    if(!goalId){el("saveGoal").disabled=workbench.capabilities.manage_goals!==true&&!goalUncertain;editingGoal=null;if(!goalUncertain){el("goalTitle").value="";el("goalObjective").value="";el("goalConditions").value="";}el("goalEditorTitle").textContent="Create Goal";renderGoalSubmissionState();return;}
+    editingGoal=null;let loaded=false;el("saveGoal").disabled=true;el("goalStatus").textContent="Loading Goal…";
+    try {const output=await tool("get_goal",{goal_id:goalId},null);if(disposed||generation!==goalGeneration)return;const goal=output.goal;if(goal?.summary?.goal_id!==goalId||!Number.isSafeInteger(goal.summary.revision))throw new Error("Invalid Goal revision");loaded=true;editingGoal=goal;el("goalTitle").value=goal.summary.title;el("goalObjective").value=goal.objective;el("goalConditions").value=(goal.plan?.completion_conditions||[]).join("\n");el("goalEditorTitle").textContent="Edit Goal";el("goalStatus").textContent="Revision "+goal.summary.revision;}
+    catch(error){if(!disposed&&generation===goalGeneration)el("goalStatus").textContent=errorMessage(error);}
+    finally{if(!disposed&&generation===goalGeneration)el("saveGoal").disabled=!loaded||workbench.capabilities.manage_goals!==true;}
+  }
+  async function saveGoal(event) {
+    event.preventDefault();if(goalSaving||disposed||workbench.capabilities.manage_goals!==true)return;
+    const title=el("goalTitle").value.trim(),objective=el("goalObjective").value.trim(),completion_conditions=el("goalConditions").value.split("\n").map(s=>s.trim()).filter(Boolean);
+    if(!bounded(title,200)||!objective||objective.length>8192||completion_conditions.length>8||completion_conditions.some(s=>new TextEncoder().encode(s).length>512)){el("goalStatus").textContent="Enter a title, objective, and at most 8 conditions (512 bytes each).";return;}
+    const payload={title,objective,completion_conditions,...(editingGoal?{goal_id:editingGoal.summary.goal_id,expected_revision:editingGoal.summary.revision}:{})};
+    const fingerprint=JSON.stringify(payload);
+    if(goalKey&&fingerprint!==goalPayload){el("goalStatus").textContent=goalUncertain?"The original Goal creation may have taken effect. Restore its exact fields to retry, or inspect it before explicitly discarding this retry.":"The previous Goal save may have taken effect. Restore its exact fields to retry, or load the latest revision before changing this draft.";renderGoalSubmissionState();return;}
+    if(!goalKey){goalPayload=fingerprint;goalSubmittedPayload=JSON.parse(JSON.stringify(payload));goalKey=crypto.randomUUID();}
+    const generation=goalGeneration;goalSaving=true;el("saveGoal").disabled=true;
+    try {const output=await tool(editingGoal?"update_goal":"create_goal",{...goalSubmittedPayload,idempotency_key:goalKey},null);if(disposed||generation!==goalGeneration)return;
+      if(!object(output.goal)||!Number.isSafeInteger(output.goal.summary?.revision))throw new Error("Invalid saved Goal");editingGoal=output.goal;goalUncertainId=output.goal.summary.goal_id||null;goalUncertain=false;goalDiscardArmed=false;goalSubmittedPayload=null;goalKey=null;goalPayload=null;el("goalStatus").textContent="Saved Goal "+(goalUncertainId||"")+" · revision "+editingGoal.summary.revision;void loadWorkbench();if(area==="Goals")void loadList(false);renderGoalSubmissionState();
+    } catch(error){if(!disposed&&generation===goalGeneration){if(!editingGoal){goalUncertain=true;goalUncertainId=error.toolOutput?.goal?.summary?.goal_id||error.toolOutput?.goal_id||goalUncertainId;}el("goalStatus").textContent=errorMessage(error)+(editingGoal?" Your draft is preserved. Load the latest revision before retrying a conflict.":" The original Goal may exist; retry only unchanged fields and key.");el("reloadGoal").hidden=!editingGoal;renderGoalSubmissionState();}}
+    finally {goalSaving=false;if(!disposed)renderGoalSubmissionState();}
+  }
+  function goalDraftPayload(){return {title:el("goalTitle").value.trim(),objective:el("goalObjective").value.trim(),completion_conditions:el("goalConditions").value.split("\n").map(s=>s.trim()).filter(Boolean),...(editingGoal?{goal_id:editingGoal.summary.goal_id,expected_revision:editingGoal.summary.revision}:{})};}
+  function renderGoalSubmissionState(){const identity=goalUncertainId?`${goalUncertain?"Original":"Saved"} Goal ID · ${goalUncertainId}`:"";el("goalAttemptIdentity").textContent=identity;el("goalAttemptIdentity").hidden=!identity;el("inspectGoalAttempt").hidden=!goalUncertainId;el("goalRecovery").hidden=!goalUncertain;el("confirmDiscardGoal").hidden=!goalDiscardArmed;el("saveGoal").textContent=goalUncertain?"Retry unchanged Goal":"Save Goal";el("saveGoal").disabled=goalSaving||workbench.capabilities.manage_goals!==true||!!goalKey&&JSON.stringify(goalDraftPayload())!==goalPayload;}
+  async function inspectGoalAttempt(){const id=goalUncertainId;if(!bounded(id,256))return;const box=el("goalAttemptDetail");box.hidden=false;box.replaceChildren(textNode("p","Loading Goal…","muted"));try{const output=await tool("get_goal",{goal_id:id},null);if(output.goal?.summary?.goal_id!==id)throw new Error("Goal identity mismatch");renderGoalPreview(output.goal);box.replaceChildren(el("markdownPreview").cloneNode(true));}catch(error){box.replaceChildren(textNode("p",errorMessage(error)));}}
+  function discardGoalRetry(){if(!goalUncertain||goalSaving)return;if(!goalDiscardArmed){goalDiscardArmed=true;renderGoalSubmissionState();return;}goalPriorId=goalUncertainId;goalUncertainId=null;goalUncertain=false;goalDiscardArmed=false;goalKey=null;goalPayload=null;goalSubmittedPayload=null;el("goalStatus").textContent="Retry guard cleared. The original Goal may still exist; verify it before creating similar work.";renderGoalSubmissionState();}
+  async function reloadGoalRevision() {
+    if(!editingGoal||goalSaving)return;const id=editingGoal.summary.goal_id,generation=goalGeneration;
+    try{const output=await tool("get_goal",{goal_id:id},null);if(disposed||generation!==goalGeneration)return;if(output.goal?.summary?.goal_id!==id||!Number.isSafeInteger(output.goal.summary.revision))throw new Error("Invalid Goal revision");editingGoal=output.goal;goalKey=null;goalPayload=null;el("goalStatus").textContent="Latest revision loaded. Your draft is preserved; review it before saving.";el("reloadGoal").hidden=true;}
+    catch(error){if(!disposed&&generation===goalGeneration)el("goalStatus").textContent=errorMessage(error);}
+  }
+  async function saveInstance(name) {
+    if(disposed||settingsSaving||workbench.capabilities.settings!==true)return;settingsSaving=true;el("resetInstance").disabled=true;
+    try {const output=await tool("update_workbench_settings",{display_name:name},null);if(disposed)return;if(!object(output)||!bounded(output.instance_name,200)||!bounded(output.display_name,200))throw new Error("Invalid settings result");workbench.settings=output;el("instanceName").textContent=output.display_name||output.instance_name;document.title=el("instanceName").textContent;el("instanceForm").hidden=true;}
+    catch(error){if(!disposed)el("status").textContent=errorMessage(error);}
+    finally{settingsSaving=false;if(!disposed)el("resetInstance").disabled=false;}
+  }
+  function safePath(path,allowRoot=false) {return typeof path==="string"&&path.length<=4096&&(allowRoot||path.length>0)&&!/[\u0000-\u001f\\]/.test(path)&&!path.startsWith("/")&&!/^[A-Za-z]:/.test(path)&&!path.split("/").some(p=>p===".."||p===".");}
+  function utf8base64(value){let binary="";for(const byte of new TextEncoder().encode(value))binary+=String.fromCharCode(byte);return btoa(binary).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");}
+  function fileLink(path) {
+    const root=projectLink();if(!root||!safePath(path))return null;
+    const base=root.uri.replace("webcodex-resource://project/","webcodex-resource://file/");
+    return {type:"resource_link",uri:base+"/"+utf8base64(path),name:path,mimeType:"text/plain",_meta:{kind:"file",project:root._meta.project,path}};
+  }
+  async function loadDirectory(append=false) {
+    if(!ready||disposed||!project)return;const path=String(el("filePath").value||"").trim();
+    if(!safePath(path,true)){el("status").textContent="Use a project-relative directory without parent traversal.";return;}
+    fileDirectory=path;directoryMode=true;const generation=scope,local=++listGeneration,offset=append?listNext:0;if(offset===null)return;
+    if(!append){el("rows").replaceChildren();selectedFiles.clear();}
+    try {const output=await tool("list_project_files",{project,path,offset,limit:50});if(disposed||generation!==scope||local!==listGeneration||area!=="Files")return;
+      if(![project,projectLink()?._meta?.project].includes(output.project)||output.path!==path||!Array.isArray(output.entries)||output.entries.length>50)throw new Error("Invalid directory page");
+      for(const entry of output.entries.slice(0,500-el("rows").children.length)){if(!safePath(entry.path)||!["file","dir"].includes(entry.kind))throw new Error("Invalid directory entry");const node=entry.kind==="dir"?textNode("div","","row"):null;
+        if(node){node.append(action("▸ "+entry.path,()=>{el("filePath").value=entry.path;void loadDirectory();}));el("rows").append(node);}else{const item=fileLink(entry.path);if(item)el("rows").append(row(item));}}
+      listNext=el("rows").children.length<500&&Number.isSafeInteger(output.next_offset)&&output.next_offset>offset?output.next_offset:null;el("more").hidden=listNext===null;
+      el("pathCrumbs").textContent="Project root"+(path?" / "+path.split("/").join(" / "):"");el("coverage").textContent=`${offset+output.entries.length} entries shown`+(output.truncated?" · More entries available":"");updateFileSelection();
+    }catch(error){if(!disposed&&generation===scope&&local===listGeneration)el("status").textContent=errorMessage(error);}
+  }
+  function updateFileSelection(){el("fileSelection").hidden=!selectedFiles.size;el("fileSelection").textContent=`Add ${selectedFiles.size} selected references`;}
+  function markdownPreview(text) {
+    const target=el("markdownPreview");target.replaceChildren();
+    // Render a deliberately small Markdown subset using DOM text only; no HTML or active links.
+    let code=false,buffer=[];const flush=()=>{if(buffer.length){target.append(textNode(code?"pre":"p",buffer.join("\n")));buffer=[];}};
+    for(const line of text.split("\n")){if(/^```/.test(line)){flush();code=!code;continue;}if(!code&&/^#{1,6} /.test(line)){flush();const depth=line.indexOf(" ");target.append(textNode("h"+Math.min(depth+1,6),line.slice(depth+1)));}else buffer.push(line);}flush();
+  }
+
   function row(item) {
     const node=document.createElement("div"); node.className="row";
     const copy=document.createElement("div"); copy.className="row-copy";
     const title=document.createElement("div"); title.className="row-name"; title.textContent=item.title || item.name;
     const description=document.createElement("div"); description.className="muted"; description.textContent=String(item.description || "").slice(0,1024);
     copy.append(title,description);
+    if(item._meta?.kind==="file"){const check=document.createElement("input");check.type="checkbox";check.className="file-check";check.setAttribute("aria-label","Select "+(item.title||item.name));check.checked=selectedFiles.has(item.uri);check.onchange=()=>{if(check.checked&&selectedFiles.size<MAX_REFERENCES)selectedFiles.set(item.uri,item);else{selectedFiles.delete(item.uri);check.checked=false;}updateFileSelection();};copy.append(check);}
     const actions=document.createElement("div"); actions.className="row-actions";
     const read=document.createElement("button"); read.type="button"; read.textContent="Preview"; read.onclick=()=>void preview(item);
     const add=document.createElement("button"); add.type="button"; add.textContent=acceptsReferences() ? "Add reference" : "Prepare reference text"; add.onclick=()=>void addReference(item);
-    actions.append(read,add); node.append(copy,actions); return node;
+    actions.append(read,add);
+    if(item._meta?.kind==="goal" && workbench.capabilities.manage_goals===true){const id=item._meta.goal_id;if(bounded(id,256))actions.append(action("Edit Goal",()=>void openGoal(id)));} node.append(copy,actions); return node;
   }
   async function loadList(append) {
     const generation=scope, local=++listGeneration, selectedArea=area, offset=append ? listNext : 0;
@@ -366,7 +764,7 @@ footer { padding: 12px 24px; border-top: 1px solid var(--border); color: var(--m
       el("status").textContent="Updated " + area.toLowerCase() + ".";
     } catch(error) { if (!disposed && generation === scope && local === listGeneration) el("status").textContent=errorMessage(error); }
   }
-  function loadArea(append) { return area === "Overview" ? loadOverview() : loadList(append); }
+  function loadArea(append) { if(home || area === "Work") return loadWorkbench(append); if(area === "Overview") {void loadWorkbench();return loadOverview();} return loadList(append); }
   function materialize(item) {
     if (reads.has(item.uri)) return reads.get(item.uri);
     if (reads.size >= 32) return Promise.reject(new Error("Too many resource previews are loading. Try again after one completes."));
@@ -388,15 +786,38 @@ footer { padding: 12px 24px; border-top: 1px solid var(--border); color: var(--m
   }
   async function preview(item) {
     const generation=scope, local=++previewGeneration;
-    el("preview").hidden=false; el("previewTitle").textContent=item.title || item.name; el("previewContent").textContent="Loading preview…"; el("previewMeta").textContent=item.uri;
+    el("previewContent").hidden=false;el("markdownPreview").hidden=true;el("preview").hidden=false;el("contentBody").className="body with-detail"; el("previewTitle").textContent=item.title || item.name; el("previewContent").textContent="Loading preview…"; el("previewMeta").textContent=item.uri;
     try {
       const output=await materialize(item);
       if (disposed || generation !== scope || local !== previewGeneration) return;
+      if(output.kind==="goal"&&bounded(item._meta?.goal_id,256)) {
+        const result=await tool("get_goal",{goal_id:item._meta.goal_id});
+        if(disposed||generation!==scope||local!==previewGeneration)return;
+        if(result.goal?.summary?.goal_id!==item._meta.goal_id||!Number.isSafeInteger(result.goal.summary.revision))throw new Error("Goal identity mismatch");
+        renderGoalPreview(result.goal);el("previewContent").hidden=true;el("markdownPreview").hidden=false;
+        el("previewMeta").textContent=item.uri+" · Revision "+result.goal.summary.revision;return;
+      }
       const data = output.data;
       const readable = output.kind === "file" && object(data) && typeof data.text === "string" ? data.text : output.kind === "file" && object(data) && typeof data.content === "string" ? data.content : data;
-      el("previewContent").textContent=limitText(readable,MAX_PREVIEW);
+      const safeText=limitText(readable,MAX_PREVIEW);el("previewContent").textContent=safeText;
+      const markdown=output.kind==="file"&&/\.(md|markdown)$/i.test(item.name);el("markdownPreview").hidden=!markdown;el("previewContent").hidden=markdown;if(markdown)markdownPreview(safeText);
       el("previewMeta").textContent=item.uri+(output.version ? " · Version " + output.version : "")+(output.truncated ? " · Partial content" : "");
     } catch(error) { if (!disposed && generation===scope && local===previewGeneration) el("previewContent").textContent=errorMessage(error); }
+  }
+  function renderGoalPreview(goal) {
+    const target=el("markdownPreview"),summary=goal.summary||{},plan=goal.plan||{};target.replaceChildren();
+    target.append(textNode("h2",summary.title||"Goal"));
+    target.append(textNode("p",`${summary.lifecycle||"unknown"} · Revision ${summary.revision}`,"muted"));
+    if(bounded(goal.objective,12000)){target.append(textNode("h3","Objective"),textNode("p",goal.objective));}
+    if(bounded(goal.terminal_reason,2048))target.append(textNode("p",goal.terminal_reason,"muted"));
+    if(bounded(plan.progress_summary,2048))target.append(textNode("h3","Progress"),textNode("p",plan.progress_summary));
+    if(Array.isArray(plan.steps)&&plan.steps.length){target.append(textNode("h3","Steps"));const list=document.createElement("ul");for(const step of plan.steps.slice(0,32))if(object(step)&&bounded(step.id,32)&&bounded(step.title,120)&&["pending","in_progress","completed"].includes(step.status))list.append(textNode("li",`${step.title} · ${step.status}`));target.append(list);}
+    if(Array.isArray(plan.completion_conditions)&&plan.completion_conditions.length){target.append(textNode("h3","Completion conditions"));const list=document.createElement("ul");for(const condition of plan.completion_conditions.slice(0,8))if(bounded(condition,512))list.append(textNode("li",condition));target.append(list);}
+    const correlations=Array.isArray(goal.correlations)?goal.correlations.slice(0,50):[];
+    const taskLinks=correlations.filter(item=>object(item)&&item.kind==="agent_task"&&bounded(item.reference_id,256));
+    if(taskLinks.length){target.append(textNode("h3","Linked work"));const list=document.createElement("ul");for(const link of taskLinks){const task=(workbench.tasks?.tasks||[]).find(item=>item.task_id===link.reference_id);list.append(textNode("li",task?`${task.title||task.task_id} · ${task.state} · ${task.task_id}`:link.reference_id));}target.append(list);}
+    const sessions=correlations.filter(item=>object(item)&&item.kind==="workflow_session"&&bounded(item.reference_id,256));
+    if(sessions.length){target.append(textNode("h3","Linked Sessions"));const list=document.createElement("ul");for(const link of sessions)list.append(textNode("li",link.reference_id));target.append(list);}
   }
   const blockUri = block => block?.type === "resource_link" ? block.uri : block?.type === "resource" ? block.resource?.uri : block?.type === "text" && /^WebCodex (?:reference|selected context)\n/.test(block.text || "") ? /^URI: ([^\n]+)$/m.exec(block.text)?.[1] : null;
   function acceptsReferences() { return ["resourceLink","resource","text"].some(key=>object(modalities[key])); }
@@ -502,7 +923,7 @@ footer { padding: 12px 24px; border-top: 1px solid var(--border); color: var(--m
   function stopRefresh() { if (refreshTimer !== null) clearTimeout(refreshTimer); refreshTimer=null; }
   function scheduleRefresh() {
     stopRefresh();
-    if (ready && !disposed && !document.hidden && project && area === "Overview") refreshTimer=setTimeout(()=>{refreshTimer=null;void loadOverview(true);},10000);
+    if (ready && !disposed && !document.hidden && (home || project && ["Overview","Work"].includes(area))) refreshTimer=setTimeout(()=>{refreshTimer=null;void loadWorkbench();if(!home && area==="Overview")void loadOverview(true);},10000);
   }
   function applyLaunch() {
     if (!ready || userSelected || !launchInput && !launchOutput) return;
@@ -547,6 +968,18 @@ footer { padding: 12px 24px; border-top: 1px solid var(--border); color: var(--m
     else if (msg.method === "ui/notifications/host-context-changed") {syncDisplay(msg.params);syncContext(msg.params);}
     else if (msg.method === "ui/resource-teardown") {teardown();if ("id" in msg) parent.postMessage({jsonrpc:"2.0",id:msg.id,result:{}},"*");}
   });
+  el("homeNav").onclick=()=>{userSelected=true;clearScope();home=true;updateControls();renderProjectNavigation();void loadWorkbench();};
+  el("goalsNav").onclick=()=>{userSelected=true;selectArea("Goals");void loadWorkbench();};
+  el("newGoal").onclick=()=>void openGoal();el("closeGoal").onclick=()=>{if(!goalSaving){goalGeneration++;el("goalEditor").hidden=true;}};
+  el("goalForm").onsubmit=saveGoal;el("reloadGoal").onclick=()=>void reloadGoalRevision();
+  for(const id of ["goalTitle","goalObjective","goalConditions"])el(id).oninput=renderGoalSubmissionState;el("inspectGoalAttempt").onclick=()=>void inspectGoalAttempt();el("discardGoalAttempt").onclick=discardGoalRetry;el("confirmDiscardGoal").onclick=discardGoalRetry;
+  el("newWork").onclick=openWork;el("newHomeWork").onclick=openWork;el("closeWork").onclick=()=>{el("workEditor").hidden=true;};el("workForm").onsubmit=submitWork;el("workExecutor").onchange=renderExecutionRoute;el("workProject").onchange=()=>void loadExecutionOptions();
+  for(const id of ["workTitle","workInstruction"])el(id).oninput=renderExecutionRoute;el("workGoal").onchange=renderExecutionRoute;el("inspectWorkTask").onclick=()=>void inspectSubmittedTask();el("discardWorkAttempt").onclick=discardWorkRetry;el("confirmDiscardWork").onclick=discardWorkRetry;
+  el("workMore").onclick=el("homeWorkMore").onclick=()=>void loadWorkbench(true);
+  el("renameInstance").onclick=()=>{el("instanceForm").hidden=false;el("instanceInput").value=workbench.settings?.display_name_override||"";};
+  el("instanceForm").onsubmit=event=>{event.preventDefault();const value=el("instanceInput").value.trim();if(bounded(value,80))void saveInstance(value);};el("resetInstance").onclick=()=>void saveInstance(null);el("closeInstance").onclick=()=>{el("instanceForm").hidden=true;};
+  el("pathForm").onsubmit=event=>{event.preventDefault();void loadDirectory();};el("parentPath").onclick=()=>{el("filePath").value=fileDirectory.split("/").slice(0,-1).join("/");void loadDirectory();};
+  el("fileSelection").onclick=async()=>{const items=[...selectedFiles.values()];for(const item of items)await addReference(item);selectedFiles.clear();updateFileSelection();};
   el("runnerSelect").onchange=()=>{userSelected=true;void chooseRunner(el("runnerSelect").value);};
   el("runnerSearchForm").onsubmit=event=>{event.preventDefault();void loadRunners();};
   el("useContext").onclick=()=>void useSelectedContext();
@@ -555,26 +988,31 @@ footer { padding: 12px 24px; border-top: 1px solid var(--border); color: var(--m
   el("sessionsMore").onclick=()=>void loadSessions(true);
   el("projectSearchForm").onsubmit=event=>{event.preventDefault();void loadProjects(false,true);};
   el("projectsMore").onclick=()=>void loadProjects(true);
-  el("refresh").onclick=()=>{if(area === "Goals"){void loadArea(false);}else if(project) {void loadSessions(false);void loadArea(false);}else{projectSearchStarted=false;if(runner)void loadProjects();else void loadRunners();}};
-  el("more").onclick=()=>void loadList(true);
-  el("searchForm").onsubmit=event=>{event.preventDefault();void loadList(false);};
+  el("refresh").onclick=()=>{if(home){void loadWorkbench();return;}if(area === "Goals"){void loadArea(false);}else if(project) {void loadSessions(false);void loadArea(false);}else{projectSearchStarted=false;if(runner)void loadProjects();else void loadRunners();}};
+  el("more").onclick=()=>void (area==="Files"&&directoryMode?loadDirectory(true):loadList(true));
+  el("searchForm").onsubmit=event=>{event.preventDefault();directoryMode=false;selectedFiles.clear();updateFileSelection();void loadList(false);};
   el("projectReference").onclick=()=>{const item=projectLink();if(item)void addReference(item);};
-  el("closePreview").onclick=()=>{previewGeneration++;el("preview").hidden=true;el("previewContent").textContent="";};
+  el("closePreview").onclick=()=>{previewGeneration++;el("preview").hidden=true;el("contentBody").className="body";el("previewContent").textContent="";};
   for (const name of AREAS) {
     el("tab"+name).onclick=()=>selectArea(name);
-    el("tab"+name).onkeydown=event=>{const index=AREAS.indexOf(area);const next=event.key==="ArrowRight" ? AREAS[(index+1)%4] : event.key==="ArrowLeft" ? AREAS[(index+3)%4] : event.key==="Home" ? AREAS[0] : event.key==="End" ? AREAS[3] : null;if(next){event.preventDefault();selectArea(next,true);}};
+    el("tab"+name).onkeydown=event=>{const tabs=AREAS.filter(name=>name!=="Goals"),index=tabs.indexOf(area);const next=event.key==="ArrowRight" ? tabs[(index+1)%tabs.length] : event.key==="ArrowLeft" ? tabs[(index+tabs.length-1)%tabs.length] : event.key==="Home" ? tabs[0] : event.key==="End" ? tabs[tabs.length-1] : null;if(next){event.preventDefault();selectArea(next,true);}};
   }
-  addEventListener("visibilitychange",()=>{stopRefresh();if(!disposed && ready && !document.hidden && (project || area === "Goals"))void loadArea(false);});
+  addEventListener("visibilitychange",()=>{stopRefresh();if(!disposed && ready && !document.hidden && (home || project || area === "Goals"))void loadArea(false);});
   addEventListener("pagehide",teardown,{once:true});addEventListener("beforeunload",teardown,{once:true});
+  // Hosts can disallow native form submission. Actions remain local RPC events.
+  for(const [form,button] of [["runnerSearchForm","runnerSearch"],["projectSearchForm","projectSearch"],["searchForm","searchResources"],["pathForm","openDirectory"],["goalForm","saveGoal"],["workForm","submitWork"],["instanceForm","saveInstance"]]) {
+    el(button).onclick=event=>el(form).onsubmit(event);
+    el(form).onkeydown=event=>{if(event.key==="Enter"&&event.target?.tagName!=="TEXTAREA"&&event.target?.tagName!=="BUTTON"){event.preventDefault();el(form).onsubmit(event);}};
+  }
   el("projectQuery").value="";
   el("runnerQuery").value="";
-  selectArea("Overview");renderRunners();renderProjects();renderReferences();
+  selectArea("Overview");home=true;updateControls();renderRunners();renderProjects();renderReferences();
   rpc("ui/initialize",{protocolVersion:"2026-01-26",appInfo:{name:"webcodex-workbench",title:"WebCodex Workbench",version:"1.0.0"},appCapabilities:{}}).then(result=>{
     if (disposed) return;
     if (!object(result) || result.protocolVersion !== "2026-01-26") throw new Error("Unsupported Host protocol");
     modalities=object(result.hostCapabilities?.updateModelContext) ? result.hostCapabilities.updateModelContext : {};
     contextAdapter=object(result.hostCapabilities?.experimental?.["openai/modelContext"]);
-    ready=true;notify("ui/notifications/initialized",{});syncDisplay(result.hostContext);renderReferences();syncContext(result.hostContext);el("status").textContent="Ready.";applyLaunch();
+    ready=true;notify("ui/notifications/initialized",{});syncDisplay(result.hostContext);renderReferences();syncContext(result.hostContext);el("status").textContent="Ready.";applyLaunch();void loadWorkbench();
   }).catch(error=>{if(!disposed){el("status").textContent=errorMessage(error);updateControls();}});
 })();
 </script>

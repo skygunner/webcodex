@@ -1165,7 +1165,7 @@ class AgentLoopBenchmarkTests(unittest.TestCase):
             subprocess.run(["git", "add", "."], cwd=repo, check=True)
             subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
             base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
-            with self.assertRaisesRegex(benchmark.BenchmarkError, "supports only target=webcodex_repository"):
+            with self.assertRaisesRegex(benchmark.BenchmarkError, "supports only repository/disposable generic targets"):
                 benchmark.run_benchmark(
                     repo=repo,
                     base_revision=base,
@@ -1249,6 +1249,9 @@ class AgentLoopBenchmarkTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
+            strict = subprocess.run([*completed.args, "--strict"], cwd=Path(__file__).resolve().parents[2],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            self.assertEqual(strict.returncode, 1, strict.stderr)
             self.assertIn("Agent Loop benchmark", completed.stdout)
             value = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(value["status_counts"]["unsupported"], 2)
@@ -1259,6 +1262,153 @@ class AgentLoopBenchmarkTests(unittest.TestCase):
                 paired["candidate_minus_direct"]["task_wall_time_ms"]["total"]
             )
             self.assertIn("paired_wall_p50_delta_ms=unavailable", completed.stdout)
+
+
+class GenericBenchmarkTargetTests(unittest.TestCase):
+    def test_all_generic_cases_get_fresh_real_directories_and_cleanup(self):
+        manifest = report.load_case_manifest(report.DEFAULT_CASE_MANIFEST)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in ("worktrees", "receipts", "annotations"):
+                (root / name).mkdir()
+            observed = root / "observed.jsonl"
+            driver = root / "driver.py"
+            driver.write_text("""import json, os
+from pathlib import Path
+root = Path.cwd()
+case = os.environ['WEBCODEX_BENCH_CASE_ID']
+assert not (root / '.git').exists()
+assert not (root / 'leak.txt').exists()
+if case == 'generic_encoded_csv':
+    assert (root / 'a.csv').read_bytes() == b'name,value\\nAlice,2\\nBob,3\\n'
+    assert (root / 'b.csv').read_text(encoding='utf-16').startswith('姓名,数量')
+if case == 'generic_mixed_files_conflict':
+    assert (root / 'input/pixel.png').read_bytes().startswith(b'\\x89PNG')
+if case == 'generic_stale_read_revision':
+    assert (root / 'stale.txt').read_bytes() == b'task value: before\\n'
+(root / 'leak.txt').write_text('owned temporary mutation')
+with open(os.environ['OBSERVED'], 'a') as f:
+    f.write(json.dumps({'case':case,'path':str(root)}) + '\\n')
+Path(os.environ['WEBCODEX_BENCH_DRIVER_RESULT']).write_text('{"status":"unsupported"}')
+""", encoding="utf-8")
+            with mock.patch.dict(os.environ, {"OBSERVED": str(observed)}):
+                for case_id in sorted(benchmark.GENERIC_CASES):
+                    case = report._case_by_id(manifest, case_id)
+                    for pair in range(2):
+                        sample = benchmark._run_sample(root, root, [sys.executable, str(driver)], case,
+                            variant="direct", pair_index=pair, ordinal=0, base_revision="a" * 40,
+                            case_manifest=report.DEFAULT_CASE_MANIFEST)
+                        self.assertEqual(sample['status'], 'unsupported', sample)
+            observations = [json.loads(line) for line in observed.read_text().splitlines()]
+            self.assertEqual(len(observations), 12)
+            self.assertEqual(len({item['path'] for item in observations}), 12)
+            self.assertTrue(all(not Path(item['path']).exists() for item in observations))
+            self.assertEqual(list((root / 'worktrees').iterdir()), [])
+            self.assertFalse(any(p.is_dir() for p in (root / 'receipts').iterdir()))
+
+
+    def test_stale_fixture_coordinator_checks_bytes_before_allowing_recovery(self):
+        manifest = report.load_case_manifest(report.DEFAULT_CASE_MANIFEST)
+        case = report._case_by_id(manifest, 'generic_stale_read_revision')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in ('worktrees', 'receipts', 'annotations'):
+                (root / name).mkdir()
+            driver = root / 'driver.py'
+            driver.write_text("""import os, time
+from pathlib import Path
+coord = Path(os.environ['WEBCODEX_BENCH_FIXTURE_COORDINATION'])
+path = Path('stale.txt')
+assert path.read_bytes() == b'task value: before\\n'
+(coord / 'first-read').touch()
+for marker in ('external-written', 'rejection-checked'):
+    deadline = time.monotonic() + 3
+    while not (coord / marker).exists():
+        assert time.monotonic() < deadline
+        time.sleep(.01)
+    if marker == 'external-written':
+        assert path.read_bytes().endswith(b'EXTERNAL_WRITER_SENTINEL_c741\\n')
+        (coord / 'stale-rejected').touch()
+path.write_bytes(path.read_bytes().replace(b'before', b'after'))
+Path(os.environ['WEBCODEX_BENCH_DRIVER_RESULT']).write_text('{"status":"unsupported"}')
+""")
+            sample = benchmark._run_sample(root, root, [sys.executable, str(driver)], case,
+                variant='direct', pair_index=0, ordinal=0, base_revision='a'*40,
+                case_manifest=report.DEFAULT_CASE_MANIFEST)
+            self.assertEqual(sample['status'], 'unsupported', sample)
+            self.assertTrue(sample['fixture_oracle']['passed'])
+            self.assertTrue(sample['fixture_oracle']['temporal_evidence_required'])
+            self.assertFalse(any(thread.name.startswith('fixture') for thread in benchmark.threading.enumerate()))
+            self.assertEqual(list((root/'worktrees').iterdir()), [])
+
+    def test_generic_temporal_requirements_cannot_be_replaced_by_driver_claims(self):
+        for case_id in benchmark.GENERIC_CASES:
+            expected = case_id in {'generic_mixed_files_conflict', 'generic_encoded_csv'}
+            self.assertEqual(benchmark._generic_temporal_evidence_proven({'id':case_id}, {'claimed':True}, 'direct'), expected)
+
+
+    def _strict_generic_matrix(self, case_id, oracle):
+        manifest = report.load_case_manifest(report.DEFAULT_CASE_MANIFEST)
+        case = report._case_by_id(manifest, case_id)
+        samples = []
+        for variant in benchmark.VARIANTS:
+            surface = benchmark._surface(case, variant)
+            summary = {'outer_calls': {'total': 1}, 'canonical_calls': {'total': 1},
+                       'availability': {'code_mode_composition': {'available': True}},
+                       'correctness': {'task_verdict': 'pass', 'validation_verdict': 'pass'}}
+            if variant == 'code_mode':
+                summary['composition'] = {'outer_code_mode_calls': 1}
+                summary['tools'] = {'outer_by_name': {benchmark.CODE_MODE_TOOL_BY_SURFACE[surface]: 1}}
+            self.assertTrue(benchmark._runtime_evidence_proven(summary, variant, surface))
+            sample = {'case_id': case_id, 'variant': variant, 'surface': surface,
+                      'status': 'pass', 'summary': summary}
+            if oracle is not None:
+                sample['fixture_oracle'] = oracle
+            samples.append(sample)
+        return {'cases': [{'case_id': case_id, 'pairs': [{'pair_index': 0, 'samples': samples}]}]}
+
+    def test_strict_generic_file_and_csv_cases_require_available_passing_oracle(self):
+        for case_id in ('generic_mixed_files_conflict', 'generic_encoded_csv'):
+            for oracle in (None, {}, {'available': False, 'passed': True},
+                           {'available': True, 'passed': False}, {'available': True, 'passed': True}):
+                with self.subTest(case=case_id, oracle=oracle):
+                    result = self._strict_generic_matrix(case_id, oracle)
+                    expected = oracle == {'available': True, 'passed': True}
+                    self.assertEqual(benchmark._strict_passed(result, [case_id], 1), expected)
+
+    def test_strict_generic_temporal_gate_rejects_forged_pass_with_passing_oracle(self):
+        for case_id in ('generic_failure_repair', 'generic_pending_independent_join',
+                        'generic_stale_read_revision', 'generic_missing_output'):
+            with self.subTest(case=case_id):
+                result = self._strict_generic_matrix(case_id, {'available': True, 'passed': True,
+                    'temporal_evidence_required': False, 'temporal_evidence_proven': True})
+                self.assertFalse(benchmark._strict_passed(result, [case_id], 1))
+
+    def test_strict_rejects_partial_unsupported_missing_cases_repetitions_and_evidence(self):
+        summary = {'outer_calls': {'total': 1}, 'canonical_calls': {'total': 1},
+                   'availability': {'code_mode_composition': {'available': True}},
+                   'correctness': {'task_verdict': 'pass', 'validation_verdict': 'pass'}}
+        sample = {'case_id':'selection_single_read', 'variant':'free_selection', 'surface':'free_selection', 'status':'pass',
+                  'summary':summary, 'fixture_oracle':{'available':False}}
+        # Use the canonical unrestricted-selection identity from the reporter.
+        sample['variant'] = sample['surface'] = report.TOOL_SELECTION_VARIANT
+        result = {'experiment':'tool_selection', 'cases':[{'case_id':'selection_single_read', 'samples':[sample]}]}
+        self.assertTrue(benchmark._strict_passed(result, ['selection_single_read'], 1))
+        self.assertFalse(benchmark._strict_passed(result, ['selection_single_read', 'missing'], 1))
+        self.assertFalse(benchmark._strict_passed(result, ['selection_single_read'], 2))
+        for status in ('partial', 'unsupported', 'fail'):
+            sample['status'] = status
+            self.assertFalse(benchmark._strict_passed(result, ['selection_single_read'], 1))
+        sample['status'] = 'pass'
+        sample['variant'] = 'direct'
+        self.assertFalse(benchmark._strict_passed(result, ['selection_single_read'], 1))
+        sample['variant'] = report.TOOL_SELECTION_VARIANT
+        result['cases'][0]['case_id'] = sample['case_id'] = 'selection_session_recovery'
+        summary['correctness']['validation_verdict'] = 'not_required'
+        self.assertFalse(benchmark._strict_passed(result, ['selection_session_recovery'], 1))
+        result['cases'][0]['case_id'] = sample['case_id'] = 'selection_single_read'
+        sample['summary'] = None
+        self.assertFalse(benchmark._strict_passed(result, ['selection_single_read'], 1))
 
 
 if __name__ == "__main__":

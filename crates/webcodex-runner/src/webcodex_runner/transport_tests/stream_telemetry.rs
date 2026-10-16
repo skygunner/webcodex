@@ -217,6 +217,7 @@ fn runner_stream_telemetry_concurrent_results_remain_distinct_on_one_stream_writ
 fn test_runner_config(server_url: String) -> RunnerConfig {
     RunnerConfig {
         server_url,
+        server_url_override: None,
         token: "test-token".to_string(),
         client_id: "oe".to_string(),
         display_name: Some("OE agent".to_string()),

@@ -223,6 +223,7 @@ fn goal_tools_are_control_only_and_never_declare_execution_authority() {
         "present_goal_plan",
         "list_goals",
         "update_goal",
+        "revise_goal_plan",
         "associate_goal_agent_task",
         "associate_goal_workflow_session",
     ] {
@@ -257,7 +258,12 @@ fn goal_tools_are_control_only_and_never_declare_execution_authority() {
         );
     }
 
-    for name in ["create_goal", "update_goal", "associate_goal_agent_task"] {
+    for name in [
+        "create_goal",
+        "update_goal",
+        "revise_goal_plan",
+        "associate_goal_agent_task",
+    ] {
         let definition = lookup_tool_definition(name).unwrap();
         assert_eq!(definition.metadata.effect, ToolEffect::Mutate);
         assert_eq!(definition.metadata.risk, ToolRisk::WorkflowManage);
@@ -351,6 +357,53 @@ fn goal_schemas_are_bounded_private_and_existing_coding_tools_do_not_accept_goal
         .unwrap()
         .iter()
         .any(|field| field == "controller_agent_id"));
+
+    let revise = spec("revise_goal_plan");
+    assert_eq!(revise.input_schema["properties"]["steps"]["maxItems"], 32);
+    assert_eq!(
+        revise.input_schema["properties"]["reason"]["maxLength"],
+        2048
+    );
+    assert_eq!(
+        revise.input_schema["properties"]["expected_revision"]["minimum"],
+        1
+    );
+    assert_eq!(revise.input_schema["additionalProperties"], false);
+    for field in [
+        "goal_id",
+        "expected_revision",
+        "steps",
+        "reason",
+        "idempotency_key",
+    ] {
+        assert!(revise.input_schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|required| required == field));
+    }
+    for forbidden in [
+        "completion_conditions",
+        "objective",
+        "current_step_id",
+        "controller_agent_id",
+        "session_id",
+        "project",
+        "window",
+        "endpoint_id",
+    ] {
+        assert!(revise.input_schema["properties"].get(forbidden).is_none());
+    }
+    let history = &revise.output_schema["properties"]["output"]["properties"]["goal"]["properties"]
+        ["plan_history"];
+    assert_eq!(history["properties"]["revisions"]["maxItems"], 8);
+    for field in ["total_count", "returned_count", "truncated", "revisions"] {
+        assert!(history["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|required| required == field));
+    }
 
     let prepare = spec("prepare_goal_workflow");
     assert_eq!(
@@ -1126,6 +1179,7 @@ fn goal_runtime_controller_is_explicit_authorized_and_readable() {
         Some(&bob),
         goal_id,
         1,
+        None,
         None,
         None,
         Some(replacement_id.clone()),
@@ -1975,4 +2029,41 @@ async fn workflow_session_link_is_identity_only_and_finish_coding_task_does_not_
     assert_eq!(goal.output["goal"]["summary"]["lifecycle"], "active");
     assert_eq!(goal.output["goal"]["summary"]["revision"], 2);
     assert!(goal.output["goal"]["summary"]["terminal_at_unix_ms"].is_null());
+}
+
+#[tokio::test]
+async fn update_goal_completion_conditions_dispatch_preserves_owner_and_revision() {
+    let (_temp, _db, runtime) = runtime_with_goal_db();
+    let owner = goal_activity_auth("conditions-owner");
+    let foreign = goal_activity_auth("conditions-other");
+    let id = create_goal(&runtime, Some(&owner), "conditions-dispatch-create");
+    let args = json!({"goal_id":id,"expected_revision":1,"completion_conditions":["  Explicit acceptance  "],"idempotency_key":"conditions-dispatch-edit"});
+    let edited = runtime
+        .dispatch_with_auth(
+            ToolCall::from_tool_name("update_goal", args.clone()).unwrap(),
+            Some(&owner),
+        )
+        .await;
+    assert!(edited.success, "{:?}", edited.output);
+    assert_eq!(
+        edited.output["goal"]["plan"]["completion_conditions"],
+        json!(["Explicit acceptance"])
+    );
+    assert_eq!(edited.output["goal"]["summary"]["revision"], 2);
+    let replay = runtime
+        .dispatch_with_auth(
+            ToolCall::from_tool_name("update_goal", args.clone()).unwrap(),
+            Some(&owner),
+        )
+        .await;
+    assert!(replay.success, "{:?}", replay.output);
+    assert_eq!(replay.output["replayed"], true);
+    let rejected = runtime
+        .dispatch_with_auth(
+            ToolCall::from_tool_name("update_goal", args).unwrap(),
+            Some(&foreign),
+        )
+        .await;
+    assert!(!rejected.success);
+    assert_eq!(rejected.output["error_kind"], "goal_not_found");
 }

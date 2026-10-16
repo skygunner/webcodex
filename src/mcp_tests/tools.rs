@@ -1549,7 +1549,13 @@ fn mcp_tools_list_compact_materializes_only_authorized_inputs() {
                     .filter(|tool| {
                         matches!(
                             tool["name"].as_str(),
-                            Some("work_result_thread_panel" | "search_mentions")
+                            Some(
+                                "work_result_thread_panel"
+                                    | "search_mentions"
+                                    | "read_workbench_state"
+                                    | "update_workbench_settings"
+                                    | "submit_workbench_work"
+                            )
                         )
                     })
                     .count();

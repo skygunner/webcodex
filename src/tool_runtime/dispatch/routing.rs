@@ -220,6 +220,7 @@ impl ToolRuntime {
             call @ (ToolCall::PrepareGoalWorkflow { .. }
             | ToolCall::CreateGoal { .. }
             | ToolCall::CheckpointGoal { .. }
+            | ToolCall::ReviseGoalPlan { .. }
             | ToolCall::GetGoal { .. }
             | ToolCall::PresentGoalPlan { .. }
             | ToolCall::GoalPlanSync { .. }

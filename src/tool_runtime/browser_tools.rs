@@ -6,7 +6,7 @@ use super::tool_call::{BrowserActToolCall, BrowserBatchOperation, BrowserObserve
 use super::{SuggestedToolCall, ToolCall, ToolResult, ToolRuntime};
 use crate::auth::{
     AuthContext, SCOPE_BROWSER_CONTROL, SCOPE_BROWSER_LAUNCH, SCOPE_BROWSER_READ,
-    SCOPE_COMPUTER_READ, SCOPE_PROJECT_READ,
+    SCOPE_COMPUTER_READ, SCOPE_PROJECT_READ, SCOPE_RUNTIME_READ,
 };
 use crate::runner_http::RunnerFeature;
 use serde_json::{json, Value};
@@ -67,6 +67,17 @@ fn browser_diagnostics_payload(
     payload
 }
 
+fn browser_session_selector_error(error: super::SessionSelectorError) -> ToolResult {
+    match error {
+        super::SessionSelectorError::UnknownRef(message) => {
+            browser_error("unknown_session_ref", &message, "not_started", false, None)
+        }
+        super::SessionSelectorError::RetentionExpired { session_id } => {
+            super::session_context::session_retention_expired_result(&session_id)
+        }
+    }
+}
+
 fn browser_observe_policy(call: &BrowserObserveToolCall) -> SpecializedOperationPolicy {
     if matches!(call, BrowserObserveToolCall::Surface { .. }) {
         return SpecializedOperationPolicy::read_all(
@@ -84,6 +95,18 @@ fn browser_observe_policy(call: &BrowserObserveToolCall) -> SpecializedOperation
 
 fn browser_act_policy(call: &BrowserActToolCall) -> SpecializedOperationPolicy {
     match call {
+        BrowserActToolCall::BeginUserHandoff { .. } => {
+            SpecializedOperationPolicy::consequential_all(
+                SpecializedSource::Browser,
+                call.action_name(),
+                &[
+                    SCOPE_BROWSER_CONTROL,
+                    SCOPE_COMPUTER_READ,
+                    SCOPE_RUNTIME_READ,
+                ],
+                "browser_control",
+            )
+        }
         BrowserActToolCall::Launch { .. } => SpecializedOperationPolicy::consequential(
             SpecializedSource::Browser,
             call.action_name(),
@@ -386,6 +409,79 @@ impl ToolRuntime {
                 self.dispatch_browser_request(&client_id, "browser_batch",
                     json!({"browser_id": browser_id, "page_id": page_id, "operations": payload_operations}),
                     auth, true, BrowserRecoveryContext::snapshot(&client_id, &browser_id, &page_id)).await
+            }
+            ToolCall::BrowserAct(BrowserActToolCall::BeginUserHandoff {
+                client_id,
+                browser_id,
+                session_id,
+                message_id,
+            }) => {
+                let session_id =
+                    match self.canonicalize_explicit_session_selector(&session_id, auth) {
+                        Ok(session_id) => session_id,
+                        Err(error) => return browser_session_selector_error(error),
+                    };
+                if let Err(result) = self
+                    .authorize_session_target(&session_id, "control_browser", auth)
+                    .await
+                {
+                    return result;
+                }
+                if self.sessions.lifecycle_state(&session_id)
+                    != Some(super::sessions::SessionLifecycle::Active)
+                {
+                    return browser_error(
+                        "browser_user_handoff_attention_required",
+                        "User handoff requires an active authorized Session",
+                        "not_started",
+                        false,
+                        None,
+                    );
+                }
+                let attention = self.sessions.list_messages(
+                    &session_id,
+                    super::sessions::ListSessionMessagesFilter {
+                        message_id: Some(message_id.clone()),
+                        status: Some(super::sessions::SessionMessageStatus::Open),
+                        limit: Some(1),
+                        ..Default::default()
+                    },
+                );
+                if !attention.is_ok_and(|messages| {
+                    messages.iter().any(|m| {
+                        matches!(
+                            m.kind,
+                            super::sessions::SessionMessageKind::Question
+                                | super::sessions::SessionMessageKind::Todo
+                        )
+                    })
+                }) {
+                    return browser_error("browser_user_handoff_attention_required", "An exact existing open question or todo in the authorized Session is required", "not_started", false, None);
+                }
+                self.dispatch_browser_request(&client_id, "browser_begin_user_handoff",
+                    json!({"browser_id": browser_id, "session_id": session_id, "message_id": message_id}),
+                    auth, true, BrowserRecoveryContext::browsers(&client_id)).await
+            }
+            ToolCall::BrowserAct(BrowserActToolCall::FinishUserHandoff {
+                client_id,
+                browser_id,
+                session_id,
+                handoff_fence,
+            }) => {
+                let session_id =
+                    match self.canonicalize_explicit_session_selector(&session_id, auth) {
+                        Ok(session_id) => session_id,
+                        Err(error) => return browser_session_selector_error(error),
+                    };
+                if let Err(result) = self
+                    .authorize_session_target(&session_id, "control_browser", auth)
+                    .await
+                {
+                    return result;
+                }
+                self.dispatch_browser_request(&client_id, "browser_finish_user_handoff",
+                    json!({"browser_id": browser_id, "session_id": session_id, "handoff_fence": handoff_fence}),
+                    auth, true, BrowserRecoveryContext::browsers(&client_id)).await
             }
             ToolCall::BrowserAct(BrowserActToolCall::Attach {
                 client_id,
@@ -739,6 +835,7 @@ impl ToolRuntime {
             let browser_managed_profile = client.supports(RunnerFeature::BrowserManagedProfile);
             let browser_extension_bridge = client.supports(RunnerFeature::BrowserExtensionBridge);
             let browser_surface_handoff = client.supports(RunnerFeature::BrowserSurfaceHandoff);
+            let browser_user_handoff = client.supports(RunnerFeature::BrowserUserHandoff);
             if !browser_observe && !browser_control && !browser_launch {
                 continue;
             }
@@ -761,6 +858,7 @@ impl ToolRuntime {
                     "browser_managed_profile": browser_managed_profile,
                     "browser_extension_bridge": browser_extension_bridge,
                     "browser_surface_handoff": browser_surface_handoff,
+                    "browser_user_handoff": browser_user_handoff,
                     "browser_launch": browser_launch,
                 }
             }));
@@ -818,6 +916,9 @@ impl ToolRuntime {
             "browser_launch_managed" => RunnerFeature::BrowserManagedProfile,
             "browser_discover" | "browser_attach" => RunnerFeature::BrowserExtensionBridge,
             "browser_surface" => RunnerFeature::BrowserSurfaceHandoff,
+            "browser_begin_user_handoff" | "browser_finish_user_handoff" => {
+                RunnerFeature::BrowserUserHandoff
+            }
             "browser_new_page"
             | "browser_navigate"
             | "browser_reload"
@@ -1100,7 +1201,15 @@ impl ToolRuntime {
                 "execution_state".to_string(),
                 Value::String("completed".to_string()),
             );
-            object.insert("state_changed".to_string(), Value::Bool(effect));
+            let changed = if kind == "browser_begin_user_handoff" {
+                object
+                    .get("state_changed")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(effect)
+            } else {
+                effect
+            };
+            object.insert("state_changed".to_string(), Value::Bool(changed));
             return ToolResult::ok(result);
         }
         let is_batch = kind == "browser_batch";

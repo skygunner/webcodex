@@ -199,6 +199,7 @@ fn single_window_goal_workflow_prefers_atomic_admission_and_keeps_host_setup_sep
             "prepare_goal_workflow",
             "present_goal_plan",
             "checkpoint_goal",
+            "revise_goal_plan",
             "finish_coding_task",
             "update_goal",
         ]

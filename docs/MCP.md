@@ -638,3 +638,39 @@ a project and a supporting ChatGPT host without a model manually carrying their
 Base64.
 
 Use [Coding Workflow](CODING_WORKFLOW.md) for the canonical `work_on_project` bootstrap, behavioral-role mental model, and validation/closeout guidance. See [Architecture](ARCHITECTURE.md) and the `webcodex` CLI for operator tooling.
+
+## Goal and Agent continuation timing diagnostics
+
+Current resources are `ui://webcodex/goal-plan/v9` (App 8.0.0) and
+`ui://webcodex/agent-continuation/v21` (App 21.0.0). Retired resource aliases are rejected.
+Goal Plan and Agent Continuation cards offer **Enable timing diagnostics**, off by
+default. The local View retains at most 64 timing records: scheduled versus actual
+poll delay, monotonic tool RPC start/completion/error duration, visibility and teardown.
+`ui/message` duration is not separately measured; its outcome remains the existing
+prepare/finish acceptance or unknown observation.
+Disabling clears the ring; remounting starts empty. No additional RPC, browser
+storage, model message, timing authority or scheduler is introduced. Goal diagnostics
+optionally attach the existing bounded `app_call_id`; the MCP adapter validates and
+strips it before ToolRuntime parsing. Agent calls retain their existing correlation.
+
+Operators may separately enable `WEBCODEX_TOOL_REQUEST_TRACE=metadata` to correlate
+those ids with existing request start/completion records. `goal_sync_timing` records
+closed reconciliation reasons, meaningful activity age, coverage and active request
+count, and the durable observation age/remaining 75s lease margin when reached.
+`continuation_identity` links existing Event/Wake/Attempt ids for creation, dispatch
+and exact consume. These records use the existing bounded, fail-open trace writer;
+they add no prompts, message bodies, consume tokens or raw ClientWindow values and
+are never copied into model-facing Goal results. Existing full tracing has its
+separate payload/privacy contract. Negative lease margin identifies stale observation;
+missing observation/partial coverage are evidence limits, not permission to wake.
+
+For separately authorized ChatGPT acceptance, bind the actual Agent carrier and
+present its exact correlated Goal. Enable the local diagnostics and metadata tracing,
+then compare foreground polling with hiding the chat/browser for more than 75s.
+Check actual timer gaps and slow/error RPCs against the Server observation margin.
+A stale card must create no Wake until a later successful observation meets all
+existing eligibility checks. Hide/show, teardown/remount and a separately authorized
+Server restart must preserve single-flight coordination and one logical Wake per
+meaningful activity epoch. Correlate that Wake's dispatch and exact consume; Host
+acceptance alone does not prove a fresh model turn. Local fake-clock tests do not
+establish ChatGPT background scheduling or unattended continuation.

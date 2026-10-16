@@ -2,20 +2,34 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 import struct
 import zlib
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from e2e_generic_agent_ws import GenericSmoke, SENTINEL, EXTERNAL_SENTINEL, binary_fixtures, totals
+from e2e_generic_agent_ws import GenericSmoke, SENTINEL, EXTERNAL_SENTINEL, binary_fixtures, totals, GenericFixture, GENERIC_CASES, selected_smoke_cases
 import agent_loop_report as report
 
 
 class GenericAcceptanceTests(unittest.TestCase):
+    def test_merge_preserves_both_generic_recovery_and_goal_revision_acceptance_modes(self):
+        smoke = Mock()
+        ordinary = selected_smoke_cases(smoke, goal_plan_only=False)
+        goal = selected_smoke_cases(smoke, goal_plan_only=True)
+        self.assertEqual([name for name, _ in ordinary], [
+            "entry_read_recovery", "mixed_files_conflict", "encoded_csv",
+            "failure_repair_log_pressure", "pending_independent_join",
+            "code_repair_review", "stale_read_revision",
+        ])
+        self.assertEqual([name for name, _ in goal], ["goal_plan_revision"])
+        self.assertIs(ordinary[0][1], smoke.entry_read_recovery)
+        self.assertIs(goal[0][1], smoke.goal_plan_revision)
+
     def test_stale_edit_checks_disk_bytes_before_reread_and_after_recovery(self):
         for profile in ("baseline", "upgraded"):
             for corruption in (None, "rejected", "recovered"):
@@ -55,6 +69,98 @@ class GenericAcceptanceTests(unittest.TestCase):
                         self.assertTrue(evidence["rejected_bytes_unchanged"])
                         self.assertTrue(evidence["external_change_preserved"])
                         self.assertEqual(evidence["final_sha256"], hashlib.sha256((root / "stale.txt").read_bytes()).hexdigest())
+
+
+    def test_shared_oracles_check_inputs_conflicts_encodings_and_safe_outputs(self):
+        for case_id in ('generic_mixed_files_conflict', 'generic_encoded_csv'):
+            with self.subTest(case=case_id), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                fixture = GenericFixture(root, case_id).prepare()
+                self.assertFalse(fixture.oracle()['passed'])
+                if case_id == 'generic_mixed_files_conflict':
+                    for name, data in binary_fixtures().items():
+                        (root/'sorted'/name).write_bytes(data)
+                    (root/'sorted/note-2.txt').write_bytes(b'original note\n')
+                else:
+                    (root/'merged.csv').write_bytes('name,value\nAlice,2\nBob,3\n陈,5\n丁,7\n'.encode())
+                    (root/'report.json').write_text('{"count":4,"total":17}')
+                self.assertTrue(fixture.oracle()['passed'])
+                source = root / next(iter(fixture.initial))
+                source.write_bytes(b'corrupt input')
+                self.assertFalse(fixture.oracle()['passed'])
+
+    @unittest.skipIf(sys.platform == 'win32', 'POSIX symlink fixture')
+    def test_shared_oracle_rejects_symlink_and_oversized_outputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = GenericFixture(root, 'generic_pending_independent_join').prepare()
+            target = root/'outside.txt'
+            target.write_bytes(b'independent work completed')
+            (root/'independent.txt').symlink_to(target)
+            self.assertFalse(fixture.oracle()['passed'])
+            (root/'independent.txt').unlink()
+            (root/'independent.txt').write_bytes(b'x'*(fixture.MAX_BYTES+1))
+            self.assertFalse(fixture.oracle()['passed'])
+
+
+    @unittest.skipUnless(hasattr(os, 'O_NOFOLLOW') and hasattr(os, 'mkfifo'), 'POSIX fixture safety')
+    def test_external_writer_never_follows_replaced_symlink_or_special_file(self):
+        for mode in ('symlink', 'fifo'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                fixture = GenericFixture(root, 'generic_stale_read_revision').prepare()
+                outside = root/'outside.txt'
+                outside.write_bytes(b'task value: before\n')
+                path = root/'stale.txt'
+                path.unlink()
+                if mode == 'symlink':
+                    path.symlink_to(outside)
+                else:
+                    os.mkfifo(path)
+                with self.assertRaises((OSError, ValueError)):
+                    fixture.append_external()
+                self.assertEqual(outside.read_bytes(), b'task value: before\n')
+                self.assertFalse(fixture.external_written)
+
+    @unittest.skipUnless(hasattr(os, 'O_NOFOLLOW'), 'POSIX fixture safety')
+    def test_external_writer_uses_same_fd_when_path_swapped_after_open(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = GenericFixture(root, 'generic_stale_read_revision').prepare()
+            outside = root/'outside.txt'
+            outside.write_bytes(b'task value: before\n')
+            opened = os.open
+            def swap_after_open(path, flags):
+                fd = opened(path, flags)
+                Path(path).unlink()
+                Path(path).symlink_to(outside)
+                return fd
+            with patch('e2e_generic_agent_ws.os.open', side_effect=swap_after_open):
+                fixture.append_external()
+            self.assertEqual(outside.read_bytes(), b'task value: before\n')
+            self.assertFalse(fixture.oracle()['passed'])
+
+    def test_file_count_oracle_consumes_only_expected_count_plus_one(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = GenericFixture(Path(directory), 'generic_mixed_files_conflict').prepare()
+            counts = []
+            class InfiniteEntries:
+                def __enter__(self):
+                    counts.append(0)
+                    self.index = len(counts)-1
+                    return self
+                def __exit__(self, *args):
+                    pass
+                def __iter__(self):
+                    return self
+                def __next__(self):
+                    counts[self.index] += 1
+                    if counts[self.index] > 6:
+                        raise AssertionError('unbounded oracle scan')
+                    return object()
+            with patch('e2e_generic_agent_ws.os.scandir', side_effect=lambda _: InfiniteEntries()):
+                self.assertFalse(fixture.oracle()['passed'])
+            self.assertEqual(counts, [5, 6])
 
     def test_generic_cases_load_through_existing_reporter(self):
         manifest = report.load_case_manifest(report.DEFAULT_CASE_MANIFEST)

@@ -1,4 +1,4 @@
-//! Bounded mechanical progress for a durable Goal. The fixed plan is not a
+//! Bounded mechanical progress for a durable Goal. The plan is not a
 //! scheduler, and natural-language completion intent is never evaluated here.
 use super::goal::GoalStoreError;
 use serde::{Deserialize, Serialize};
@@ -11,6 +11,52 @@ pub const MAX_GOAL_COMPLETION_CONDITIONS: usize = 8;
 pub const MAX_GOAL_CONDITION_BYTES: usize = 512;
 pub const MAX_GOAL_PROGRESS_SUMMARY_BYTES: usize = 2_048;
 pub const MAX_GOAL_PLAN_BYTES: usize = 32_768;
+pub const MAX_GOAL_PLAN_REVISIONS: usize = 8;
+pub const MAX_GOAL_PLAN_REVISION_REASON_BYTES: usize = 2_048;
+pub const MAX_GOAL_PLAN_HISTORY_READ_BYTES: usize = 65_536;
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct GoalPlanRevision {
+    pub revision: i64,
+    pub revised_at_unix_ms: i64,
+    pub reason: String,
+    pub plan: GoalPlan,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+pub struct GoalPlanHistory {
+    pub total_count: i64,
+    pub returned_count: usize,
+    pub truncated: bool,
+    pub revisions: Vec<GoalPlanRevision>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct GoalPlanReplacement {
+    pub reason: String,
+    pub steps: Vec<NewGoalStep>,
+}
+
+impl GoalPlanReplacement {
+    pub(super) fn normalized(mut self) -> Result<Self, GoalStoreError> {
+        self.reason = self.reason.trim().to_string();
+        if self.reason.is_empty() || self.reason.len() > MAX_GOAL_PLAN_REVISION_REASON_BYTES {
+            return Err(plan_error(
+                "Revision reason must contain 1..=2048 UTF-8 bytes",
+            ));
+        }
+        // Reuse the canonical step bounds and normalization before hashing or mutation.
+        self.steps = GoalPlan::new(Vec::new(), self.steps, 0)?
+            .steps
+            .into_iter()
+            .map(|step| NewGoalStep {
+                id: step.id,
+                title: step.title,
+            })
+            .collect();
+        Ok(self)
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -83,7 +129,9 @@ impl GoalCheckpoint {
         }
         if let Some(id) = self.current_step_id.as_deref() {
             if !valid_step_id(id) || ids.contains(id) {
-                return Err(checkpoint_error("current_step_id must be valid and cannot also be completed in the same checkpoint"));
+                return Err(checkpoint_error(
+                    "current_step_id must be valid and cannot also be completed in the same checkpoint",
+                ));
             }
         }
         self.summary = self.summary.trim().to_string();
@@ -103,10 +151,7 @@ impl GoalPlan {
         now: i64,
     ) -> Result<Self, GoalStoreError> {
         let plan = Self {
-            completion_conditions: conditions
-                .into_iter()
-                .map(|value| value.trim().to_string())
-                .collect(),
+            completion_conditions: normalize_completion_conditions(conditions)?,
             steps: steps
                 .into_iter()
                 .map(|step| GoalStep {
@@ -193,6 +238,50 @@ impl GoalPlan {
         Ok(plan)
     }
 
+    pub(super) fn replace_steps(
+        &self,
+        replacement: &GoalPlanReplacement,
+        now: i64,
+    ) -> Result<Self, GoalStoreError> {
+        for completed in self
+            .steps
+            .iter()
+            .filter(|step| step.status == GoalStepStatus::Completed)
+        {
+            if !replacement
+                .steps
+                .iter()
+                .any(|step| step.id == completed.id && step.title == completed.title)
+            {
+                return Err(plan_error(
+                    "Completed steps must retain their exact id and title",
+                ));
+            }
+        }
+        let mut plan = self.clone();
+        plan.steps = replacement
+            .steps
+            .iter()
+            .map(|input| {
+                if let Some(existing) = self.steps.iter().find(|step| step.id == input.id) {
+                    GoalStep {
+                        title: input.title.clone(),
+                        ..existing.clone()
+                    }
+                } else {
+                    GoalStep {
+                        id: input.id.clone(),
+                        title: input.title.clone(),
+                        status: GoalStepStatus::Pending,
+                        updated_at_unix_ms: now,
+                    }
+                }
+            })
+            .collect();
+        plan.persisted_json()?;
+        Ok(plan)
+    }
+
     pub(super) fn persisted_json(&self) -> Result<String, GoalStoreError> {
         let json = serde_json::to_string(self)
             .map_err(|_| plan_error("Goal plan serialization failed"))?;
@@ -233,21 +322,12 @@ impl GoalPlan {
         created_at: i64,
         updated_at: i64,
     ) -> Result<(), GoalStoreError> {
-        if self.steps.len() > MAX_GOAL_STEPS
-            || self.completion_conditions.len() > MAX_GOAL_COMPLETION_CONDITIONS
-        {
+        if self.steps.len() > MAX_GOAL_STEPS {
             return Err(plan_error(
                 "Goal plan exceeds step or completion-condition bounds",
             ));
         }
-        for condition in &self.completion_conditions {
-            if condition.is_empty()
-                || condition.len() > MAX_GOAL_CONDITION_BYTES
-                || condition.trim() != condition
-            {
-                return Err(plan_error("Invalid bounded completion condition"));
-            }
-        }
+        validate_completion_conditions(&self.completion_conditions)?;
         let mut ids = BTreeSet::new();
         let mut in_progress = 0;
         for step in &self.steps {
@@ -267,15 +347,10 @@ impl GoalPlan {
                     "Goal step timestamp is outside its Goal revision",
                 ));
             }
-            if step.status == GoalStepStatus::Pending {
-                if step.updated_at_unix_ms != created_at {
-                    return Err(plan_error(
-                        "A pending step cannot have a progress timestamp",
-                    ));
-                }
-            } else if self
-                .checkpoint_at_unix_ms
-                .is_none_or(|checkpoint| step.updated_at_unix_ms > checkpoint)
+            if step.status != GoalStepStatus::Pending
+                && self
+                    .checkpoint_at_unix_ms
+                    .is_none_or(|checkpoint| step.updated_at_unix_ms > checkpoint)
             {
                 return Err(plan_error(
                     "Progress requires a durable checkpoint at or after the step transition",
@@ -298,4 +373,31 @@ impl GoalPlan {
         }
         Ok(())
     }
+}
+
+// Creation and revision-fenced edits share normalization and UTF-8 byte bounds.
+pub(super) fn normalize_completion_conditions(
+    conditions: Vec<String>,
+) -> Result<Vec<String>, GoalStoreError> {
+    let conditions: Vec<_> = conditions
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .collect();
+    validate_completion_conditions(&conditions)?;
+    Ok(conditions)
+}
+
+fn validate_completion_conditions(conditions: &[String]) -> Result<(), GoalStoreError> {
+    if conditions.len() > MAX_GOAL_COMPLETION_CONDITIONS {
+        return Err(plan_error("Goal plan exceeds completion-condition bounds"));
+    }
+    for condition in conditions {
+        if condition.is_empty()
+            || condition.len() > MAX_GOAL_CONDITION_BYTES
+            || condition.trim() != condition
+        {
+            return Err(plan_error("Invalid bounded completion condition"));
+        }
+    }
+    Ok(())
 }

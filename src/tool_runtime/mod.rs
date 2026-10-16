@@ -146,6 +146,8 @@ pub(crate) use webcodex_tool_runtime_contracts::{tool_audit, tool_result};
 mod pdf_document;
 mod work_result;
 mod work_result_workspace;
+mod workbench_execution;
+mod workbench_state;
 pub(crate) use window_activity::{ActiveWindowRequest, MAX_ACTIVE_REQUESTS_PER_WINDOW};
 
 #[cfg(test)]

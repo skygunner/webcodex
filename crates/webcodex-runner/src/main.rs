@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 use webcodex_build_info as build_info;
 use webcodex_runner::config::{
-    client_profile_runner_config, default_config_path, load_config, validate_client_profile,
+    client_profile_runner_config, default_config_path, load_config, load_config_with_server_url,
+    validate_client_profile,
 };
 use webcodex_runner::transport::{registration::process_started_at, run_runner};
 
@@ -12,6 +13,7 @@ use webcodex_runner::transport::{registration::process_started_at, run_runner};
 enum RunnerCliAction {
     Run {
         config_path: PathBuf,
+        server_url: Option<String>,
         once: bool,
         stop_on_stdin_eof: bool,
         computer_session_dir: Option<PathBuf>,
@@ -30,11 +32,12 @@ enum RunnerCliAction {
 }
 
 fn usage() -> &'static str {
-    "Usage: webcodex-runner [--config PATH] [--once] [--stop-on-stdin-eof] [--computer-session-dir PATH]\n\n\
+    "Usage: webcodex-runner [--config PATH] [--server-url URL] [--once] [--stop-on-stdin-eof] [--computer-session-dir PATH]\n\n\
      Options:\n\
        -h, --help                 Print help and exit\n\
        -V, --version              Print version and exit\n\
        -c, --config PATH          Runner config path for normal runtime\n\
+       --server-url URL          Server origin; overrides runner.toml server_url for this process\n\
        --check-config            Validate configuration without starting a Runner\n\
        --profile NAME             Client config profile for default config path\n\
        --once                     Complete one successful poll, then exit (polling transport)\n\
@@ -131,6 +134,7 @@ where
     let runner_config_env = std::env::var("WEBCODEX_RUNNER_CONFIG").ok();
     let mut config_path: Option<PathBuf> = None;
     let mut profile: Option<String> = None;
+    let mut server_url = None;
     let mut check_config = false;
     let mut once = false;
     let mut stop_on_stdin_eof = false;
@@ -151,6 +155,12 @@ where
                     stdout: build_info::version_output("webcodex-runner"),
                     stderr: String::new(),
                 });
+            }
+            "--server-url" => {
+                if server_url.is_some() {
+                    return Err("--server-url must be specified only once".into());
+                }
+                server_url = Some(args.next().ok_or("--server-url requires a URL")?);
             }
             "--check-config" => check_config = true,
             "--once" => once = true,
@@ -191,13 +201,14 @@ where
             .unwrap_or_else(default_config_path)?
     };
     if check_config {
-        if once || stop_on_stdin_eof || computer_session_dir.is_some() {
+        if once || stop_on_stdin_eof || computer_session_dir.is_some() || server_url.is_some() {
             return Err("--check-config cannot be combined with runtime-only options".into());
         }
         return Ok(RunnerCliAction::CheckConfig { config_path });
     }
     Ok(RunnerCliAction::Run {
         config_path,
+        server_url,
         once,
         stop_on_stdin_eof,
         computer_session_dir,
@@ -285,13 +296,20 @@ fn main() {
             std::process::exit(2);
         }
     };
-    let (config_path, once, stop_on_stdin_eof, computer_session_dir) = match action {
+    let (config_path, server_url, once, stop_on_stdin_eof, computer_session_dir) = match action {
         RunnerCliAction::Run {
             config_path,
+            server_url,
             once,
             stop_on_stdin_eof,
             computer_session_dir,
-        } => (config_path, once, stop_on_stdin_eof, computer_session_dir),
+        } => (
+            config_path,
+            server_url,
+            once,
+            stop_on_stdin_eof,
+            computer_session_dir,
+        ),
         RunnerCliAction::CheckConfig { config_path } => {
             // Use exactly the native loader, before logs, providers or network
             // startup. Parse errors can quote secret TOML values: do not echo them.
@@ -333,7 +351,7 @@ fn main() {
             std::process::exit(2);
         }
     };
-    let cfg = match load_config(&config_path) {
+    let cfg = match load_config_with_server_url(&config_path, server_url.as_deref()) {
         Ok(cfg) => cfg,
         Err(e) => {
             #[cfg(target_os = "macos")]
@@ -359,7 +377,7 @@ fn main() {
         #[cfg(target_os = "macos")]
         drop(service_log);
         eprintln!("webcodex-runner failed: {}", e);
-        std::process::exit(1);
+        std::process::exit(webcodex_runner::transport::failure_exit_code(&e));
     }
     #[cfg(target_os = "macos")]
     if let Some(log) = service_log.as_mut() {

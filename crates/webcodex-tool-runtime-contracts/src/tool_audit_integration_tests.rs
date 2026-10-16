@@ -410,3 +410,60 @@ fn observe_jobs_wake_policy_defaults_validates_and_audits_safely() {
         assert!(ToolCall::from_tool_name("observe_jobs", args.clone()).is_err());
     }
 }
+
+#[test]
+fn revise_goal_plan_audit_retains_identity_and_counts_without_plan_reason_or_key() {
+    let goal = format!("wc_goal_{}", "a".repeat(16));
+    let call = ToolCall::from_tool_name(
+        "revise_goal_plan",
+        json!({
+            "goal_id": goal, "expected_revision": 7,
+            "steps": [{"id": "private_step", "title": "PRIVATE_PLAN_TITLE"}],
+            "reason": "PRIVATE_REVISION_REASON", "idempotency_key": "PRIVATE_REPLAY_KEY"
+        }),
+    )
+    .unwrap();
+    let audit = call.session_log_arguments();
+    assert_eq!(
+        audit,
+        json!({"goal_id": goal, "expected_revision": 7, "step_count": 1, "reason_bytes": "PRIVATE_REVISION_REASON".len(), "idempotency_key_present": true})
+    );
+    let result = crate::tool_audit::session_log_result_for_tool(
+        "revise_goal_plan",
+        &json!({
+            "goal": {"summary": {"goal_id": goal, "revision": 8, "lifecycle": "active"},
+                "plan": {"steps": ["PRIVATE_PLAN_TITLE"]}, "plan_history": {"revisions": ["PRIVATE_REVISION_REASON"]}},
+            "created": false, "replayed": false, "state_changed": true
+        }),
+    );
+    assert_eq!(result["goal_id"], goal);
+    assert_eq!(result["revision"], 8);
+    assert_eq!(result["state_changed"], true);
+    for private in [
+        "PRIVATE_PLAN_TITLE",
+        "PRIVATE_REVISION_REASON",
+        "PRIVATE_REPLAY_KEY",
+        "private_step",
+    ] {
+        assert!(!audit.to_string().contains(private));
+        assert!(!result.to_string().contains(private));
+    }
+}
+
+#[test]
+fn goal_completion_conditions_edit_does_not_leak_intent_into_audit() {
+    let call = ToolCall::from_tool_name(
+        "update_goal",
+        json!({
+            "goal_id": "wc_goal_AAAAAAAAAAAAAAAA", "expected_revision": 2,
+            "completion_conditions": ["PRIVATE_COMPLETION_CONDITION"],
+            "idempotency_key": "PRIVATE_GOAL_EDIT_KEY"
+        }),
+    )
+    .unwrap();
+    let audit = call.session_log_arguments();
+    assert_eq!(audit["goal_id"], "wc_goal_AAAAAAAAAAAAAAAA");
+    assert_eq!(audit["expected_revision"], 2);
+    assert!(!audit.to_string().contains("PRIVATE_COMPLETION_CONDITION"));
+    assert!(!audit.to_string().contains("PRIVATE_GOAL_EDIT_KEY"));
+}

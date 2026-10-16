@@ -48,6 +48,40 @@ pub(in crate::mcp) async fn handle_call(
     model_ergonomics_out: Option<&mut Option<ModelErgonomicsRecord>>,
     correlation_out: Option<&mut crate::tool_runtime::ToolCallCorrelation>,
 ) -> McpOutcome {
+    if let Some(name) = request_params.get("name").and_then(Value::as_str) {
+        if super::super::workbench::is_adapter_tool(name) {
+            if !stateless_2026 || !server_mcp_apps_enabled {
+                return McpOutcome::BadRequest(rpc_error(
+                    id,
+                    -32602,
+                    "Workbench App operation is unavailable",
+                ));
+            }
+            let result = super::super::workbench::call(
+                runtime,
+                name,
+                request_params
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or_else(|| json!({})),
+                auth,
+                window,
+            )
+            .await;
+            let success = result.success;
+            if let Some(lc) = lifecycle.as_deref() {
+                lc.dispatch_finished(
+                    success,
+                    Some(success),
+                    if success { "success" } else { "tool_error" },
+                );
+            }
+            let mut framed =
+                mcp_runtime_tool_result_fallback(result, true, McpToolResultPresentation::Standard);
+            attach_app_tool_content_fallback(&mut framed);
+            return McpOutcome::Ok(rpc_result(id, mcp_stateless_result(framed, false)));
+        }
+    }
     let context = CallContext {
         runtime,
         id,
@@ -122,7 +156,7 @@ impl ParsedCall {
         if params.name == "search_mentions" {
             return Err(search_mentions(context, params.arguments).await);
         }
-        let app_call_id = if stateless_2026 && is_host_continuation_app_tool_name(&params.name) {
+        let app_call_id = if stateless_2026 && is_diagnostic_app_tool_name(&params.name) {
             match strip_agent_continuation_app_call_id(&mut params.arguments) {
                 Ok(app_call_id) => app_call_id,
                 Err(message) => {

@@ -1,6 +1,117 @@
 use super::*;
 
 #[test]
+fn runner_cli_server_url_is_explicit_and_has_no_retired_alias() {
+    let _guard = test_env_lock();
+    let action = parse_runner_args([
+        "--config",
+        "/tmp/runner.toml",
+        "--server-url",
+        "http://172.29.32.1:8080",
+    ])
+    .unwrap();
+    assert!(
+        matches!(action, RunnerCliAction::Run { server_url: Some(url), .. } if url == "http://172.29.32.1:8080")
+    );
+    assert!(parse_runner_args(["--server-url"]).is_err());
+    assert!(parse_runner_args(["--server-url-override", "http://localhost"]).is_err());
+    assert!(parse_runner_args([
+        "--server-url",
+        "http://localhost",
+        "--server-url",
+        "http://other"
+    ])
+    .is_err());
+}
+
+#[test]
+fn runner_cli_url_survives_reload_without_changing_persistent_identity() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("runner.toml");
+    let initial = format!("server_url = 'http://172.20.0.1:8080'\ntoken = 'private-fixture-token'\nclient_id = 'wsl-runner'\nowner = 'original-owner'\nproject_registry_dir = {:?}\n[policy]\nallow_cwd_anywhere = true\n", tmp.path().join("registry"));
+    std::fs::write(&path, &initial).unwrap();
+    let cfg = crate::webcodex_runner::config::load_config_with_server_url(
+        &path,
+        Some("http://172.29.32.1:8080"),
+    )
+    .unwrap();
+    assert_eq!(cfg.server_url, "http://172.29.32.1:8080");
+    assert_eq!(cfg.token, "private-fixture-token");
+    assert_eq!(cfg.client_id, "wsl-runner");
+    assert_eq!(cfg.owner.as_deref(), Some("original-owner"));
+    assert_eq!(
+        cfg.project_registry_dir.as_deref(),
+        Some(tmp.path().join("registry").as_path())
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), initial);
+    let runtime = ReloadableRunnerConfig::new(cfg, path.clone());
+    let edited = initial.replace("172.20.0.1", "172.30.0.1");
+    std::fs::write(&path, &edited).unwrap();
+    let checked = runtime.check_config();
+    assert!(!checked
+        .restart_required_fields
+        .contains(&"server_url".to_string()));
+    let reloaded = runtime.reload_config(1);
+    assert_eq!(reloaded.current_generation, Some(2));
+    assert!(!reloaded
+        .restart_required_fields
+        .contains(&"server_url".to_string()));
+    assert_eq!(runtime.server_url(), "http://172.29.32.1:8080");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), edited);
+    assert_eq!(
+        load_config(&path).unwrap().server_url,
+        "http://172.30.0.1:8080"
+    );
+}
+
+#[test]
+fn runner_url_validation_is_shared_and_never_falls_back_or_echoes_secrets() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("runner.toml");
+    let prefix =
+        "token = 'fixture'\nclient_id = 'wsl-runner'\n[policy]\nallow_cwd_anywhere = true\n";
+    for invalid in [
+        "",
+        "bad-private-value",
+        "ftp://example.com",
+        "http://user:private-password@example.com",
+        "http://example.com/private-path",
+        "http://example.com?private-query",
+        "http://example.com#private-fragment",
+        "http://example.com:0",
+    ] {
+        std::fs::write(&path, format!("server_url = {invalid:?}\n{prefix}")).unwrap();
+        let config_error = load_config(&path).unwrap_err();
+        std::fs::write(
+            &path,
+            format!("server_url = 'http://example.com'\n{prefix}"),
+        )
+        .unwrap();
+        let cli_error =
+            crate::webcodex_runner::config::load_config_with_server_url(&path, Some(invalid))
+                .unwrap_err();
+        assert_eq!(config_error, cli_error);
+        assert!(!cli_error.contains("private-"));
+    }
+}
+
+#[test]
+fn runner_authentication_failure_has_terminal_supervisor_exit_status() {
+    assert_eq!(
+        crate::webcodex_runner::transport::failure_exit_code("authentication failed"),
+        77
+    );
+    assert_eq!(
+        crate::webcodex_runner::transport::failure_exit_code("certificate invalid"),
+        78
+    );
+    assert_eq!(
+        crate::webcodex_runner::transport::failure_exit_code("connection closed"),
+        1
+    );
+}
+
+#[test]
 fn runner_config_rejects_retired_projects_dir() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("runner.toml");
@@ -434,6 +545,7 @@ fn runner_cli_explicit_config_path_remains_exact() {
     assert_eq!(
         action,
         RunnerCliAction::Run {
+            server_url: None,
             config_path: PathBuf::from("/tmp/agent.toml"),
             once: true,
             stop_on_stdin_eof: false,
@@ -465,6 +577,7 @@ fn computer_session_cli_modes_are_explicit_and_do_not_need_runner_config() {
         ])
         .unwrap(),
         RunnerCliAction::Run {
+            server_url: None,
             config_path: PathBuf::from("/tmp/runner.toml"),
             once: false,
             stop_on_stdin_eof: false,
@@ -484,6 +597,7 @@ fn runner_parent_liveness_is_explicit_opt_in() {
     assert_eq!(
         action,
         RunnerCliAction::Run {
+            server_url: None,
             config_path: PathBuf::from("/tmp/runner.toml"),
             once: false,
             stop_on_stdin_eof: true,
@@ -501,6 +615,7 @@ fn runner_cli_config_env_uses_only_canonical_name() {
             assert_eq!(
                 parse_runner_args(std::iter::empty::<&str>()).unwrap(),
                 RunnerCliAction::Run {
+                    server_url: None,
                     config_path: PathBuf::from("/tmp/runner.toml"),
                     once: false,
                     stop_on_stdin_eof: false,
@@ -544,6 +659,7 @@ fn runner_cli_profile_derives_default_config_path() {
     assert_eq!(
         action,
         RunnerCliAction::Run {
+            server_url: None,
             config_path: client_profile_runner_config("special").unwrap(),
             once: false,
             stop_on_stdin_eof: false,
@@ -560,6 +676,7 @@ fn runner_cli_explicit_config_overrides_profile() {
     assert_eq!(
         action,
         RunnerCliAction::Run {
+            server_url: None,
             config_path: PathBuf::from("/tmp/agent.toml"),
             once: false,
             stop_on_stdin_eof: false,

@@ -539,3 +539,62 @@ async fn browser_query_rechecks_additive_capability_before_enqueue() {
         }
     }
 }
+
+#[tokio::test]
+async fn browser_user_handoff_requires_new_exact_capability_before_dispatch() {
+    for kind in ["browser_begin_user_handoff", "browser_finish_user_handoff"] {
+        for supported in [false, true] {
+            let registry = RunnerRegistry::default();
+            let alice = auth_context(Some("alice"), false);
+            let mut registration = runner_registration("handoff", "handoff-instance", vec![]);
+            registration.owner = Some("alice".into());
+            registration.capabilities = v2_baseline_capabilities();
+            for feature in [
+                RunnerFeature::BrowserControl,
+                RunnerFeature::BrowserSurfaceHandoff,
+                RunnerFeature::ComputerObserve,
+            ] {
+                registration.capabilities.set(feature, true);
+            }
+            registration
+                .capabilities
+                .set(RunnerFeature::BrowserUserHandoff, supported);
+            registry.register(registration).await.unwrap();
+            let payload = serde_json::json!({"browser_id":"browser_fixture","session_id":"session_owner", "message_id":"message_question"}).to_string();
+            let result = registry
+                .enqueue_browser(
+                    "handoff".into(),
+                    kind,
+                    payload.clone(),
+                    "alice".into(),
+                    Some(&alice),
+                    30,
+                )
+                .await;
+            if supported {
+                let (_, _receipt) = result.unwrap();
+                let request = registry
+                    .poll(RunnerPollRequest {
+                        client_id: "handoff".into(),
+                        runner_instance_id: "handoff-instance".into(),
+                    })
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(request.kind, kind);
+                assert_eq!(request.stdin.as_deref(), Some(payload.as_str()));
+                assert!(request.command.is_empty());
+            } else {
+                assert!(result.unwrap_err().contains("browser_user_handoff"));
+                assert!(registry
+                    .poll(RunnerPollRequest {
+                        client_id: "handoff".into(),
+                        runner_instance_id: "handoff-instance".into()
+                    })
+                    .await
+                    .unwrap()
+                    .is_none());
+            }
+        }
+    }
+}

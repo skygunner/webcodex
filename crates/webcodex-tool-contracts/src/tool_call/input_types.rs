@@ -679,8 +679,8 @@ pub struct OpenAiHostFileRef {
 }
 
 /// Adapter-derived provenance for host file references. This is deliberately
-/// skipped by serde on ToolCall: caller/model JSON can never grant either trust
-/// path, and the two host mechanisms cannot impersonate one another.
+/// skipped by serde on ToolCall: caller/model JSON can never grant any trust
+/// path, and the host mechanisms cannot impersonate one another.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
 pub enum HostFileImportProvenance {
     #[default]
@@ -688,6 +688,9 @@ pub enum HostFileImportProvenance {
 
     /// Authenticated MCP OAuth client that may import only from OpenAI file hosts.
     AuthenticatedMcpOpenAiHostFile,
+    /// Loopback Desktop/Secure-Tunnel trust. Public HTTPS remains allowed, while
+    /// OpenAI file hosts may additionally resolve through the RFC 2544 fake-IP pool.
+    LoopbackTrustedMcpHostFile,
     /// Explicitly allowlisted MCP client that may import from arbitrary public HTTPS.
     TrustedMcpHostFile,
 }
@@ -953,6 +956,30 @@ impl BrowserLaunchModeCall {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BrowserActToolCall {
+    /// Hold automatic effects on one exact visible owned managed Browser.
+    BeginUserHandoff {
+        #[schemars(length(min = 1, max = 128))]
+        client_id: String,
+        #[schemars(regex(pattern = "^browser_[A-Za-z0-9_-]{16,64}$"))]
+        browser_id: String,
+        #[schemars(length(min = 1, max = 128))]
+        session_id: String,
+        /// An existing open question or todo in the independently authorized Session.
+        #[schemars(length(min = 1, max = 128))]
+        message_id: String,
+    },
+    /// Release only the original Session/Browser/fence; then take a fresh snapshot.
+    FinishUserHandoff {
+        #[schemars(length(min = 1, max = 128))]
+        client_id: String,
+        #[schemars(regex(pattern = "^browser_[A-Za-z0-9_-]{16,64}$"))]
+        browser_id: String,
+        #[schemars(length(min = 1, max = 128))]
+        session_id: String,
+        #[schemars(regex(pattern = "^handoff_[A-Za-z0-9_-]{16,64}$"))]
+        handoff_fence: String,
+    },
+
     /// Attach an exact live extension offer. Closing this Browser only detaches.
     Attach {
         #[schemars(length(min = 1, max = 128))]
@@ -1172,6 +1199,8 @@ pub enum BrowserActToolCall {
 impl BrowserActToolCall {
     pub const fn action_name(&self) -> &'static str {
         match self {
+            Self::BeginUserHandoff { .. } => "begin_user_handoff",
+            Self::FinishUserHandoff { .. } => "finish_user_handoff",
             Self::Launch { .. } => "launch",
             Self::Attach { .. } => "attach",
             Self::NewPage { .. } => "new_page",
@@ -1442,7 +1471,7 @@ pub struct ComputerSnapshotRegion {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GoalStepInputCall {
-    /// Stable step id, fixed for the lifetime of this Goal plan.
+    /// Stable step id; retained ids preserve status and completed ids cannot be removed or renamed.
     #[schemars(regex(pattern = "^[A-Za-z0-9_-]{1,32}$"))]
     pub id: String,
     /// Bounded plan milestone, not a Task instruction or execution selector.

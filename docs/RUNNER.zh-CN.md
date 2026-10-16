@@ -326,9 +326,12 @@ Runner 到 configured local provider 的内建 gateway 有意限制为 bounded s
 - Provider 主动发起的 ping（数字或字符串 ID）即使在空闲期间也会收到空 JSON-RPC result；Notification 不回复，并有洪泛限制；
 - 合法但未支持的 Provider callback 返回 JSON-RPC -32601，不授予 sampling、roots 或 elicitation 能力；畸形消息与未知响应 ID 仍属于致命协议错误；
 - 不支持 list pagination 以及端到端 progress/cancellation 转发；
+- `tools/list` 保持目录 1 MiB、128 个工具的上限；4096 个 JSON 节点的预算分别应用于每个工具和响应外层字段，并保留现有深度及单个 schema 限制；
 - tool result 支持 text 以及标准的有界 image content block，并保持 provider `content` 原始顺序；image `data` 必须是 standard Base64，MIME 仅支持 `image/png`、`image/jpeg`、`image/webp`，单个 result 内全部 image block 合计 decoded data 上限为 4 MiB；
+- `resource_link` content block 按原始顺序保留 provider URI、名称和可选资源元数据，沿用现有 512 KiB 非图片结果预算及 JSON 结构限制；链接作为数据转发，网关不读取链接目标，也不增加下游 `resources/read` 支持；
+- Runner→Server 的 `resource_link` 结果需要独立的滚动升级能力标记 `mcp_gateway_resource_links`：新 Server 仅对声明支持的 Runner 开启，新 Runner 对旧 Server 未标记的 `tools/call` 保持旧行为，返回已完成的内容不支持错误，而不是传输旧 Server 无法解析的结果；
 - 有界 `structuredContent` 与 image content 独立原样保留；
-- audio、resource、`resource_link` 以及未知 content block type 仍不支持。
+- audio、嵌入式 resource 以及未知 content block type 仍不支持。
 
 不支持的 protocol/content shape 会 fail closed，而不是静默转换；该 gateway 仍是 bounded MCP tool subset，不是透明的 media/resource bridge。
 

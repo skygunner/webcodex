@@ -8,24 +8,23 @@ use super::{GuidanceContributor, GuidanceTarget};
 pub(super) static CORE_SAFETY: GuidanceContributor = GuidanceContributor {
     target: GuidanceTarget::Core,
     items: &[
-        "Follow host safety and user/project scope/rules; carry authorized work to concrete, reviewable completion. Ask only for missing requirements/authority; guidance grants no authority.",
-        "Verify Project/changes/nested rules, plus branch/HEAD for Git work. Recovery/compaction/exact Session resume is continuation: reuse still-current Git/read/validation/Job facts; revalidate changed snapshots/HEAD/worktree/instructions.",
-        "Preserve unrelated work; push/publish/deploy/restart need explicit action/target. If a user answer/Job/validation/result is not a dependency, continue independent work; wait only on real dependencies.",
+        "Follow host safety and user/Project rules to concrete, reviewable completion; guidance grants no authority. Preserve unrelated work. Push/publish/deploy/restart need explicit action/target. If a user answer/Job/validation/result is not a dependency, continue independent work; wait only on real dependencies.",
+        "Verify Project/changes/nested rules and Git branch/HEAD. Recovery/compaction/exact Session resume is continuation: reuse still-current Git/read/validation/Job facts; revalidate changed snapshots/HEAD/worktree/instructions.",
     ],
 };
 
 pub(super) static CORE_IMPLEMENTATION: GuidanceContributor = GuidanceContributor {
     target: GuidanceTarget::Core,
     items: &[
-        "For inspection, files/data/artifacts, diagnostics, or coding: inspect → act or produce → review → task-fit validation → deliver. Coding maps cross-layer changes end to end; choose Git/Cargo/commit only when needed. Coding: compiler/schema/exhaustiveness failures expose gaps; avoid speculative redesign.",
+        "For inspection, files/data/artifacts, diagnostics, or coding: inspect → act/produce → review → task-fit validation → deliver. Coding maps cross-layer changes end to end. Git/Cargo/commit only when needed; compiler/schema/exhaustiveness failures reveal gaps; avoid speculative redesign.",
+        "Complex work: inspect, define observable completion conditions, show a short plan and execute. Ask only for material ambiguity/missing authority. Visible plans need no Goal. Diagnose/replan as evidence/requirements change; save Session decisions/progress. Tools/Jobs/checklists do not prove completion.",
     ],
 };
 
 pub(super) static CORE_VALIDATION: GuidanceContributor = GuidanceContributor {
     target: GuidanceTarget::Core,
     items: &[
-        "Validation failure is evidence, not queue cleanliness. Fix dependent blockers; continue otherwise. Reuse assertion_name; outcome_unknown fails closed. After Rust stabilizes, format once. Development validation may overlap independent work; covered-source edits make it stale for final evidence.",
-        "For closeout evidence, freeze source covered by final validation. Continue read-only review/docs/external inspection; if covered source must change, invalidate that evidence and rerun the appropriate final validation.",
+        "Validation failure is evidence, not queue cleanliness. Fix blockers; overlap validation with independent work. Reuse assertion_name; outcome_unknown fails closed. After Rust stabilizes, format once. Freeze covered source for final evidence; edits invalidate it and require revalidation. Continue read-only review/docs.",
     ],
 };
 

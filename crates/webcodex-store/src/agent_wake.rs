@@ -425,6 +425,11 @@ impl Database {
                 [],
                 |row| row.get(0),
             )?;
+            let endpoint_pin_exists: bool = endpoint_execution_table_exists && transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('wc_agent_task_endpoint_executions') WHERE name = 'pinned_endpoint_id')",
+                [],
+                |row| row.get(0),
+            )?;
             if endpoint_execution_table_exists {
                 transaction.execute_batch(
                     "ALTER TABLE wc_agent_task_endpoint_executions RENAME TO wc_agent_task_endpoint_executions_pre_attention;
@@ -581,19 +586,44 @@ impl Database {
                         endpoint_controller_generation INTEGER,
                         created_at_unix_ms INTEGER NOT NULL,
                         updated_at_unix_ms INTEGER NOT NULL,
+                        pinned_endpoint_id TEXT REFERENCES wc_agent_endpoints(endpoint_id),
+                        pinned_endpoint_controller_generation INTEGER,
                         PRIMARY KEY(task_id, attempt_id),
                         CHECK(
                             (endpoint_id IS NULL AND endpoint_controller_generation IS NULL)
                             OR (endpoint_id IS NOT NULL AND endpoint_controller_generation >= 1)
+                        ),
+                        CHECK(
+                            (pinned_endpoint_id IS NULL AND pinned_endpoint_controller_generation IS NULL)
+                            OR (pinned_endpoint_id IS NOT NULL AND pinned_endpoint_controller_generation >= 1)
                         ),
                         FOREIGN KEY(task_id) REFERENCES wc_agent_tasks(task_id),
                         FOREIGN KEY(attempt_id) REFERENCES wc_agent_task_attempts(attempt_id),
                         FOREIGN KEY(wake_id) REFERENCES wc_agent_wakes(wake_id),
                         FOREIGN KEY(endpoint_id) REFERENCES wc_agent_endpoints(endpoint_id)
                      );
-                     INSERT INTO wc_agent_task_endpoint_executions
-                         SELECT * FROM wc_agent_task_endpoint_executions_pre_attention;
-                     DROP TABLE wc_agent_task_endpoint_executions_pre_attention;
+                     INSERT INTO wc_agent_task_endpoint_executions (
+                         task_id, attempt_id, wake_id, start_identity_fingerprint,
+                         endpoint_id, endpoint_controller_generation,
+                         created_at_unix_ms, updated_at_unix_ms
+                     ) SELECT task_id, attempt_id, wake_id, start_identity_fingerprint,
+                              endpoint_id, endpoint_controller_generation,
+                              created_at_unix_ms, updated_at_unix_ms
+                       FROM wc_agent_task_endpoint_executions_pre_attention;",
+                )?;
+                if endpoint_pin_exists {
+                    transaction.execute_batch(
+                        "UPDATE wc_agent_task_endpoint_executions
+                         SET (pinned_endpoint_id, pinned_endpoint_controller_generation) = (
+                             SELECT pinned_endpoint_id, pinned_endpoint_controller_generation
+                             FROM wc_agent_task_endpoint_executions_pre_attention old
+                             WHERE old.task_id = wc_agent_task_endpoint_executions.task_id
+                               AND old.attempt_id = wc_agent_task_endpoint_executions.attempt_id
+                         );",
+                    )?;
+                }
+                transaction.execute_batch(
+                    "DROP TABLE wc_agent_task_endpoint_executions_pre_attention;
                      CREATE INDEX idx_wc_agent_task_endpoint_executions_task
                          ON wc_agent_task_endpoint_executions(task_id, updated_at_unix_ms DESC);",
                 )?;
@@ -615,6 +645,11 @@ impl Database {
         if wake_table_exists && !has_wait_source {
             let endpoint_execution_table_exists: bool = transaction.query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'wc_agent_task_endpoint_executions')",
+                [],
+                |row| row.get(0),
+            )?;
+            let endpoint_pin_exists: bool = endpoint_execution_table_exists && transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('wc_agent_task_endpoint_executions') WHERE name = 'pinned_endpoint_id')",
                 [],
                 |row| row.get(0),
             )?;
@@ -772,17 +807,40 @@ impl Database {
                         endpoint_controller_generation INTEGER,
                         created_at_unix_ms INTEGER NOT NULL,
                         updated_at_unix_ms INTEGER NOT NULL,
+                        pinned_endpoint_id TEXT REFERENCES wc_agent_endpoints(endpoint_id),
+                        pinned_endpoint_controller_generation INTEGER,
                         PRIMARY KEY(task_id, attempt_id),
                         CHECK((endpoint_id IS NULL AND endpoint_controller_generation IS NULL)
                            OR (endpoint_id IS NOT NULL AND endpoint_controller_generation >= 1)),
+                        CHECK((pinned_endpoint_id IS NULL AND pinned_endpoint_controller_generation IS NULL)
+                           OR (pinned_endpoint_id IS NOT NULL AND pinned_endpoint_controller_generation >= 1)),
                         FOREIGN KEY(task_id) REFERENCES wc_agent_tasks(task_id),
                         FOREIGN KEY(attempt_id) REFERENCES wc_agent_task_attempts(attempt_id),
                         FOREIGN KEY(wake_id) REFERENCES wc_agent_wakes(wake_id),
                         FOREIGN KEY(endpoint_id) REFERENCES wc_agent_endpoints(endpoint_id)
                      );
-                     INSERT INTO wc_agent_task_endpoint_executions
-                         SELECT * FROM wc_agent_task_endpoint_executions_pre_wait;
-                     DROP TABLE wc_agent_task_endpoint_executions_pre_wait;
+                     INSERT INTO wc_agent_task_endpoint_executions (
+                         task_id, attempt_id, wake_id, start_identity_fingerprint,
+                         endpoint_id, endpoint_controller_generation,
+                         created_at_unix_ms, updated_at_unix_ms
+                     ) SELECT task_id, attempt_id, wake_id, start_identity_fingerprint,
+                              endpoint_id, endpoint_controller_generation,
+                              created_at_unix_ms, updated_at_unix_ms
+                       FROM wc_agent_task_endpoint_executions_pre_wait;",
+                )?;
+                if endpoint_pin_exists {
+                    transaction.execute_batch(
+                        "UPDATE wc_agent_task_endpoint_executions
+                         SET (pinned_endpoint_id, pinned_endpoint_controller_generation) = (
+                             SELECT pinned_endpoint_id, pinned_endpoint_controller_generation
+                             FROM wc_agent_task_endpoint_executions_pre_wait old
+                             WHERE old.task_id = wc_agent_task_endpoint_executions.task_id
+                               AND old.attempt_id = wc_agent_task_endpoint_executions.attempt_id
+                         );",
+                    )?;
+                }
+                transaction.execute_batch(
+                    "DROP TABLE wc_agent_task_endpoint_executions_pre_wait;
                      CREATE INDEX idx_wc_agent_task_endpoint_executions_task
                          ON wc_agent_task_endpoint_executions(task_id, updated_at_unix_ms DESC);",
                 )?;
@@ -2555,6 +2613,9 @@ fn retire_stale_agent_task_wakes_for_agent(
                        SELECT 1
                        FROM wc_agent_tasks t
                        JOIN wc_agent_task_attempts a ON a.attempt_id = w.source_task_attempt_id
+                       JOIN wc_agent_task_endpoint_executions e ON e.wake_id = w.wake_id
+                       LEFT JOIN wc_agent_endpoints p ON p.endpoint_id = e.pinned_endpoint_id
+                       JOIN wc_agent_identities i ON i.agent_id = w.target_agent_id
                        WHERE t.task_id = w.source_task_id
                          AND t.latest_attempt_id = a.attempt_id
                          AND t.assignee_agent_id = w.target_agent_id
@@ -2562,6 +2623,12 @@ fn retire_stale_agent_task_wakes_for_agent(
                          AND t.state = 'active'
                          AND a.state = 'active'
                          AND a.lease_expires_at_unix_ms > ?2
+                         AND (e.pinned_endpoint_id IS NULL OR (
+                             p.agent_id = w.target_agent_id AND p.lifecycle = 'attached'
+                             AND p.wake_capable = 1 AND p.lease_expires_at_unix_ms > ?2
+                             AND p.controller_generation = e.pinned_endpoint_controller_generation
+                             AND i.current_controller_generation = e.pinned_endpoint_controller_generation
+                         ))
                    )",
             )
             .map_err(store_error)?;
@@ -2586,6 +2653,26 @@ fn bind_agent_task_wake_carrier(
     endpoint_controller_generation: i64,
     now: i64,
 ) -> Result<(), CommunicationStoreError> {
+    // The claim's mutable carrier binding must never replace an explicit
+    // submission target, including after restart or endpoint-loss recovery.
+    let pin: (Option<String>, Option<i64>) = transaction
+        .query_row(
+            "SELECT pinned_endpoint_id, pinned_endpoint_controller_generation
+         FROM wc_agent_task_endpoint_executions WHERE wake_id = ?1",
+            params![wake.wake_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(store_error)?;
+    if pin.0.as_deref().is_some_and(|pinned| pinned != endpoint_id)
+        || pin
+            .1
+            .is_some_and(|pinned| pinned != endpoint_controller_generation)
+    {
+        return Err(CommunicationStoreError::new(
+            "agent_task_endpoint_target_stale",
+            "AgentTask continuation is pinned to another exact Endpoint generation",
+        ));
+    }
     let task_id = wake.source_task_id.as_deref().ok_or_else(|| {
         CommunicationStoreError::new(
             "agent_task_wake_invariant",

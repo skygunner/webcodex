@@ -285,6 +285,13 @@ async fn gateway_and_app_canonical_failures_use_request_presentation() {
 }
 
 async fn register_failure_runner(runtime: &ToolRuntime) {
+    register_failure_runner_with_resource_links(runtime, false).await;
+}
+
+async fn register_failure_runner_with_resource_links(
+    runtime: &ToolRuntime,
+    allow_resource_links: bool,
+) {
     runtime
         .runner_registry
         .register(crate::test_support::current_runner_registration(
@@ -317,6 +324,7 @@ async fn register_failure_runner(runtime: &ToolRuntime) {
                     structured_process_argv: true,
                     apply_text_edit_local_guard_without_sha: true,
                     apply_text_edit_occurrence: true,
+                    mcp_gateway_resource_links: allow_resource_links,
                     ..Default::default()
                 },
             },
@@ -474,7 +482,10 @@ async fn http_openai_mcp_passthrough_preserves_provider_error() {
             } else {
                 assert!(matches!(
                     request.mcp_gateway,
-                    Some(McpGatewayRequest::ToolsCall { .. })
+                    Some(McpGatewayRequest::ToolsCall {
+                        allow_resource_links: false,
+                        ..
+                    })
                 ));
                 McpGatewayResponsePayload::ToolResult {
                     result: provider_result.clone(),
@@ -526,13 +537,13 @@ async fn http_openai_mcp_passthrough_preserves_provider_error() {
 
 #[allow(clippy::await_holding_lock)]
 #[tokio::test]
-async fn http_mcp_passthrough_preserves_mixed_image_content_order() {
+async fn http_mcp_passthrough_preserves_mixed_image_and_resource_link_content() {
     let _env = crate::auth::AuthEnvGuard::new();
     _env.enable_direct_shared_key();
     _env.disable_open_anonymous();
     let (_tmp, db) = test_db();
     let runtime = Arc::new(test_runtime());
-    register_failure_runner(&runtime).await;
+    register_failure_runner_with_resource_links(&runtime, true).await;
     let service = Service::new(build_test_router(
         test_config(Some("secret")),
         db,
@@ -547,6 +558,19 @@ async fn http_mcp_passthrough_preserves_mixed_image_content_order() {
                 data: "iVBORw0KGgo=".into(),
                 mime_type: "image/png".into(),
             },
+            serde_json::from_value(json!({
+                "type": "resource_link",
+                "uri": "blockbench://project/model.bbmodel",
+                "name": "model.bbmodel",
+                "title": "Model",
+                "description": "Current project",
+                "mimeType": "application/json",
+                "size": 1024,
+                "annotations": {"audience": ["user"], "priority": 0.5},
+                "icons": [{"src": "https://example.com/icon.png", "mimeType": "image/png"}],
+                "_meta": {"providerExtension": true}
+            }))
+            .unwrap(),
             McpGatewayContent::Text {
                 text: "after".into(),
             },
@@ -581,7 +605,10 @@ async fn http_mcp_passthrough_preserves_mixed_image_content_order() {
             } else {
                 assert!(matches!(
                     request.mcp_gateway,
-                    Some(McpGatewayRequest::ToolsCall { .. })
+                    Some(McpGatewayRequest::ToolsCall {
+                        allow_resource_links: true,
+                        ..
+                    })
                 ));
                 McpGatewayResponsePayload::ToolResult {
                     result: provider_result.clone(),
@@ -629,7 +656,8 @@ async fn http_mcp_passthrough_preserves_mixed_image_content_order() {
             assert_eq!(body["result"]["content"][1]["type"], "image");
             assert_eq!(body["result"]["content"][1]["data"], "iVBORw0KGgo=");
             assert_eq!(body["result"]["content"][1]["mimeType"], "image/png");
-            assert_eq!(body["result"]["content"][2]["text"], "after");
+            assert_eq!(body["result"]["content"][2]["type"], "resource_link");
+            assert_eq!(body["result"]["content"][3]["text"], "after");
             assert_eq!(
                 body["result"]["structuredContent"],
                 json!({"kind": "mixed"})

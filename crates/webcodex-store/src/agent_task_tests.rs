@@ -2942,6 +2942,325 @@ fn replay_record_and_effect_commit_atomically_for_create_start_and_completion() 
 }
 
 #[test]
+fn pinned_endpoint_schema_migration_preserves_generic_execution_and_replay() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("pre-pin-execution.db");
+    let owner = principal('c');
+    let db = Database::open(&path).unwrap();
+    let assignee = agent(&db, &owner, "pre-pin-agent");
+    let task_id = create_assigned_task(&db, &owner, &assignee, "pre-pin-task");
+    let started = start(
+        &db,
+        &owner,
+        &task_id,
+        &assignee,
+        "pre-pin-attempt",
+        wall_now_ms(),
+    );
+    let execution = db
+        .start_agent_task_endpoint_continuation(
+            &owner,
+            &task_id,
+            &started.attempt.attempt_id,
+            &assignee,
+            &started.attempt_fence,
+            started.attempt.attempt_controller_generation,
+        )
+        .unwrap();
+    // Reconstruct the previously published Endpoint execution table shape.
+    db.conn_for_tests().execute_batch(
+        "ALTER TABLE wc_agent_task_endpoint_executions DROP COLUMN pinned_endpoint_controller_generation;
+         ALTER TABLE wc_agent_task_endpoint_executions DROP COLUMN pinned_endpoint_id;",
+    ).unwrap();
+    drop(db);
+    for _ in 0..2 {
+        let reopened = Database::open(&path).unwrap();
+        let replay = reopened
+            .start_agent_task_endpoint_continuation(
+                &owner,
+                &task_id,
+                &started.attempt.attempt_id,
+                &assignee,
+                &started.attempt_fence,
+                started.attempt.attempt_controller_generation,
+            )
+            .unwrap();
+        assert!(replay.replayed);
+        assert_eq!(replay.execution.wake_id, execution.execution.wake_id);
+        let pin: (Option<String>, Option<i64>) = reopened
+            .conn_for_tests()
+            .query_row(
+                "SELECT pinned_endpoint_id, pinned_endpoint_controller_generation
+             FROM wc_agent_task_endpoint_executions WHERE wake_id = ?1",
+                params![execution.execution.wake_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(pin, (None, None));
+    }
+}
+
+#[test]
+fn pinned_endpoint_continuation_survives_restart_and_never_retargets_after_carrier_loss() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("pinned-endpoint.db");
+    let owner = principal('a');
+    let db = Database::open(&path).unwrap();
+    let assignee = agent(&db, &owner, "pinned-endpoint-agent");
+    let endpoint = db
+        .attach_agent_endpoint(
+            &owner,
+            NewAgentEndpoint {
+                agent_id: assignee.clone(),
+                host: "selected-chat".into(),
+                client_attachment_id: Some("selected-window".into()),
+                wake_capable: true,
+                idempotency_key: "pinned-endpoint".into(),
+            },
+        )
+        .unwrap()
+        .endpoint;
+    let task_id = create_assigned_task(&db, &owner, &assignee, "pinned-task");
+    let started = start(
+        &db,
+        &owner,
+        &task_id,
+        &assignee,
+        "pinned-attempt",
+        wall_now_ms(),
+    );
+    let dispatch = |db: &Database, endpoint_id: &str, generation: i64| {
+        db.start_agent_task_endpoint_continuation_pinned(
+            &owner,
+            &task_id,
+            &started.attempt.attempt_id,
+            &assignee,
+            &started.attempt_fence,
+            started.attempt.attempt_controller_generation,
+            endpoint_id,
+            generation,
+        )
+    };
+    let execution = dispatch(&db, &endpoint.endpoint_id, endpoint.controller_generation).unwrap();
+    let wake_id = execution.execution.wake_id;
+    assert!(!execution.replayed);
+    assert!(
+        dispatch(&db, &endpoint.endpoint_id, endpoint.controller_generation)
+            .unwrap()
+            .replayed
+    );
+    assert_eq!(
+        dispatch(
+            &db,
+            &endpoint.endpoint_id,
+            endpoint.controller_generation + 1
+        )
+        .unwrap_err()
+        .code(),
+        "agent_task_endpoint_execution_binding_conflict"
+    );
+    assert_eq!(
+        db.start_agent_task_endpoint_continuation(
+            &owner,
+            &task_id,
+            &started.attempt.attempt_id,
+            &assignee,
+            &started.attempt_fence,
+            started.attempt.attempt_controller_generation,
+        )
+        .unwrap_err()
+        .code(),
+        "agent_task_endpoint_execution_binding_conflict",
+        "a generic replay cannot remove the selected execution target"
+    );
+    drop(db);
+
+    let db = Database::open(&path).unwrap();
+    assert!(
+        dispatch(&db, &endpoint.endpoint_id, endpoint.controller_generation)
+            .unwrap()
+            .replayed
+    );
+    let claim = db
+        .claim_next_agent_wake(
+            &owner,
+            &assignee,
+            &endpoint.endpoint_id,
+            endpoint.controller_generation,
+            "pinned_test",
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        claim.wake.wake_id, wake_id,
+        "the exact selected route remains usable after restart"
+    );
+    db.set_agent_endpoint_wake_capability(
+        &owner,
+        &assignee,
+        &endpoint.endpoint_id,
+        endpoint.controller_generation,
+        false,
+    )
+    .unwrap();
+    let replacement = db
+        .attach_agent_endpoint(
+            &owner,
+            NewAgentEndpoint {
+                agent_id: assignee.clone(),
+                host: "another-chat".into(),
+                client_attachment_id: Some("another-window".into()),
+                wake_capable: true,
+                idempotency_key: "replacement-endpoint".into(),
+            },
+        )
+        .unwrap()
+        .endpoint;
+    drop(db);
+
+    let db = Database::open(&path).unwrap();
+    assert!(db
+        .claim_next_agent_wake(
+            &owner,
+            &assignee,
+            &replacement.endpoint_id,
+            replacement.controller_generation,
+            "pinned_test",
+        )
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        db.agent_wake(&wake_id).unwrap().unwrap().state,
+        AgentWakeState::Retired
+    );
+    let pin: (String, i64) = db
+        .conn_for_tests()
+        .query_row(
+            "SELECT pinned_endpoint_id, pinned_endpoint_controller_generation
+         FROM wc_agent_task_endpoint_executions WHERE wake_id = ?1",
+            params![wake_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        pin,
+        (endpoint.endpoint_id.clone(), endpoint.controller_generation),
+        "mutable carrier cleanup must preserve the immutable submission target"
+    );
+    assert_eq!(
+        dispatch(&db, &endpoint.endpoint_id, endpoint.controller_generation)
+            .unwrap()
+            .execution
+            .wake_state,
+        AgentWakeState::Retired,
+        "exact replay observes retirement without starting new work"
+    );
+}
+
+#[test]
+fn pinned_endpoint_pending_takeover_retires_and_stale_start_creates_no_wake() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = Database::open(&temp.path().join("pinned-pending.db")).unwrap();
+    let owner = principal('b');
+    let assignee = agent(&db, &owner, "pinned-pending-agent");
+    let endpoint = db
+        .attach_agent_endpoint(
+            &owner,
+            NewAgentEndpoint {
+                agent_id: assignee.clone(),
+                host: "selected-chat".into(),
+                client_attachment_id: None,
+                wake_capable: true,
+                idempotency_key: "selected-route".into(),
+            },
+        )
+        .unwrap()
+        .endpoint;
+    let task_id = create_assigned_task(&db, &owner, &assignee, "pinned-pending-task");
+    let started = start(
+        &db,
+        &owner,
+        &task_id,
+        &assignee,
+        "pinned-pending-attempt",
+        wall_now_ms(),
+    );
+    let execution = db
+        .start_agent_task_endpoint_continuation_pinned(
+            &owner,
+            &task_id,
+            &started.attempt.attempt_id,
+            &assignee,
+            &started.attempt_fence,
+            started.attempt.attempt_controller_generation,
+            &endpoint.endpoint_id,
+            endpoint.controller_generation,
+        )
+        .unwrap();
+    let replacement = db
+        .attach_agent_endpoint(
+            &owner,
+            NewAgentEndpoint {
+                agent_id: assignee.clone(),
+                host: "replacement-chat".into(),
+                client_attachment_id: None,
+                wake_capable: true,
+                idempotency_key: "replaced-route".into(),
+            },
+        )
+        .unwrap()
+        .endpoint;
+    assert!(db
+        .claim_next_agent_wake(
+            &owner,
+            &assignee,
+            &replacement.endpoint_id,
+            replacement.controller_generation,
+            "pinned_test",
+        )
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        db.agent_wake(&execution.execution.wake_id)
+            .unwrap()
+            .unwrap()
+            .state,
+        AgentWakeState::Retired
+    );
+
+    let stale_task = create_assigned_task(&db, &owner, &assignee, "pinned-stale-task");
+    let stale_attempt = start(
+        &db,
+        &owner,
+        &stale_task,
+        &assignee,
+        "pinned-stale-attempt",
+        wall_now_ms(),
+    );
+    assert_eq!(
+        db.start_agent_task_endpoint_continuation_pinned(
+            &owner,
+            &stale_task,
+            &stale_attempt.attempt.attempt_id,
+            &assignee,
+            &stale_attempt.attempt_fence,
+            stale_attempt.attempt.attempt_controller_generation,
+            &endpoint.endpoint_id,
+            endpoint.controller_generation,
+        )
+        .unwrap_err()
+        .code(),
+        "endpoint_expired"
+    );
+    assert!(
+        !db.read_agent_task(&owner, &stale_task)
+            .unwrap()
+            .summary
+            .execution_bound
+    );
+}
+
+#[test]
 fn endpoint_continuation_start_is_endpoint_independent_replay_safe_and_payload_free() {
     let temp = tempfile::tempdir().unwrap();
     let db = Database::open(&temp.path().join("agent-task-endpoint-start.db")).unwrap();

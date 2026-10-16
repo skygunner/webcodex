@@ -4,6 +4,43 @@
 use super::*;
 use crate::persistence::cold_session_from_record;
 
+impl SessionStore {
+    /// Update retained evidence without duplicating Hot/Cold ownership handling.
+    /// Active Cold records hydrate; Closed records stay Cold. The callback owns
+    /// event selection/timestamps and must be replay-safe: a Cold CAS conflict
+    /// reapplies it to the newer record. Persistence remains the caller's duty.
+    pub(super) fn update_retained_record<T: Clone>(
+        &self,
+        session_id: &str,
+        value: T,
+        update: impl Fn(&mut SessionRecord, T) -> bool,
+    ) -> bool {
+        let cold = {
+            let mut inner = self.inner.lock().expect("session store mutex poisoned");
+            if !inner.prepare_active_session(session_id) {
+                return false;
+            }
+            match inner.sessions.get_mut(session_id) {
+                Some(StoredSession::Hot(record)) => {
+                    // Move, rather than clone, the evidence on the ordinary Hot path.
+                    let updated = update(record, value);
+                    let closed = !record.lifecycle.allows_mutation();
+                    drop(inner);
+                    if updated && closed {
+                        self.coldify_closed_session(session_id);
+                    }
+                    return updated;
+                }
+                Some(StoredSession::Cold(record)) => record.clone(),
+                None => return false,
+            }
+        };
+        self.rewrite_cold_record(session_id, cold, false, |record, _| {
+            update(record, value.clone())
+        })
+    }
+}
+
 impl SessionStoreInner {
     /// Prepare only the exact Active mutation target. Reads use an ephemeral
     /// snapshot instead and therefore cannot promote a history scan into Hot RAM.

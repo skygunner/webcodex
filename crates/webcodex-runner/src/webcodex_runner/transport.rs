@@ -272,3 +272,16 @@ use websocket::{run_websocket_runner, websocket_session_classified};
 #[cfg(test)]
 #[path = "transport_tests.rs"]
 mod tests;
+
+/// Stable process diagnostics for supervisors; never changes transport authority.
+pub(crate) fn failure_exit_code(message: &str) -> i32 {
+    if diagnostics::classify_session_error(message).is_fatal()
+        && diagnostics::is_fatal_auth_or_register_error(message)
+    {
+        77
+    } else if diagnostics::is_fatal_config_or_tls_error(message) {
+        78
+    } else {
+        1
+    }
+}

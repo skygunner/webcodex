@@ -108,6 +108,7 @@ fn canonical_operation_names_are_unique_verb_first_and_route_independent() {
         "reconcile_",
         "heartbeat_",
         "checkpoint_",
+        "revise_",
         "associate_",
         "sync_",
         "find_",

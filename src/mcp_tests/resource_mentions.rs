@@ -15,8 +15,7 @@ async fn workbench_native_metadata_and_mentions_match_extension_contract() {
             .unwrap();
         assert_eq!(
             launcher["title"],
-            app.then_some(json!("Projects & Resources"))
-                .unwrap_or(Value::Null)
+            app.then_some(json!("WebCodex")).unwrap_or(Value::Null)
         );
         assert_eq!(
             launcher.pointer("/_meta/openai~1ui/entrypoints"),

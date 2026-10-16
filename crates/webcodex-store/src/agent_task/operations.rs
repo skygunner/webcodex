@@ -134,6 +134,30 @@ impl Database {
         Ok(())
     }
 
+    pub(crate) fn ensure_agent_task_endpoint_pin_schema(
+        conn: &mut Connection,
+    ) -> anyhow::Result<()> {
+        let has_pin: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('wc_agent_task_endpoint_executions') WHERE name = 'pinned_endpoint_id')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_pin {
+            conn.execute_batch(
+                "BEGIN IMMEDIATE;
+                 ALTER TABLE wc_agent_task_endpoint_executions
+                     ADD COLUMN pinned_endpoint_id TEXT REFERENCES wc_agent_endpoints(endpoint_id);
+                 ALTER TABLE wc_agent_task_endpoint_executions
+                     ADD COLUMN pinned_endpoint_controller_generation INTEGER CHECK(
+                         (pinned_endpoint_id IS NULL AND pinned_endpoint_controller_generation IS NULL)
+                         OR (pinned_endpoint_id IS NOT NULL AND pinned_endpoint_controller_generation IS NOT NULL
+                             AND pinned_endpoint_controller_generation >= 1));
+                 COMMIT;",
+            )?;
+        }
+        Ok(())
+    }
+
     pub fn create_agent_task(
         &self,
         principal: &CommunicationPrincipal,
@@ -727,7 +751,49 @@ impl Database {
             attempt_fence,
             attempt_controller_generation,
         )?;
-        self.start_agent_task_endpoint_continuation_with_now(principal, authority, now_unix_ms())
+        self.start_agent_task_endpoint_continuation_with_now(
+            principal,
+            authority,
+            None,
+            now_unix_ms(),
+        )
+    }
+
+    /// Start a continuation whose immutable execution target is this exact live
+    /// Endpoint generation. Replacement carriers cannot claim this Task Wake.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_agent_task_endpoint_continuation_pinned(
+        &self,
+        principal: &CommunicationPrincipal,
+        task_id: &str,
+        attempt_id: &str,
+        assignee_agent_id: &str,
+        attempt_fence: &str,
+        attempt_controller_generation: i64,
+        endpoint_id: &str,
+        endpoint_controller_generation: i64,
+    ) -> Result<AgentTaskEndpointExecutionMutation, CommunicationStoreError> {
+        let authority = AttemptAuthority::validated(
+            principal,
+            task_id,
+            attempt_id,
+            assignee_agent_id,
+            attempt_fence,
+            attempt_controller_generation,
+        )?;
+        validate_id(endpoint_id, AGENT_ENDPOINT_ID_PREFIX, "invalid_endpoint_id")?;
+        if endpoint_controller_generation < 1 {
+            return Err(CommunicationStoreError::new(
+                "invalid_controller_generation",
+                "Pinned Endpoint generation must be at least 1",
+            ));
+        }
+        self.start_agent_task_endpoint_continuation_with_now(
+            principal,
+            authority,
+            Some((endpoint_id, endpoint_controller_generation)),
+            now_unix_ms(),
+        )
     }
 
     #[cfg(test)]
@@ -750,21 +816,27 @@ impl Database {
             attempt_fence,
             attempt_controller_generation,
         )?;
-        self.start_agent_task_endpoint_continuation_with_now(principal, authority, now)
+        self.start_agent_task_endpoint_continuation_with_now(principal, authority, None, now)
     }
 
     fn start_agent_task_endpoint_continuation_with_now(
         &self,
         principal: &CommunicationPrincipal,
         authority: AttemptAuthority<'_>,
+        pinned_endpoint: Option<(&str, i64)>,
         now: i64,
     ) -> Result<AgentTaskEndpointExecutionMutation, CommunicationStoreError> {
         let task_id = authority.task_id;
         let attempt_id = authority.attempt_id;
         let assignee_agent_id = authority.assignee_agent_id;
+        let mut start_identity = authority.identity_json();
+        if let Some((endpoint_id, generation)) = pinned_endpoint {
+            start_identity["pinned_endpoint_id"] = json!(endpoint_id);
+            start_identity["pinned_endpoint_controller_generation"] = json!(generation);
+        }
         let start_identity_fingerprint = digest_json(
             "webcodex.agent-task.endpoint-continuation.start.v1",
-            &authority.identity_json(),
+            &start_identity,
         )
         .expect("AgentTask endpoint continuation identity serializes");
         let mut conn = self.lock_connection(crate::StoreDomain::AgentTask);
@@ -806,6 +878,21 @@ impl Database {
         }
 
         let _attempt = require_current_attempt(&transaction, &task, authority, now)?;
+        if let Some((endpoint_id, generation)) = pinned_endpoint {
+            let endpoint = require_current_endpoint(
+                &transaction,
+                principal,
+                assignee_agent_id,
+                endpoint_id,
+                Some(generation),
+            )?;
+            if !endpoint.wake_capable {
+                return Err(CommunicationStoreError::new(
+                    "endpoint_not_wake_capable",
+                    "Pinned Agent Endpoint is not wake-capable",
+                ));
+            }
+        }
         if load_coding_run_binding_for_attempt(&transaction, task_id, attempt_id)?.is_some() {
             return Err(CommunicationStoreError::new(
                 "agent_task_execution_backend_conflict",
@@ -848,14 +935,17 @@ impl Database {
                 "INSERT INTO wc_agent_task_endpoint_executions (
                     task_id, attempt_id, wake_id, start_identity_fingerprint,
                     endpoint_id, endpoint_controller_generation,
-                    created_at_unix_ms, updated_at_unix_ms
-                 ) VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?5)",
+                    created_at_unix_ms, updated_at_unix_ms,
+                    pinned_endpoint_id, pinned_endpoint_controller_generation
+                 ) VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?5, ?6, ?7)",
                 params![
                     task_id,
                     attempt_id,
                     wake_id,
                     start_identity_fingerprint,
                     now,
+                    pinned_endpoint.map(|(endpoint_id, _)| endpoint_id),
+                    pinned_endpoint.map(|(_, generation)| generation),
                 ],
             )
             .map_err(store_error)?;
@@ -1286,8 +1376,14 @@ impl Database {
         }
 
         let effects = completion::complete_attempt_in_transaction(
-            &transaction, principal, &task, authority, outcome,
-            terminal_result.as_deref(), terminal_reason.as_deref(), now,
+            &transaction,
+            principal,
+            &task,
+            authority,
+            outcome,
+            terminal_result.as_deref(),
+            terminal_reason.as_deref(),
+            now,
         )?;
         record_idempotent_resource(
             &transaction,

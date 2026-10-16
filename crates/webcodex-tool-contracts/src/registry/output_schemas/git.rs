@@ -554,14 +554,14 @@ pub(super) fn output_schema_for_tool(name: &str) -> Option<Value> {
                 "output_truncated",
                 schema_type(
                     "boolean",
-                    "Whether the final output was truncated by the output budget (reported via this structured field, never inferred from a truncation marker string).",
+                    "Whether the returned workspace summary is incomplete because of output bounds or protected/invalid diff path omissions; never inferred from a truncation marker string.",
                 ),
             ),
             (
                 "truncation_reasons",
                 array_schema(
                     schema_type("string", "Stable reason code for an output truncation."),
-                    "Reasons the production-side output was bounded/truncated.",
+                    "Reasons workspace summary content was bounded, unavailable, or omitted by path policy.",
                 ),
             ),
             (
@@ -641,7 +641,15 @@ pub(super) fn output_schema_for_tool(name: &str) -> Option<Value> {
             ),
             (
                 "hunks_truncated",
-                schema_type("boolean", "Whether diff hunks were truncated by limits."),
+                schema_type("boolean", "Whether diff hunks are incomplete because of limits or protected/invalid paths."),
+            ),
+            (
+                "diff_policy_files_omitted",
+                json!({
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "File diffs omitted because either path is protected, invalid, or cannot be verified for a no-hunk diff. Present only when positive. Ordinary patches remain available; omitted content is not authorized for recovery."
+                }),
             ),
             (
                 "diff_review_handoff",

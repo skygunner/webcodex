@@ -1181,6 +1181,42 @@ impl AgentContinuationController {
         }
     }
 
+    /// Project an executor only for this exact live MCP App/Host Window. This
+    /// observation never attaches a carrier or grants execution authority.
+    pub(crate) fn workbench_window_endpoint(
+        &self,
+        principal: &CommunicationPrincipal,
+        agent_id: &str,
+        window_key: &str,
+    ) -> Option<(String, i64)> {
+        let _transition = self.state.binding_transitions.lock().ok()?;
+        let (endpoint_id, generation) = {
+            let bindings = self.state.bindings.lock().ok()?;
+            let binding = bindings.get(agent_id)?;
+            if binding.principal != *principal
+                || !binding
+                    .carrier
+                    .production_auto_resume_available(self.mcp_app_resume_mode)
+            {
+                return None;
+            }
+            match &binding.carrier {
+                EndpointContinuationCarrier::McpApp {
+                    client_window_key: Some(key),
+                    ..
+                } if key == window_key => {}
+                _ => return None,
+            }
+            (binding.endpoint_id.clone(), binding.controller_generation)
+        };
+        let endpoint = self
+            .state
+            .db
+            .verify_current_agent_endpoint(principal, agent_id, &endpoint_id, generation)
+            .ok()?;
+        endpoint.wake_capable.then_some((endpoint_id, generation))
+    }
+
     /// Read-only readiness projection for a listed durable Agent snapshot.
     ///
     /// A production carrier is available only when the process-local binding still

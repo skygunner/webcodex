@@ -1,5 +1,46 @@
 use super::*;
 
+#[tokio::test]
+async fn mcp_bad_project_selector_keeps_authorized_discovery_callable() {
+    let runtime = test_runtime();
+    let outcome = handle_mcp_request(&runtime, rpc("tools/call", Some(json!(1491)), mcp_2026_params(json!({
+        "name": "work_on_project",
+        "arguments": {"path": "/private/selector-canary", "instruction": "inspect the registered project"}
+    }))), None).await;
+    let value = match outcome {
+        McpOutcome::Ok(value) | McpOutcome::BadRequest(value) => value,
+        other => panic!("unexpected selector error transport: {other:?}"),
+    };
+    let text = value.to_string();
+    assert!(
+        text.contains("missing client_id required with path"),
+        "{value}"
+    );
+    assert!(text.contains("list_projects"), "{value}");
+    assert!(
+        text.contains("not evidence that a Runner is offline"),
+        "{value}"
+    );
+    assert!(!text.contains("selector-canary"));
+    let discovered = handle_mcp_request(
+        &runtime,
+        rpc(
+            "tools/call",
+            Some(json!(1492)),
+            mcp_2026_params(json!({
+                "name": crate::mcp::tools::ADAPTIVE_RUNTIME_GATEWAY_TOOL_NAME,
+                "arguments": {"tool": "list_projects", "arguments": {}}
+            })),
+        ),
+        None,
+    )
+    .await;
+    let McpOutcome::Ok(discovered) = discovered else {
+        panic!("authorized discovery unavailable: {discovered:?}")
+    };
+    assert_eq!(discovered["result"]["structuredContent"]["success"], true);
+}
+
 // =========================================================================
 // runtime_status via MCP tools/list and tools/call
 // =========================================================================

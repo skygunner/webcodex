@@ -48,9 +48,9 @@ fn create_goal(runtime: &ToolRuntime, auth: &crate::auth::AuthContext, key: &str
 
 #[tokio::test]
 async fn goal_plan_app_descriptor_is_sparse_app_only_resource_backed_and_adaptive_direct() {
-    assert_eq!(MCP_GOAL_PLAN_UI_RESOURCE_URI, "ui://webcodex/goal-plan/v7");
+    assert_eq!(MCP_GOAL_PLAN_UI_RESOURCE_URI, "ui://webcodex/goal-plan/v9");
     assert!(
-        MCP_GOAL_PLAN_APP_HTML.contains("version: \"6.0.0\""),
+        MCP_GOAL_PLAN_APP_HTML.contains("version: \"8.0.0\""),
         "Goal Plan App self-version must advance with its cache-breaking resource identity"
     );
     let (_temp, _db, adaptive) = goal_runtime();
@@ -89,7 +89,12 @@ async fn goal_plan_app_descriptor_is_sparse_app_only_resource_backed_and_adaptiv
             .keys()
             .cloned()
             .collect::<Vec<_>>(),
-        vec!["goal_id".to_string()]
+        vec!["app_call_id".to_string(), "goal_id".to_string()]
+    );
+
+    assert_eq!(
+        state.pointer("/inputSchema/properties/app_call_id/pattern"),
+        Some(&json!("^wc_app_call_[0-9a-f]{16}_[1-9][0-9]{0,5}$"))
     );
 
     let plain = handle_with_app_policy(
@@ -310,7 +315,7 @@ async fn goal_plan_poll_reads_authoritative_revision_without_ui_request_identity
             Some(json!(4202)),
             mcp_2026_params(json!({
                 "name": "sync_goal_plan",
-                "arguments": {"goal_id": goal_id}
+                "arguments": {"goal_id": goal_id, "app_call_id": "wc_app_call_0123456789abcdef_1"}
             })),
         ),
         Some(&bob),

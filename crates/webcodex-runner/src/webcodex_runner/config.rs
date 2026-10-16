@@ -63,6 +63,9 @@ pub(crate) struct SkillsConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct RunnerConfig {
     pub(crate) server_url: String,
+    /// Process-only CLI precedence; never deserialized from runner.toml.
+    #[serde(skip)]
+    pub(crate) server_url_override: Option<String>,
     pub(crate) token: String,
     pub(crate) client_id: String,
     #[serde(default)]
@@ -726,7 +729,8 @@ impl ReloadableRunnerConfig {
     }
 
     fn load_candidate(&self) -> Result<RunnerConfig, String> {
-        let candidate = load_config(&self.path)?;
+        let candidate =
+            load_config_with_server_url(&self.path, self.startup.server_url_override.as_deref())?;
         ManagedSshResourceStore::merge_active(&candidate.ssh, &self.startup_managed_ssh)
             .map_err(str::to_string)?;
         Ok(candidate)
@@ -1108,7 +1112,7 @@ pub(crate) fn restart_required_fields(
     macro_rules! classify {
         ($($field:ident),+ $(,)?) => {{
             let RunnerConfig {
-                policy: _, shell: _, skills: _, instructions: _, ssh: _, plugins: _, tool_providers: _, mcp_gateway: _,
+                server_url_override: _, policy: _, shell: _, skills: _, instructions: _, ssh: _, plugins: _, tool_providers: _, mcp_gateway: _,
                 $($field: _),+
             } = candidate;
             [$((stringify!($field), startup.$field != candidate.$field)),+]
@@ -1546,13 +1550,43 @@ fn validate_runner_config_toml_shape(content: &str) -> Result<(), String> {
     }
     Ok(())
 }
+fn validate_server_url(raw: &str) -> Result<String, String> {
+    let parsed = url::Url::parse(raw.trim())
+        .map_err(|_| "server_url_invalid: expected an HTTP(S) origin".to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || !matches!(parsed.path(), "" | "/")
+        || parsed.port() == Some(0)
+    {
+        return Err("server_url_invalid: expected an HTTP(S) origin without credentials, path, query or fragment".into());
+    }
+    Ok(parsed.as_str().trim_end_matches('/').to_string())
+}
+
 pub(crate) fn load_config(path: &Path) -> Result<RunnerConfig, String> {
+    load_config_with_server_url(path, None)
+}
+
+pub(crate) fn load_config_with_server_url(
+    path: &Path,
+    server_url: Option<&str>,
+) -> Result<RunnerConfig, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("failed to read config {}: {}", path.display(), e))?;
     validate_runner_config_toml_shape(&content)
         .map_err(|e| format!("failed to parse config {}: {}", path.display(), e))?;
     let mut cfg: RunnerConfig = toml::from_str(&content)
         .map_err(|e| format!("failed to parse config {}: {}", path.display(), e))?;
+    if let Some(server_url) = server_url {
+        cfg.server_url = validate_server_url(server_url)?;
+        cfg.server_url_override = Some(cfg.server_url.clone());
+    }
+    // Use the same origin contract for config and CLI, with no secret echo.
+    cfg.server_url = validate_server_url(&cfg.server_url)?;
     if cfg.server_url.trim().is_empty() {
         return Err("server_url cannot be empty".to_string());
     }

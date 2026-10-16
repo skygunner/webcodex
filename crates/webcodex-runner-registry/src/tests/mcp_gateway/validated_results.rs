@@ -73,6 +73,7 @@ fn tool_request() -> McpGatewayRequest {
             output_schema: None,
             annotations: None,
         },
+        allow_resource_links: false,
     }
 }
 

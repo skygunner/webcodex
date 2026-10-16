@@ -74,7 +74,7 @@ scope requirement. Discovery still retains the existing discovery scope checks.
 
 ## App and OpenAI adapter
 
-`ui://webcodex/workbench/v3` is a separate App from the existing Project-bound
+`ui://webcodex/workbench/v5` is a separate App from the existing Project-bound
 Work Result card. With `{}`, the Workbench presents a Project chooser even when
 only one Project is visible. Named launch selectors are authorized and returned
 canonically. Overview reuses Work Result; files and outputs require explicit
@@ -94,7 +94,7 @@ activates OpenAI remount/removal synchronization through
 response `_meta["openai/modelContext"].updateId`.
 
 The launcher advertises one `global` entrypoint through
-`_meta["openai/ui"].entrypoints`, with tool title **Projects & Resources**.
+`_meta["openai/ui"].entrypoints`, with the effective personal or configured instance name as its tool title.
 The current chat's Work Result has its own `thread` entrypoint; the Workbench
 does not add a second chat panel. The host-only `search_mentions({query})`
 descriptor uses `_meta["openai/extensions"]["mentions/search"]` and
@@ -118,6 +118,66 @@ tool workflow even when it cannot mount the Workbench.
 See the [extension specification](https://github.com/openai/mcp-extensions/blob/main/docs/spec.md),
 [server UI metadata](https://github.com/openai/mcp-extensions/blob/main/typescript/src/server/ui.ts),
 and [mention search contract](https://github.com/openai/mcp-extensions/blob/main/typescript/src/server/mentions.ts).
+
+## Workbench v5 state and work submission
+
+Workbench v5 keeps resource browsing and adds personal settings, a bounded work
+projection, and explicit work submission. `WEBCODEX_INSTANCE_NAME` sets the
+operator-wide instance label; absence means `WebCodex`. A communication-principal
+keyed preference stores each account's optional display-name override. It is not a
+global rename. If an updated Server is running but the adapter tools are missing
+from Host discovery, refresh the Host's `tools/list` catalog or reconnect it. This
+is a discovery-cache step, not evidence that the Host can render the App. The
+fixture tests cover the adapter contract; the live-host rows below remain **Not
+run** until each named Host is exercised.
+
+The state read composes the canonical `list_agent_tasks`, `list_goals`,
+`list_agent_identities`, `list_runners`, and explicit `list_session_messages`
+operations. A failed domain remains an empty page/list with its error in the
+separate `errors` object. Aggregate Task pages omit terminal result bodies and
+mark bounded reason excerpts; full details are read on demand. Agent inventory
+contains only executor-selection fields. Task pages filtered by Project retain their source
+offset/count/continuation and identify that filtering happened after paging; they
+must not be presented as exhaustive Project coverage. Runner provider inventory
+is requested only for the authorized Runner of the exact resolved Project. Todo
+messages require both that selected Project and an explicitly selected,
+authorized Session whose canonical Project matches; recent activity never picks
+a Session implicitly. Normal file references remain read-only and selected Goals
+remain owner-scoped across Projects.
+
+`submit_workbench_work` requires an explicit Project, owned Agent, task content,
+and one exact available execution route. A `chat` route is the verified
+continuation for that Agent in the current Window. Its selected Endpoint and
+controller generation are pinned in the durable AgentTask execution before a
+Wake can be claimed. If that binding changes while work is queued, the old
+Wake cannot execute in the replacement Window; the caller must inspect the
+original Task before requesting another attempt. A `runner` route is a provider
+reported by the selected Project's Runner. The adapter uses the existing
+canonical Project, Agent, Goal, Task, Attempt, and execution paths; it does not
+dispatch a free-form command or invent a provider. The optional Goal association
+is caller-owned. The UI retains the draft's key and unchanged payload after an
+uncertain response; callers must replay the same key and same request, or inspect
+and reconcile the exact Task before starting new work.
+
+The Store's `workbench_submissions` journal is deliberately small replay metadata:
+principal kind/digest, submission key, canonical request hash, and an immutable
+owner-checked link to the canonical Task. This link identifies form-origin work
+after restart. It stores
+no title, instruction, or executor payload. Under an immediate transaction, an
+exact key/hash replay succeeds, changed content for the same principal/key
+conflicts, and another principal has an independent key space. The cap is 1,000
+keys per principal. At capacity, new submissions fail closed while exact old
+replays remain available; keys are not pruned because pruning could make a retry
+look like new work.
+
+Goal IDs in supported stable releases use the compact `wc_goal_` representation.
+32-hex Goal IDs were historical pre-stable development data and are not an
+instruction to rewrite a current database. Do not edit IDs or references in
+SQLite by hand. For an old development database that reports an invalid Goal ID
+or a storage/schema error, preserve a backup and collect the exact WebCodex
+version plus the sanitized error and operation for maintainer diagnosis. Keep
+the original database available; do not delete/reset it to silence the error.
+Migration must be version-specific and preserve unrelated state.
 
 ## Validation and host acceptance
 

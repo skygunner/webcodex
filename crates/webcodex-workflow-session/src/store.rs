@@ -2194,50 +2194,18 @@ impl SessionStore {
         event_id: &str,
         permission: PermissionDecision,
     ) -> bool {
-        let mut permission = Some(permission);
-        let (cold, hot_closed, found) = {
-            let mut inner = self.inner.lock().expect("session store mutex poisoned");
-            if !inner.prepare_active_session(session_id) {
-                return false;
-            }
-            let Some(stored) = inner.sessions.get_mut(session_id) else {
+        self.update_retained_record(session_id, permission, |record, permission| {
+            let Some(event) = record
+                .events
+                .iter_mut()
+                .rev()
+                .find(|event| event.event_id == event_id)
+            else {
                 return false;
             };
-            match stored {
-                StoredSession::Hot(record) => {
-                    let found = record
-                        .events
-                        .iter_mut()
-                        .rev()
-                        .find(|event| event.event_id == event_id)
-                        .map(|event| {
-                            Arc::make_mut(event).permission = Some(permission.take().unwrap());
-                        })
-                        .is_some();
-                    (None, !record.lifecycle.allows_mutation(), found)
-                }
-                StoredSession::Cold(record) => (Some(record.clone()), false, true),
-            }
-        };
-        let found = match cold {
-            Some(cold) => self.rewrite_cold_record(session_id, cold, false, |record, _| {
-                let Some(event) = record
-                    .events
-                    .iter_mut()
-                    .rev()
-                    .find(|event| event.event_id == event_id)
-                else {
-                    return false;
-                };
-                Arc::make_mut(event).permission = Some(permission.as_ref().unwrap().clone());
-                true
-            }),
-            None => found,
-        };
-        if found && hot_closed {
-            self.coldify_closed_session(session_id);
-        }
-        found
+            Arc::make_mut(event).permission = Some(permission);
+            true
+        })
     }
 
     fn set_session_close_persistent_shell_evidence(
@@ -2245,50 +2213,18 @@ impl SessionStore {
         session_id: &str,
         evidence: PersistentShellEventEvidence,
     ) -> bool {
-        let mut evidence = Some(evidence);
-        let (cold, hot_closed, found) = {
-            let mut inner = self.inner.lock().expect("session store mutex poisoned");
-            if !inner.prepare_active_session(session_id) {
-                return false;
-            }
-            let Some(stored) = inner.sessions.get_mut(session_id) else {
+        self.update_retained_record(session_id, evidence, |record, evidence| {
+            let Some(event) =
+                record.events.iter_mut().rev().find(|event| {
+                    event.kind == "session_closed" && event.tool_name == "close_session"
+                })
+            else {
                 return false;
             };
-            match stored {
-                StoredSession::Hot(record) => {
-                    let found = if let Some(event) = record.events.iter_mut().rev().find(|event| {
-                        event.kind == "session_closed" && event.tool_name == "close_session"
-                    }) {
-                        Arc::make_mut(event).persistent_shell = Some(evidence.take().unwrap());
-                        true
-                    } else {
-                        false
-                    };
-                    if found {
-                        record.updated_at = now_ts();
-                    }
-                    (None, !record.lifecycle.allows_mutation(), found)
-                }
-                StoredSession::Cold(record) => (Some(record.clone()), false, true),
-            }
-        };
-        let found = match cold {
-            Some(cold) => self.rewrite_cold_record(session_id, cold, false, |record, _| {
-                let Some(event) = record.events.iter_mut().rev().find(|event| {
-                    event.kind == "session_closed" && event.tool_name == "close_session"
-                }) else {
-                    return false;
-                };
-                Arc::make_mut(event).persistent_shell = Some(evidence.as_ref().unwrap().clone());
-                record.updated_at = now_ts();
-                true
-            }),
-            None => found,
-        };
-        if found && hot_closed {
-            self.coldify_closed_session(session_id);
-        }
-        found
+            Arc::make_mut(event).persistent_shell = Some(evidence);
+            record.updated_at = now_ts();
+            true
+        })
     }
 
     pub(super) fn persist_after_mutation(&self) {

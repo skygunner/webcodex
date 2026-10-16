@@ -1386,37 +1386,59 @@ async fn show_changes_agent_untracked_preview_uses_internal_posix_runtime() {
 
 #[cfg(unix)]
 #[test]
-fn show_changes_preserves_sentinel_text_from_external_diff() {
+fn show_changes_disables_external_diff_and_textconv_callbacks() {
     use std::os::unix::fs::PermissionsExt;
 
-    let tmp = crate::test_support::executable_tempdir();
-    init_git_repo(tmp.path());
-    commit_file(tmp.path(), "external.txt", "before\n", "initial");
-    std::fs::write(tmp.path().join("external.txt"), "after\n").unwrap();
-    let script = tmp.path().join("external-diff.sh");
-    std::fs::write(
-        &script,
-        format!("#!/bin/sh\nprintf '%s\\n' '{SHOW_CHANGES_SENTINEL}'\nexit 0\n"),
-    )
-    .unwrap();
-    let mut permissions = std::fs::metadata(&script).unwrap().permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(&script, permissions).unwrap();
-    let config = format!(
-        "git config diff.external {}",
-        shell_single_quote(script.to_str().unwrap())
-    );
-    let (exit, _, stderr) = run_command_full_capture(&config, tmp.path(), 30);
-    assert_eq!(exit, 0, "{stderr}");
+    for mode in ["external", "textconv"] {
+        let tmp = crate::test_support::executable_tempdir();
+        init_git_repo(tmp.path());
+        commit_file(tmp.path(), "README.md", "before\n", "initial");
+        std::fs::write(tmp.path().join("README.md"), "after\n").unwrap();
+        let script = tmp.path().join("diff-callback.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf x > callback.marker\nprintf '%s\\n' UNSAFE_CALLBACK\nexit 7\n",
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).unwrap();
+        let key = if mode == "external" {
+            "diff.external"
+        } else {
+            std::fs::write(
+                tmp.path().join(".gitattributes"),
+                "README.md diff=fixture\n",
+            )
+            .unwrap();
+            "diff.fixture.textconv"
+        };
+        let config = format!(
+            "git config {key} {}",
+            shell_single_quote(script.to_str().unwrap())
+        );
+        let (exit, _, stderr) = run_command_full_capture(&config, tmp.path(), 30);
+        assert_eq!(exit, 0, "{stderr}");
+        // Calibrate the real callback before checking the guarded command.
+        let (exit, _, stderr) = run_command_full_capture("git diff --unified=80", tmp.path(), 30);
+        assert_ne!(exit, 0, "callback did not fail: {mode}: {stderr}");
+        let marker = tmp.path().join("callback.marker");
+        assert!(marker.exists(), "callback was not invoked: {mode}");
+        std::fs::rename(&marker, tmp.path().join("callback.observed")).unwrap();
 
-    let (_, stdout, stderr) = run_bounded_show_changes_full(tmp.path(), true, 20, 80);
-    let frames = split_show_changes_stdout(&stdout, true);
-    assert!(frames.framing_valid);
-    assert_eq!(frames.diff_exit, Some(0));
-    assert_eq!(frames.diff, SHOW_CHANGES_SENTINEL);
-    let output =
-        bounded_show_changes_output_from_frames(&frames, tmp.path(), true, 20, 80, &stderr);
-    assert_eq!(output["transport_safe"], true, "{output}");
+        let (_, stdout, stderr) = run_bounded_show_changes_full(tmp.path(), true, 20, 80);
+        let frames = split_show_changes_stdout(&stdout, true);
+        assert!(frames.framing_valid);
+        assert_eq!(frames.diff_exit, Some(0));
+        assert_eq!(frames.diff_stat_exit, Some(0));
+        assert!(!marker.exists(), "guarded command invoked {mode}");
+        assert!(!frames.diff.contains("UNSAFE_CALLBACK"));
+        assert!(frames.diff.contains("+after"));
+        let output =
+            bounded_show_changes_output_from_frames(&frames, tmp.path(), true, 20, 80, &stderr);
+        assert_eq!(output["transport_safe"], true, "{output}");
+        assert_show_changes_envelope_value_matches_schema(&output, "disabled diff callbacks");
+    }
 }
 
 #[test]
@@ -2245,35 +2267,19 @@ fn bounded_show_changes_output_from_frames(
 #[cfg(unix)]
 #[test]
 fn show_changes_oversized_no_hunk_preamble_is_bounded_and_drained() {
-    use std::os::unix::fs::PermissionsExt;
-
     let tmp = crate::test_support::executable_tempdir();
     init_git_repo(tmp.path());
     commit_file(tmp.path(), "README.md", "before\n", "initial");
     std::fs::write(tmp.path().join("README.md"), "after\n").unwrap();
 
-    let payload_path = tmp.path().join("external-diff-payload.txt");
+    let payload_path = tmp.path().join("full-diff-payload.txt");
     let line = format!("{}\n", "P".repeat(256));
     let payload = line.repeat((SHOW_CHANGES_DIFF_BYTES / line.len()) + 40);
     std::fs::write(&payload_path, &payload).unwrap();
-    let script_path = tmp.path().join("external-diff.sh");
-    std::fs::write(
-        &script_path,
-        "#!/bin/sh\ncat \"$WEBCODEX_TEST_DIFF_PAYLOAD\"\nexit 7\n",
-    )
-    .unwrap();
-    let mut permissions = std::fs::metadata(&script_path).unwrap().permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(&script_path, permissions).unwrap();
-
-    let env = format!(
-        "export WEBCODEX_TEST_DIFF_PAYLOAD={}; export GIT_EXTERNAL_DIFF={};",
-        shell_single_quote(payload_path.to_str().unwrap()),
-        shell_single_quote(script_path.to_str().unwrap())
-    );
+    let fault = full_diff_fault_prefix("cat full-diff-payload.txt");
     let (raw_exit, raw_diff, raw_stderr) =
-        run_command_full_capture(&format!("{env} git diff --unified=80"), tmp.path(), 30);
-    assert_ne!(raw_exit, 0, "external diff must fail: {raw_stderr}");
+        run_command_full_capture(&format!("{fault} git diff --unified=80"), tmp.path(), 30);
+    assert_ne!(raw_exit, 0, "full diff fixture must fail: {raw_stderr}");
     assert!(
         raw_diff.len() > SHOW_CHANGES_DIFF_BYTES,
         "raw no-hunk bytes={} budget={SHOW_CHANGES_DIFF_BYTES}",
@@ -2283,7 +2289,7 @@ fn show_changes_oversized_no_hunk_preamble_is_bounded_and_drained() {
 
     let command = show_changes_command(true, 20, 80);
     let (exit, stdout, stderr) =
-        run_command_full_capture(&format!("{env} {command}"), tmp.path(), 30);
+        run_command_full_capture(&format!("{fault} {command}"), tmp.path(), 30);
     assert_eq!(exit, 0, "bounded command failed: {stderr}\n{stdout}");
     assert!(
         stdout.len() <= SHOW_CHANGES_OUTPUT_BUDGET_BYTES,
@@ -2319,75 +2325,51 @@ fn show_changes_oversized_no_hunk_preamble_is_bounded_and_drained() {
     );
 }
 
+fn full_diff_fault_prefix(body: &str) -> String {
+    format!(
+        r#"git() {{
+          if [ "$1" = diff ]; then
+            for argument in "$@"; do
+              case "$argument" in --unified=*) {body}; return 7 ;; esac;
+            done;
+          fi;
+          command git "$@";
+        }}; "#,
+    )
+}
+
 #[test]
-fn show_changes_propagates_real_full_diff_exit_status() {
+fn show_changes_propagates_full_diff_exit_status() {
     let tmp = tempfile::tempdir().unwrap();
     init_git_repo(tmp.path());
     commit_file(tmp.path(), "README.md", "hello\n", "initial");
     std::fs::write(tmp.path().join("README.md"), "hello\nchanged\n").unwrap();
-    // An external diff program that exits non-zero only for the full diff
-    // (it is invoked by `git diff`, not by `git diff --stat`). It writes a
-    // marker so we can confirm it was actually run.
-    let marker = tmp.path().join("extdiff_ran.txt");
-    let marker_str = marker.to_str().unwrap();
-    let ext_diff = format!(
-        "sh -c 'printf x > {marker_str}; exit 7' \"$1\" \"$2\" \"$3\" \"$4\" \"$5\" \"$6\" \"$7\""
-    );
-    // `git diff --stat` does not invoke the external diff (it computes stats
-    // from the diffcore), so it should still return 0.
-    let (stat_exit, _stat_out, stat_err) = run_command_full_capture(
-        &format!("GIT_EXTERNAL_DIFF={ext_diff:?} git diff --stat"),
+    // Inject failure only into the full diff producer. Stat/status/numstat
+    // still use real Git; external diff callbacks are intentionally disabled.
+    let fault = full_diff_fault_prefix("printf '%s\\n' 'synthetic diff failure' >&2");
+    let (stat_exit, _, stat_err) = run_command_full_capture(
+        &format!("{fault} git diff --no-ext-diff --no-textconv --stat"),
         tmp.path(),
         30,
     );
-    assert_eq!(
-        stat_exit, 0,
-        "git diff --stat should return 0 even with a failing external diff: {stat_err}"
-    );
-    // The full `git diff` must return non-zero because the external diff fails.
-    let (diff_exit, _diff_out, diff_err) = run_command_full_capture(
-        &format!("GIT_EXTERNAL_DIFF={ext_diff:?} git diff --unified=80"),
-        tmp.path(),
-        30,
-    );
-    assert_ne!(diff_exit, 0, "full git diff must fail: {diff_err}");
-    // show_changes(include_diff=true) must report failure: the diff filter
-    // success must not mask the upstream git diff failure. Run the bounded
-    // command with the same failing external diff in the environment so the
-    // full `git diff` inside the command also fails.
-    let cmd = show_changes_command(true, 20, 80);
-    // Export the failing external diff into the environment so the full
-    // `git diff` inside the bounded production script inherits it. The prefix
-    // must be `export ...;` rather than an inline `VAR=... <cmd>` assignment:
-    // the production script starts with a brace group `{ ... }`, and a
-    // variable-assignment prefix is only valid before a *simple* command, not
-    // a compound command (POSIX sh reports `Syntax error: "}" unexpected`).
-    let (_exit, stdout, stderr) = run_command_full_capture(
-        &format!("export GIT_EXTERNAL_DIFF={ext_diff:?}; {cmd}"),
-        tmp.path(),
-        30,
-    );
-    let stdout_bytes = stdout.len();
-    assert!(
-        stdout_bytes <= SHOW_CHANGES_OUTPUT_BUDGET_BYTES,
-        "stdout {stdout_bytes}\n{stderr}"
-    );
+    assert_eq!(stat_exit, 0, "stat failed: {stat_err}");
+    let (raw_exit, _, raw_err) =
+        run_command_full_capture(&format!("{fault} git diff --unified=80"), tmp.path(), 30);
+    assert_eq!(raw_exit, 7, "full diff fault was not selected: {raw_err}");
+    let command = show_changes_command(true, 20, 80);
+    let (_, stdout, stderr) =
+        run_command_full_capture(&format!("{fault} {command}"), tmp.path(), 30);
+    assert!(stdout.len() <= SHOW_CHANGES_OUTPUT_BUDGET_BYTES, "{stderr}");
     let frames = split_show_changes_stdout(&stdout, true);
-    // The structured metadata must carry the real full diff exit code (git
-    // reports 128 when an external diff dies) and a command_failed diff_status.
-    let diff_exit = frames.diff_exit.expect("diff_exit must be captured");
-    assert_ne!(diff_exit, 0, "full git diff exit code must be non-zero");
-    let output = bounded_show_changes_output_from_frames(&frames, tmp.path(), true, 20, 80, "");
-    assert_eq!(output["diff_exit"], diff_exit);
+    assert_eq!(frames.diff_exit, Some(7));
+    let output =
+        bounded_show_changes_output_from_frames(&frames, tmp.path(), true, 20, 80, &stderr);
+    assert_eq!(output["diff_exit"], 7);
     assert_eq!(output["diff_status"]["status"], "command_failed");
-    assert_eq!(output["diff_status"]["exit_code"], diff_exit);
-    // diff --stat succeeded (it does not invoke the external diff); its exit
-    // must be reported as 0.
+    assert_eq!(output["diff_status"]["exit_code"], 7);
     assert_eq!(frames.diff_stat_exit, Some(0));
     assert_eq!(output["diff_stat_exit"], 0);
     assert_show_changes_envelope_value_matches_schema(&output, "diff exit propagation");
-    // The structured diff_status already reports the failure; the runtime path
-    // (separate test) asserts the tool result itself is not successful.
 }
 
 #[test]
@@ -2458,7 +2440,7 @@ async fn show_changes_runtime_rejects_stat_only_failure_for_both_diff_modes() {
     std::fs::write(
         &wrapper_path,
         format!(
-            "#!/bin/sh\nif [ \"$1\" = diff ] && [ \"$2\" = --stat ]; then\n  exit 77\nfi\nexec {} \"$@\"\n",
+            "#!/bin/sh\nif [ \"$1\" = diff ]; then\n  for argument in \"$@\"; do\n    case \"$argument\" in --stat) exit 77 ;; esac\n  done\nfi\nexec {} \"$@\"\n",
             shell_single_quote(real_git)
         ),
     )
@@ -2839,20 +2821,9 @@ async fn show_changes_runtime_propagates_full_diff_failure_as_tool_failure() {
     init_git_repo(tmp.path());
     commit_file(tmp.path(), "README.md", "hello\n", "initial");
     std::fs::write(tmp.path().join("README.md"), "hello\nchanged\n").unwrap();
-    // Install a failing external diff that affects the full `git diff` only.
-    let marker = tmp.path().join("extdiff_runtime_ran.txt");
-    let marker_str = marker.to_str().unwrap();
-    let ext_diff = format!(
-        "sh -c 'printf x > {marker_str}; exit 5' \"$1\" \"$2\" \"$3\" \"$4\" \"$5\" \"$6\" \"$7\""
-    );
     let runtime = test_runtime();
     let project = register_runner_project_at_path(&runtime, "extd", "demo", tmp.path()).await;
-    // The agent completes the request by running the bounded command locally,
-    // but with the failing external diff exported into the environment. The
-    // production script starts with a brace group, so the external diff must
-    // be `export`ed (with a `;` separator): an inline `VAR=... <cmd>` prefix
-    // is only valid before a simple command, not the compound `{ ... }`.
-    let ext_env = format!("export GIT_EXTERNAL_DIFF={ext_diff:?};");
+    let fault = full_diff_fault_prefix("printf '%s\\n' 'synthetic diff failure' >&2");
     let task = tokio::spawn({
         let runtime = runtime.clone();
         let project = project.clone();
@@ -2863,15 +2834,14 @@ async fn show_changes_runtime_propagates_full_diff_failure_as_tool_failure() {
         }
     });
     let req = wait_for_patch_agent_request(&runtime, "extd").await;
-    // Run the generated internal script locally with the failing external diff
-    // in the environment so the full `git diff` fails.
+    // Run the generated script with the child-local full-diff fault injection.
     assert_eq!(req.kind, "run_internal_posix_script");
     assert!(req.command.is_empty());
     let payload = req
         .script
         .as_ref()
         .expect("read_workspace_changes must carry a typed internal script");
-    let full = format!("{ext_env} {}", payload.script);
+    let full = format!("{fault} {}", payload.script);
     let (exit, stdout, stderr) = run_command_full_capture(&full, tmp.path(), 30);
     complete_patch_agent_request(&runtime, "extd", &req.request_id, exit, &stdout, &stderr).await;
     let result = task.await.unwrap();
@@ -2888,8 +2858,7 @@ async fn show_changes_runtime_propagates_full_diff_failure_as_tool_failure() {
         .expect("diff exit code");
     assert_ne!(diff_exit, 0, "full git diff exit code must be non-zero");
     assert_eq!(result.output["diff_exit"], diff_exit);
-    // diff --stat itself succeeded (it does not invoke the external diff); its
-    // exit must be reported as 0.
+    // The full-diff fault must not affect the independently observed stat.
     assert_eq!(result.output["diff_stat_exit"], 0);
     assert_eq!(result.output["status_observation"]["status"], "observed");
     assert_show_changes_envelope_matches_schema("runtime diff failure", &result);

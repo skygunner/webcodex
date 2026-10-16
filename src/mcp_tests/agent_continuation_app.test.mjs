@@ -1168,6 +1168,7 @@ test("published outputSchema projection preserves restart recovery and triggers 
 
 test("server-restart success observation performs one exact bounded rebind and resumes polling", async () => {
   const view = await boundView();
+  view.nodes["timing-toggle"].onclick();
   const originalBinding = bindingId(view);
   const state = view.calls("get_agent_continuation_state")[0];
   const restartRecovery = {
@@ -1178,6 +1179,7 @@ test("server-restart success observation performs one exact bounded rebind and r
   await view.reply(state, toolResult({ agent_continuation: restartRecovery }));
   assert.equal(view.nodes.binding.textContent, "Reconnecting");
   assert.equal(view.nodes.status.textContent, "Reconnecting…");
+  view.advanceTime(80000);
   await view.fireTimers(3000);
   const rebind = view.calls("bind_agent_continuation")[1];
   assert.ok(rebind, "recoverable loss must issue one fresh bind");
@@ -1190,6 +1192,7 @@ test("server-restart success observation performs one exact bounded rebind and r
   await view.reply(view.calls("get_agent_continuation_state")[1], toolResult({ agent_continuation: quiet }));
   assert.equal(view.nodes.binding.textContent, "Connected");
   assert.equal(hostMessages(view).length, 0);
+  assert.ok(view.nodes["timing-log"].textContent.split("\n").map(JSON.parse).some(event => event.event === "poll_actual" && event.timer_gap_ms === 80000));
 });
 
 test("repeated restart success observation is bounded and does not rebind-loop", async () => {
@@ -1451,4 +1454,25 @@ test("Agent Wait sparse reference still requires the exact durable target on App
   assert.equal(view.nodes.status.textContent, "Invalid or conflicting Wait identity");
   assert.notEqual(view.nodes.waitSummary?.hidden, false);
   assert.equal(hostMessages(view).length, 0);
+});
+
+test("Agent opt-in timing stays local, bounded and clears across remount", async () => {
+  const view = app("mcp_agent_continuation_app.html");
+  view.nodes["timing-toggle"].onclick();
+  await view.initialize();
+  view.toolInput(input);
+  const bind = view.calls("bind_agent_continuation")[0];
+  view.advanceTime(9000);
+  await view.reject(bind);
+  for (let i = 0; i < 80; i++) await view.visibility(i % 2 === 0);
+  const events = view.nodes["timing-log"].textContent.split("\n").map(JSON.parse);
+  assert.equal(events.length, 64);
+  assert.ok(events.every(event => typeof event.hidden === "boolean"));
+  assert.ok(!view.nodes["timing-log"].textContent.includes(projection.display_name));
+  await view.teardown();
+  assert.equal(hostMessages(view).length, 0);
+  assert.equal(view.timers.size, 0);
+  const remount = app("mcp_agent_continuation_app.html");
+  assert.equal(remount.document.getElementById("timing-log").textContent, "");
+  await remount.teardown();
 });

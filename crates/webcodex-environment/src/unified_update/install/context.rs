@@ -203,7 +203,29 @@ pub fn assess_installation(
     environment_root: PathBuf,
     desktop: PathBuf,
 ) -> (InstallationKind, Option<InstallContext>) {
-    let Some(target) = detected_installer_target() else {
+    assess_installation_for_target(
+        build,
+        binaries,
+        bundled_source,
+        environment_id,
+        environment_root,
+        desktop,
+        detected_installer_target(),
+    )
+}
+
+/// Same classification with the host installer probe injected, so tests stay
+/// hermetic on hosts whose package family the probe cannot classify.
+fn assess_installation_for_target(
+    build: MachineBuildInfo,
+    binaries: Option<InstalledBinaries>,
+    bundled_source: bool,
+    environment_id: Option<String>,
+    environment_root: PathBuf,
+    desktop: PathBuf,
+    target: Option<InstallerTarget>,
+) -> (InstallationKind, Option<InstallContext>) {
+    let Some(target) = target else {
         return (InstallationKind::UnsupportedPlatform, None);
     };
     if !target.flavor.is_full() {
@@ -395,19 +417,26 @@ mod tests {
         let mut build: MachineBuildInfo = serde_json::from_value(serde_json::json!({"schema_version":1,"binary":"webcodex-desktop","version":"1.2.3","git_commit":null,"git_dirty":true,"built_at":null,"target":"x86_64-unknown-linux-gnu","architecture":"x86_64","desktop_runtime_contract":{"min_generation":1,"max_generation":1}})).unwrap();
         let root = PathBuf::from("/not-an-environment");
         let desktop = PathBuf::from("/not-the-desktop");
-        let (kind, context) = assess_installation(
+        // Inject a detected full installer target so classification does not
+        // depend on this host's package manager or os-release family.
+        let target = Some(unified::InstallerTarget::new(
+            unified::RuntimePlatform::LinuxX64,
+            unified::PackageFormat::Rpm,
+        ));
+        let (kind, context) = assess_installation_for_target(
             build.clone(),
             None,
             true,
             Some("environment".into()),
             root.clone(),
             desktop.clone(),
+            target,
         );
         assert_eq!(kind, InstallationKind::SourceBuild);
         assert!(context.is_none());
         build.git_dirty = None;
         assert_eq!(
-            assess_installation(build, None, true, None, root, desktop).0,
+            assess_installation_for_target(build, None, true, None, root, desktop, target).0,
             InstallationKind::SourceBuild
         );
     }

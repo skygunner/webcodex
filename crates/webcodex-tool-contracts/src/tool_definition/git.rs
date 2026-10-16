@@ -126,7 +126,7 @@ pub(super) const SUMMARY_DEFINITIONS: &[ToolDefinition] = &[
                         .diff_review(super::ToolDiffReviewEvidence::ArgumentBool("include_diff")),
                 )
                 .with_composition_policy(super::ToolCompositionPolicy::Parallel),
-                "Read a structured workspace summary: Git branch, HEAD, staged/unstaged/untracked files and diff statistics, without a patch by default. Optional include_diff adds bounded unstaged hunks and safe untracked previews, not a complete staged patch. Ordinary code review uses review_changes; recent Session event history is opt-in. Read-only.",
+                "Read a structured workspace summary: Git branch, HEAD, staged/unstaged/untracked files and diff statistics, without a patch by default. Optional include_diff adds bounded unstaged hunks and safe untracked previews, not a complete staged patch. Protected or unverifiable tracked-file patches are omitted before capture, with explicit omitted counts and incomplete flags. Further diff review after such omissions requires explicitly selected ordinary paths in read_git_diff_hunks. Ordinary code review uses review_changes; recent Session event history is opt-in. Read-only.",
             ).with_discovery_keywords(&["workspace", "summary", "changes", "modified", "files", "工作区", "汇总", "变动", "修改", "文件"]),
         )),
 ];

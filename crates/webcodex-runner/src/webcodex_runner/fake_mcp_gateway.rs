@@ -166,6 +166,48 @@ fn main() -> io::Result<()> {
                     )?;
                     continue;
                 }
+                if scenario == "catalog_metadata_depth" {
+                    let mut metadata = "{}".to_string();
+                    for _ in 0..17 {
+                        metadata = format!(r#"{{"next":{metadata}}}"#);
+                    }
+                    send(
+                        &mut writer,
+                        &format!(
+                            r#"{{"jsonrpc":"2.0","id":{id},"result":{{"tools":[],"_meta":{metadata}}}}}"#
+                        ),
+                    )?;
+                    continue;
+                }
+                if matches!(
+                    scenario,
+                    "wide_catalog" | "tool_node_overflow" | "catalog_byte_overflow"
+                ) {
+                    let (tool_count, enum_items, description_bytes) = match scenario {
+                        "wide_catalog" => (2, 2100, 0),
+                        "tool_node_overflow" => (1, 4096, 0),
+                        _ => (18, 0, 60 * 1024),
+                    };
+                    let choices = (0..enum_items)
+                        .map(|value| value.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    let description = "x".repeat(description_bytes);
+                    let mut tools = vec![r#"{"name":"echo","inputSchema":{"type":"object","properties":{"value":{"type":"string"}}}}"#.to_string()];
+                    for index in 0..tool_count {
+                        tools.push(format!(
+                            r#"{{"name":"choice_{index}","description":"{description}","inputSchema":{{"type":"object","properties":{{"choice":{{"enum":[{choices}]}}}}}}}}"#
+                        ));
+                    }
+                    send(
+                        &mut writer,
+                        &format!(
+                            r#"{{"jsonrpc":"2.0","id":{id},"result":{{"tools":[{}]}}}}"#,
+                            tools.join(",")
+                        ),
+                    )?;
+                    continue;
+                }
                 let description = if scenario == "bad_tools" {
                     // One byte past the 256 KiB MCP wire hard limit.
                     "x".repeat(256 * 1024 + 1)
@@ -314,7 +356,7 @@ fn main() -> io::Result<()> {
                     "mixed_content_result" => send(
                         &mut writer,
                         &format!(
-                            r#"{{"jsonrpc":"2.0","id":{id},"result":{{"content":[{{"type":"text","text":"before"}},{{"type":"image","data":"iVBORw0KGgo=","mimeType":"image/png"}},{{"type":"text","text":"after"}}],"structuredContent":{{"kind":"mixed"}},"isError":false}}}}"#
+                            r#"{{"jsonrpc":"2.0","id":{id},"result":{{"content":[{{"type":"text","text":"before"}},{{"type":"image","data":"iVBORw0KGgo=","mimeType":"image/png"}},{{"type":"resource_link","uri":"blockbench://project/model.bbmodel","name":"model.bbmodel","title":"Model","description":"Current project","mimeType":"application/json","size":1024,"annotations":{{"audience":["user"],"priority":0.5}},"icons":[{{"src":"https://example.com/icon.png","mimeType":"image/png"}}],"_meta":{{"providerExtension":true}}}},{{"type":"text","text":"after"}}],"structuredContent":{{"kind":"mixed"}},"isError":false}}}}"#
                         ),
                     )?,
                     "image_error_result" => send(
@@ -387,6 +429,25 @@ fn main() -> io::Result<()> {
                         &mut writer,
                         &format!(
                             r#"{{"jsonrpc":"2.0","id":{id},"result":{{"content":[{{"type":"resource_link","uri":"file:///tmp/x","name":"x"}}]}}}}"#
+                        ),
+                    )?,
+                    "missing_resource_link_uri" => send(
+                        &mut writer,
+                        &format!(
+                            r#"{{"jsonrpc":"2.0","id":{id},"result":{{"content":[{{"type":"resource_link","name":"model.bbmodel"}}]}}}}"#
+                        ),
+                    )?,
+                    "invalid_resource_link_metadata" => send(
+                        &mut writer,
+                        &format!(
+                            r#"{{"jsonrpc":"2.0","id":{id},"result":{{"content":[{{"type":"resource_link","uri":"blockbench://project/model.bbmodel","name":"model.bbmodel","_meta":"invalid"}}]}}}}"#
+                        ),
+                    )?,
+                    "oversized_resource_link" => send(
+                        &mut writer,
+                        &format!(
+                            r#"{{"jsonrpc":"2.0","id":{id},"result":{{"content":[{{"type":"resource_link","uri":"blockbench://project/model.bbmodel","name":"model.bbmodel","description":"{}"}}]}}}}"#,
+                            "x".repeat(512 * 1024)
                         ),
                     )?,
                     "unknown_content_result" => send(

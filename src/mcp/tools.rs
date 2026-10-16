@@ -330,6 +330,41 @@ pub(super) fn mcp_tools_list_payload_with_features_for_auth(
         .map(|spec| mcp_tool_descriptor_json(spec, compact, app_enabled, Some(stateless_2026)))
         .collect::<Vec<_>>();
     if app_enabled && stateless_2026 {
+        for name in super::workbench::CANONICAL_TOOLS {
+            if tools.iter().any(|tool| tool["name"] == *name)
+                || !crate::tool_runtime::kernel::runtime_tool_scope_allows_discovery(auth, name)
+            {
+                continue;
+            }
+            if let Some(definition) =
+                crate::tool_runtime::tool_definition::lookup_tool_definition(name)
+            {
+                if let Some(model) = definition.model_spec {
+                    let spec = ToolDescriptor {
+                        name: (*name).into(),
+                        description: model.description.into(),
+                        discovery_keywords: model.discovery_keywords,
+                    };
+                    let mut value = mcp_tool_descriptor_json(spec, compact, false, None);
+                    attach_app_visibility(&mut value);
+                    tools.push(value);
+                }
+            }
+        }
+        tools.extend(
+            super::workbench::descriptors(compact)
+                .into_iter()
+                .filter(|tool| match tool["name"].as_str() {
+                    Some("update_workbench_settings") => {
+                        auth.is_some_and(|a| a.kind != crate::auth::AuthKind::OpenAnonymous)
+                            && check_runtime_tool_scope(auth, "update_goal").is_ok()
+                    }
+                    Some("submit_workbench_work") => {
+                        check_runtime_tool_scope(auth, "create_agent_task").is_ok()
+                    }
+                    _ => true,
+                }),
+        );
         // The View uses the existing authorized Session discovery implementation.
         if !tools.iter().any(|tool| tool["name"] == "list_sessions") {
             if let Some(definition) =
@@ -381,9 +416,10 @@ pub(super) fn mcp_tools_list_payload_with_features_for_auth(
             let agent_continuation_tool = is_agent_continuation_app_tool_name(&spec.name);
             let job_terminal_continuation_tool =
                 is_job_terminal_continuation_app_tool_name(&spec.name);
+            let goal_sync_tool = spec.name == "sync_goal_plan";
             let mut value = mcp_tool_descriptor_json(spec, compact, false, None);
             attach_app_visibility(&mut value);
-            if agent_continuation_tool || job_terminal_continuation_tool {
+            if agent_continuation_tool || job_terminal_continuation_tool || goal_sync_tool {
                 // Bridge helpers return data to an existing View; they never
                 // render another widget. Private rendering tools are rejected
                 // by ChatGPT during discovery/refresh.
@@ -409,6 +445,19 @@ pub(super) fn mcp_tools_list_payload_with_features_for_auth(
             }
 
             tools.push(mention);
+        }
+    }
+    if auth.is_some_and(AuthContext::is_oauth_token) {
+        for tool in tools.iter_mut() {
+            let Some(name) = tool["name"].as_str().map(str::to_string) else {
+                continue;
+            };
+            if let Some(scope_options) = crate::auth::oauth_mcp_security_scheme_scopes(&name) {
+                tool["securitySchemes"] = json!(scope_options
+                    .into_iter()
+                    .map(|scopes| json!({ "type": "oauth2", "scopes": scopes }))
+                    .collect::<Vec<_>>());
+            }
         }
     }
     json!({ "tools": tools })
@@ -769,6 +818,11 @@ pub(super) fn add_stateless_workflow_recorder_metadata(payload: &mut Value) {
             )
         ) || tool_name == Some(WORK_RESULT_THREAD_ENTRYPOINT_TOOL_NAME)
             || tool_name.is_some_and(is_host_continuation_app_tool_name)
+            || (tool.pointer("/_meta/ui/visibility") == Some(&json!(["app"]))
+                && tool_name.is_some_and(|name| {
+                    super::workbench::is_adapter_tool(name)
+                        || super::workbench::CANONICAL_TOOLS.contains(&name)
+                }))
         {
             continue;
         }
@@ -958,6 +1012,10 @@ fn is_host_continuation_app_tool_name(tool_name: &str) -> bool {
         || is_job_terminal_continuation_app_tool_name(tool_name)
 }
 
+fn is_diagnostic_app_tool_name(tool_name: &str) -> bool {
+    is_host_continuation_app_tool_name(tool_name) || tool_name == "sync_goal_plan"
+}
+
 const AGENT_CONTINUATION_APP_CALL_ID_FIELD: &str = "app_call_id";
 const AGENT_CONTINUATION_APP_CALL_ID_PATTERN: &str = "^wc_app_call_[0-9a-f]{16}_[1-9][0-9]{0,5}$";
 
@@ -980,7 +1038,7 @@ fn valid_agent_continuation_app_call_id(value: &str) -> bool {
 
 pub(super) fn agent_continuation_app_call_id_from_params(params: &Value) -> Option<String> {
     let name = params.get("name").and_then(Value::as_str)?;
-    if !is_host_continuation_app_tool_name(name) {
+    if !is_diagnostic_app_tool_name(name) {
         return None;
     }
     let value = params
@@ -1081,6 +1139,9 @@ fn log_agent_continuation_app_result(
     let output = structured
         .and_then(|structured| structured.get("output"))
         .and_then(Value::as_object);
+    if let Some(output) = result.pointer("/structuredContent/output") {
+        lifecycle.capture_continuation_ids(output);
+    }
     let projection = output
         .and_then(|output| output.get("agent_continuation"))
         .and_then(Value::as_object)
@@ -1418,7 +1479,38 @@ pub(super) fn mcp_runtime_tool_result(
     }
 }
 
+pub(super) async fn handle_list_with_runtime(
+    runtime: &ToolRuntime,
+    id: Option<Value>,
+    auth: Option<&AuthContext>,
+    stateless_2026: bool,
+    compact_schemas: bool,
+    app_enabled: bool,
+) -> McpOutcome {
+    handle_list_inner(
+        Some(runtime),
+        id,
+        auth,
+        stateless_2026,
+        compact_schemas,
+        app_enabled,
+    )
+    .await
+}
+
+#[cfg(test)]
 pub(super) async fn handle_list(
+    id: Option<Value>,
+    auth: Option<&AuthContext>,
+    stateless_2026: bool,
+    compact_schemas: bool,
+    app_enabled: bool,
+) -> McpOutcome {
+    handle_list_inner(None, id, auth, stateless_2026, compact_schemas, app_enabled).await
+}
+
+async fn handle_list_inner(
+    runtime: Option<&ToolRuntime>,
     id: Option<Value>,
     auth: Option<&AuthContext>,
     stateless_2026: bool,
@@ -1431,6 +1523,19 @@ pub(super) async fn handle_list(
         stateless_2026,
         auth,
     );
+    if let Some(runtime) = runtime.filter(|_| app_enabled) {
+        let settings = runtime.workbench_settings(auth);
+        if let Some(title) = settings.output.get("display_name").and_then(Value::as_str) {
+            if let Some(tools) = result.get_mut("tools").and_then(Value::as_array_mut) {
+                if let Some(tool) = tools
+                    .iter_mut()
+                    .find(|tool| tool["name"] == "open_webcodex_workbench")
+                {
+                    tool["title"] = json!(title);
+                }
+            }
+        }
+    }
     if let Some(tools) = result.get_mut("tools").and_then(Value::as_array_mut) {
         tools.push(adaptive_runtime_gateway_tool_json(compact_schemas));
     }
@@ -1614,7 +1719,7 @@ pub(super) fn mcp_host_file_import_trust_decision_from_state(
         if let Some((trusted_reason, non_loopback_reason)) = loopback_reasons {
             if config.is_loopback_bound() {
                 return HostFileImportTrustDecision {
-                    trust: HostFileImportTrust::TrustedMcpHostFile,
+                    trust: HostFileImportTrust::LoopbackTrustedMcpHostFile,
                     reason: trusted_reason,
                     ..base
                 };

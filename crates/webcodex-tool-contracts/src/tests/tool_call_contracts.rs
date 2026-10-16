@@ -1412,6 +1412,12 @@ fn tool_call_session_id_accessor_covers_session_tool_specs() {
         let call = ToolCall::from_tool_name(&spec.name, sample_tool_args_with_session(&spec.name))
             .unwrap_or_else(|e| panic!("{} should deserialize: {}", spec.name, e));
         let expected = match spec.name.as_str() {
+            "control_browser" => {
+                // Handoff independently authorizes its exact owner Session as
+                // a Runner-local resource association, not a generic recorder
+                // or execution Session target.
+                None
+            }
             "list_jobs" => {
                 // list_jobs.session_id is an exact metadata filter over the
                 // already-authorized Job set. It deliberately does not opt into
@@ -1474,26 +1480,9 @@ fn from_tool_name_unknown_tool_lists_available_tools_and_hint() {
 }
 
 #[test]
-fn known_tool_names_matches_spec_count() {
-    let specs = registered_tool_specs();
-    for spec in &specs {
-        assert!(
-            is_known_tool_name(&spec.name),
-            "{} spec must be known to ToolCall",
-            spec.name
-        );
-        assert!(
-            !is_model_hidden_tool_name(&spec.name),
-            "{} must not be model-hidden when exposed in registered tool specs",
-            spec.name
-        );
-    }
-    assert_eq!(
-        specs.len(),
-        known_tool_names().count() - model_hidden_tool_names().count(),
-        "registered tool specs should cover every model-visible known runtime tool; \
-         hidden tools are parser-known but carry no ToolSpec"
-    );
+fn known_tool_dispatch_preserves_recognition_and_hidden_guidance() {
+    // Set equality and visible/hidden partitioning are checked exhaustively by
+    // canonical_registration_sets_are_exact_including_hidden_variants.
     // Every known name must be recognized (i.e. must NOT yield the
     // "unknown tool" error). Unit tools parse with null args; non-unit
     // tools fail with a missing-field error, which is still a recognition
@@ -1619,6 +1608,29 @@ fn work_on_project_parses_path_source_and_rejects_ambiguous_sources() {
             "{error}"
         );
     }
+}
+
+#[test]
+fn work_on_project_selector_rejection_explains_discovery_without_guessing_authority() {
+    for arguments in [
+        json!({"path": "/private/selector-canary", "instruction": "inspect"}),
+        json!({"client_id": "runner", "instruction": "inspect"}),
+        json!({"instruction": "inspect"}),
+        json!({"project": "agent:runner:project", "path": "/private/selector-canary", "instruction": "inspect"}),
+    ] {
+        let error = ToolCall::from_tool_name("work_on_project", arguments).unwrap_err();
+        assert!(error.starts_with("invalid arguments for tool 'work_on_project':"));
+        assert!(error.contains("list_projects"));
+        assert!(error.contains("not evidence that a Runner is offline"));
+        assert!(error.contains("canonical project id or issued project_ref"));
+        assert!(!error.contains("selector-canary"));
+    }
+    let valid = ToolCall::from_tool_name(
+        "work_on_project",
+        json!({"project": "agent:runner:project", "instruction": "inspect"}),
+    )
+    .unwrap();
+    assert_eq!(valid.project(), Some("agent:runner:project"));
 }
 
 #[test]
@@ -2543,4 +2555,38 @@ fn external_observation_contract_uses_explicit_identities_and_no_raw_payload() {
         coverage["properties"]["reason"]["enum"],
         json!(["source_sequence_unavailable"])
     );
+}
+
+#[test]
+fn update_goal_completion_conditions_are_optional_and_bounded_in_schema() {
+    let base = json!({"goal_id":"wc_goal_AAAAAAAAAAAAAAAA","expected_revision":1,"title":"New title","idempotency_key":"edit"});
+    assert!(matches!(
+        ToolCall::from_tool_name("update_goal", base.clone()).unwrap(),
+        ToolCall::UpdateGoal {
+            completion_conditions: None,
+            ..
+        }
+    ));
+    for conditions in [json!([]), json!(["Explicit acceptance"])] {
+        let mut args = base.clone();
+        args["completion_conditions"] = conditions.clone();
+        let call = ToolCall::from_tool_name("update_goal", args).unwrap();
+        match call {
+            ToolCall::UpdateGoal {
+                completion_conditions: Some(value),
+                ..
+            } => assert_eq!(json!(value), conditions),
+            _ => panic!("lost explicit conditions"),
+        }
+    }
+    let schema = input_schema_for_tool("update_goal");
+    assert_eq!(schema["properties"]["completion_conditions"]["maxItems"], 8);
+    assert_eq!(
+        schema["properties"]["completion_conditions"]["items"]["maxLength"],
+        512
+    );
+    assert!(!schema["required"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("completion_conditions")));
 }

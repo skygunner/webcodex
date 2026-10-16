@@ -54,7 +54,9 @@ pub struct CodingAgentProvider {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CodingAgentProviderSummary {
+    #[schemars(length(min = 1, max = CODING_AGENT_MAX_PROVIDER_ID_BYTES))]
     pub provider_id: String,
+    #[schemars(length(min = 1, max = CODING_AGENT_MAX_PROVIDER_NAME_BYTES))]
     pub name: String,
 }
 
@@ -106,7 +108,7 @@ macro_rules! coding_agent_state {
 }
 
 coding_agent_state! {
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
     CodingAgentRunState {
         Starting => "starting",
         Running => "running",
@@ -128,7 +130,7 @@ impl CodingAgentRunState {
 }
 
 coding_agent_state! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
     CodingAgentExecutionState {
         NotStarted => "not_started",
         Started => "started",
@@ -161,7 +163,7 @@ impl CodingAgentConfigValue {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CodingAgentEventKind {
     AgentMessage,

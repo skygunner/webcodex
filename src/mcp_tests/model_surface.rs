@@ -60,6 +60,7 @@ async fn model_workflow_policy_changes_never_change_cached_tools_schemas_routes_
                     "present_goal_plan",
                     "prepare_goal_workflow",
                     "checkpoint_goal",
+                    "revise_goal_plan",
                     "get_goal",
                     "update_goal",
                     "present_agent_continuation",

@@ -246,3 +246,27 @@ fn browser_semantic_query_audit_omits_private_search_terms() {
     assert!(!projection.to_string().contains("PRIVATE_"));
     assert!(projection.get("query").is_none());
 }
+
+#[test]
+fn browser_handoff_fences_and_native_surfaces_never_enter_audit() {
+    let projection = session_log_arguments_for_tool_request(
+        "control_browser",
+        &json!({
+            "action":"finish_user_handoff", "client_id":"mini", "browser_id":"browser_abcdefghijklmnop",
+            "session_id":"wc_sess_owner", "handoff_fence":"handoff_PRIVATE_AUTHORITY_FENCE"
+        }),
+    );
+    assert_eq!(projection["session_id"], "wc_sess_owner");
+    assert!(!projection.to_string().contains("PRIVATE_AUTHORITY"));
+    let output = json!({"browser_id":"browser_abcdefghijklmnop", "session_id":"wc_sess_owner",
+        "message_id":"wc_msg_question", "handoff_fence":"handoff_PRIVATE_AUTHORITY_FENCE",
+        "surface_id":"surface_PRIVATE_NATIVE", "expires_in_ms":600000, "needs_snapshot":true,
+        "execution_state":"completed", "state_changed":true});
+    let audit = session_log_result_for_tool("control_browser", &output);
+    assert!(!audit.to_string().contains("PRIVATE_"));
+    let observation = session_log_result_for_tool(
+        "observe_browser",
+        &json!({"browsers":[{"browser_id":"browser_abcdefghijklmnop","user_handoff":output}], "count":1}),
+    );
+    assert!(!observation.to_string().contains("PRIVATE_"));
+}

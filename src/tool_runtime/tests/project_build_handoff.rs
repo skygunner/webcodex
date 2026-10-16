@@ -41,22 +41,8 @@ fn call() -> ToolCall {
     }
 }
 
-async fn wait_for_runner_request(runtime: &ToolRuntime) -> crate::runner_protocol::RunnerRequest {
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        if let Some(request) = probe_patch_agent_request(runtime, CLIENT).await {
-            return request;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "Runner request was not enqueued within 10 seconds"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-}
-
 async fn reply_plan(runtime: &ToolRuntime) -> (crate::runner_protocol::RunnerRequest, String) {
-    let request = wait_for_runner_request(runtime).await;
+    let request = wait_for_patch_agent_request(runtime, CLIENT).await;
     assert_eq!(request.kind, "plan_project_build");
     let semantic: ProjectBuildRequest =
         serde_json::from_str(request.content.as_deref().unwrap()).unwrap();
@@ -102,7 +88,7 @@ async fn reply_plan(runtime: &ToolRuntime) -> (crate::runner_protocol::RunnerReq
         })
         .await
         .unwrap();
-    let start = wait_for_runner_request(runtime).await;
+    let start = wait_for_patch_agent_request(runtime, CLIENT).await;
     assert_eq!(start.kind, "start_build_job");
     let job_id = start.job_id.clone().expect("start_build_job job id");
     (start, job_id)

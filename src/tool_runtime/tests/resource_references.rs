@@ -145,6 +145,7 @@ async fn goal_reference_reads_latest_owned_goal_and_hides_foreign_content() {
             id,
             1,
             crate::db::GoalPatch {
+                completion_conditions: None,
                 title: Some("Latest title".into()),
                 objective: None,
                 controller_agent_id: None,

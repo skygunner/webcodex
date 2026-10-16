@@ -771,6 +771,53 @@ impl ToolRuntime {
         )
     }
 
+    pub(crate) fn start_workbench_agent_task_endpoint_continuation(
+        &self,
+        auth: Option<&AuthContext>,
+        attempt_ref: String,
+        endpoint_id: String,
+        endpoint_controller_generation: i64,
+    ) -> ToolResult {
+        let (task_id, attempt_id, assignee_agent_id, attempt_fence, attempt_generation) = match self
+            .resolve_agent_task_attempt_selector(
+                auth,
+                Some(attempt_ref),
+                None,
+                None,
+                None,
+                None,
+                None,
+            ) {
+            Ok(selector) => selector,
+            Err(result) => return result,
+        };
+        let principal = match task_principal(auth) {
+            Ok(principal) => principal,
+            Err(result) => return result,
+        };
+        let Some(db) = self.communication_db.as_ref() else {
+            return agent_task_store_unavailable();
+        };
+        match db.start_agent_task_endpoint_continuation_pinned(
+            &principal,
+            &task_id,
+            &attempt_id,
+            &assignee_agent_id,
+            &attempt_fence,
+            attempt_generation,
+            &endpoint_id,
+            endpoint_controller_generation,
+        ) {
+            Ok(result) => {
+                if let Some(controller) = self.agent_continuations.as_ref() {
+                    controller.schedule_agent(&assignee_agent_id);
+                }
+                serialized_task_success(result)
+            }
+            Err(error) => agent_task_error(error, RecoveryKind::RetrySame),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn start_agent_task_endpoint_continuation(
         &self,

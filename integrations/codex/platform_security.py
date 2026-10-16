@@ -240,49 +240,47 @@ def _windows_private_acl(path):
         if descriptor.value:
             kernel.LocalFree(descriptor)
         return False
+    allocated = []
     try:
         current_sid, current_kernel = _windows_sid(_windows_current_sid_string())
-        try:
-            if not advapi.EqualSid(owner, current_sid):
-                return False
-        finally:
-            current_kernel.LocalFree(current_sid)
+        allocated.append((current_sid, current_kernel))
+        if not advapi.EqualSid(owner, current_sid):
+            return False
 
+        # Keep every SID alive through ACL traversal. The same cleanup also
+        # owns earlier allocations if a later SID conversion fails.
         allowed = [current_sid]
-        allocated = []
         for sid_text in _WINDOWS_ALLOWED_SIDS:
             sid, sid_kernel = _windows_sid(sid_text)
-            allowed.append(sid)
             allocated.append((sid, sid_kernel))
-        try:
-            info = AclSizeInformation()
-            if not advapi.GetAclInformation(
-                acl,
-                ctypes.byref(info),
-                ctypes.sizeof(info),
-                ACL_SIZE_INFORMATION,
-            ):
+            allowed.append(sid)
+        info = AclSizeInformation()
+        if not advapi.GetAclInformation(
+            acl,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+            ACL_SIZE_INFORMATION,
+        ):
+            return False
+        for index in range(info.AceCount):
+            ace = ctypes.c_void_p()
+            if not advapi.GetAce(acl, index, ctypes.byref(ace)) or not ace.value:
                 return False
-            for index in range(info.AceCount):
-                ace = ctypes.c_void_p()
-                if not advapi.GetAce(acl, index, ctypes.byref(ace)) or not ace.value:
-                    return False
-                header = ctypes.cast(ace, ctypes.POINTER(AceHeader)).contents
-                if header.AceType == ACCESS_DENIED_ACE_TYPE:
-                    continue
-                if header.AceType != ACCESS_ALLOWED_ACE_TYPE or header.AceSize < 12:
-                    return False
-                # ACCESS_ALLOWED_ACE is ACE_HEADER + ACCESS_MASK + SID.
-                trustee_sid = ctypes.c_void_p(ace.value + 8)
-                if not advapi.IsValidSid(trustee_sid):
-                    return False
-                if not any(advapi.EqualSid(trustee_sid, sid) for sid in allowed):
-                    return False
-            return True
-        finally:
-            for sid, sid_kernel in allocated:
-                sid_kernel.LocalFree(sid)
+            header = ctypes.cast(ace, ctypes.POINTER(AceHeader)).contents
+            if header.AceType == ACCESS_DENIED_ACE_TYPE:
+                continue
+            if header.AceType != ACCESS_ALLOWED_ACE_TYPE or header.AceSize < 12:
+                return False
+            # ACCESS_ALLOWED_ACE is ACE_HEADER + ACCESS_MASK + SID.
+            trustee_sid = ctypes.c_void_p(ace.value + 8)
+            if not advapi.IsValidSid(trustee_sid):
+                return False
+            if not any(advapi.EqualSid(trustee_sid, sid) for sid in allowed):
+                return False
+        return True
     finally:
+        for sid, sid_kernel in allocated:
+            sid_kernel.LocalFree(sid)
         kernel.LocalFree(descriptor)
 
 

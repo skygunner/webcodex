@@ -12,7 +12,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 LINK_RE = re.compile(r"!?\[[^\]\n]*\]\(([^)\n]+)\)")
-FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
+# Keep recognizing list-nested/indented fences as the former checker did;
+# the checker intentionally does not parse full Markdown list structure.
+FENCE_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})(.*)$")
 SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 
 
@@ -81,17 +83,25 @@ def check_markdown_links(root: Path, markdown_paths: list[Path]) -> tuple[int, l
         except (OSError, UnicodeDecodeError, ValueError) as exc:
             raise RuntimeError(f"could not read tracked Markdown file: {path}") from exc
 
-        fence: str | None = None
+        fence: tuple[str, int] | None = None
         for line_number, line in enumerate(text.splitlines(), start=1):
             fence_match = FENCE_RE.match(line)
             if fence_match:
-                marker = fence_match.group(1)
-                marker_char = marker[0]
+                marker, trailing = fence_match.groups()
                 if fence is None:
-                    fence = marker_char
-                elif fence == marker_char:
+                    # Backtick info strings cannot themselves contain a backtick.
+                    if marker[0] != "`" or "`" not in trailing:
+                        fence = (marker[0], len(marker))
+                        continue
+                elif (
+                    marker[0] == fence[0]
+                    and len(marker) >= fence[1]
+                    and not trailing.strip()
+                ):
+                    # Shorter runs and lines with an info string are fenced
+                    # content, not valid CommonMark closing fences.
                     fence = None
-                continue
+                    continue
             if fence is not None:
                 continue
 

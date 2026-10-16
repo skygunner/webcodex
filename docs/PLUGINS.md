@@ -496,6 +496,15 @@ operator-installed local Agent Browser to inherit native profiles/configuration 
 attach to an explicitly authorized running Chrome while keeping opaque page/snapshot
 identities, tab ownership, and uncertain-effect handling inside the Plugin boundary.
 
+The optional standard-library-only Python
+[`Project Knowledge Plugin`](../plugins/project-knowledge/README.md) indexes bounded
+Git-tracked text/code under one configured repository root into a private SQLite
+FTS5 cache outside the Project. Its `index`, `status`, `search`, and `read` tools
+use the same native protocol and `plugin_tool` binding path; search verifies
+current source hashes and reports index coverage. It requires Python 3.10+, FTS5,
+Git, and descriptor-relative no-follow file access, and never writes core Memory
+or guidance files or calls an embedding/model service.
+
 ## Community Native Plugins (third-party)
 
 The following plugin is maintained outside the WebCodex repository and is **not an

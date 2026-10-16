@@ -24,6 +24,9 @@ pub(crate) fn capture_effective_arguments(tool: &str, arguments: &Value) {
 /// Record canonical normalization/effect evidence before model compression.
 /// Fields come from the producer's result; missing fields remain unobserved.
 pub(crate) fn capture_execution_evidence(tool: &str, output: &Value) {
+    if tool == "consume_agent_wake" {
+        record_continuation_ids(output);
+    }
     if !tool_request_trace_enabled() || !diagnostics::selected(tool) {
         return;
     }
@@ -472,4 +475,107 @@ impl Drop for ToolRequestLifecycle {
             "handler_dropped_before_response",
         );
     }
+}
+
+/// Producer-owned bounded timing facts; never copied into tool results.
+pub(crate) fn record_goal_timing(
+    reason: &'static str,
+    observation_age_ms: Option<i64>,
+    lease_margin_ms: Option<i64>,
+    meaningful_age_ms: Option<i64>,
+    coverage_partial: Option<bool>,
+    active_requests: Option<usize>,
+) {
+    if !tool_request_trace_enabled() {
+        return;
+    }
+    let Some(trace_id) = current_active_trace_id() else {
+        return;
+    };
+    let mut event = base_event(&trace_id, "goal_sync_timing");
+    merge_event_fields(
+        &mut event,
+        json!({"reason": reason, "observation_age_ms": observation_age_ms, "lease_margin_ms": lease_margin_ms, "meaningful_age_ms": meaningful_age_ms, "coverage_partial": coverage_partial, "active_requests": active_requests}),
+    );
+    enqueue_metadata_event(&trace_id, "goal_sync_timing", event);
+}
+
+/// Existing durable ids only; continuation tokens/messages never enter metadata.
+pub(crate) fn record_continuation_ids(output: &Value) {
+    if !tool_request_trace_enabled() {
+        return;
+    }
+    let Some(trace_id) = current_active_trace_id() else {
+        return;
+    };
+    record_continuation_ids_for_trace(&trace_id, output);
+}
+
+impl ToolRequestLifecycle {
+    pub(crate) fn capture_continuation_ids(&self, output: &Value) {
+        if self.enabled() {
+            record_continuation_ids_for_trace(&self.trace_id, output);
+        }
+    }
+}
+
+fn record_continuation_ids_for_trace(trace_id: &str, output: &Value) {
+    let ids = continuation_ids(output);
+    if ids.as_object().is_none_or(|ids| ids.is_empty()) {
+        return;
+    }
+    let mut event = base_event(trace_id, "continuation_identity");
+    merge_event_fields(&mut event, ids);
+    enqueue_metadata_event(trace_id, "continuation_identity", event);
+}
+
+pub(super) fn continuation_ids(output: &Value) -> Value {
+    let projection = output.get("agent_continuation").unwrap_or(output);
+    let wake = projection.get("wake").unwrap_or(projection);
+    let attention = output.get("attention").unwrap_or(output);
+    let mut ids = serde_json::Map::new();
+    for (name, prefix) in [
+        ("wake_id", "wc_wake_"),
+        ("attempt_id", "wc_wake_attempt_"),
+        ("event_id", "wc_attention_event_"),
+    ] {
+        let value = wake
+            .get(name)
+            .or_else(|| attention.get(name))
+            .and_then(Value::as_str);
+        if let Some(value) = value.filter(|value| {
+            value.strip_prefix(prefix).is_some_and(|tail| {
+                tail.len() == 16
+                    && tail
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+            })
+        }) {
+            ids.insert(name.into(), json!(value));
+        }
+    }
+    if !ids.is_empty() {
+        if let Some(created) = attention.get("created").and_then(Value::as_bool) {
+            ids.insert("created".into(), json!(created));
+        }
+        if let Some(observation) = projection
+            .get("dispatch_observation")
+            .and_then(Value::as_str)
+            .filter(|value| {
+                matches!(
+                    *value,
+                    "dispatch_prepared"
+                        | "dispatch_accepted"
+                        | "dispatch_unknown"
+                        | "continuation_consumed"
+                )
+            })
+        {
+            ids.insert("dispatch_observation".into(), json!(observation));
+        }
+        if output.get("state").and_then(Value::as_str) == Some("consumed") {
+            ids.insert("consumed".into(), json!(true));
+        }
+    }
+    Value::Object(ids)
 }

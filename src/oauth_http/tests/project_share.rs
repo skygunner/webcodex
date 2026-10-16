@@ -35,6 +35,58 @@ fn project_share_scope_ceiling_is_project_runtime_only() {
 }
 
 #[tokio::test]
+async fn advertised_all_scopes_are_accepted_by_project_share_authorize() {
+    let config = test_config(oauth2_enabled_project_share(TEST_PROJECT_SHARE_SESSION_ID));
+    let (_tmp, db) = test_db();
+    let (client, _) = seed_project_share_client(
+        &db,
+        TEST_PROJECT_GRANT_ID,
+        "https://client.example/callback",
+    );
+    let service = Service::new(build_router(config, db));
+    let mut metadata = TestClient::get("http://localhost/.well-known/oauth-authorization-server")
+        .send(&service)
+        .await;
+    assert_eq!(metadata.status_code, Some(StatusCode::OK));
+    let advertised: serde_json::Value = metadata.take_json().await.unwrap();
+    let scopes = advertised["scopes_supported"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|scope| scope.as_str().unwrap())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let query = form_body(&[
+        ("response_type", "code"),
+        ("client_id", &client.client_id),
+        ("redirect_uri", "https://client.example/callback"),
+        ("scope", &scopes),
+        ("state", "state-1"),
+        ("code_challenge", "challenge-1"),
+        ("code_challenge_method", "S256"),
+        ("resource", "https://share.example/mcp"),
+    ]);
+    let mut response = TestClient::get(format!("http://localhost/oauth/authorize?{query}"))
+        .send(&service)
+        .await;
+    let location = response
+        .headers
+        .get("location")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(
+        response.status_code,
+        Some(StatusCode::OK),
+        "redirect: {location}"
+    );
+    assert!(response
+        .take_string()
+        .await
+        .unwrap()
+        .contains("Authorize WebCodex project share"));
+}
+
+#[tokio::test]
 async fn standard_authorize_route_renders_project_share_credential_form() {
     let config = test_config(oauth2_enabled_project_share(TEST_PROJECT_SHARE_SESSION_ID));
     let (_tmp, db) = test_db();

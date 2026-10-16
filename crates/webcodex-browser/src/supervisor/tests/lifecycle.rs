@@ -72,7 +72,7 @@ fn probe_with_result(
     receiver
 }
 
-fn check(supervisor: &BrowserSupervisor) {
+pub(super) fn check(supervisor: &BrowserSupervisor) {
     supervisor
         .reaper
         .check()

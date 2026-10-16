@@ -20,7 +20,7 @@ fn show_changes_command_is_read_only() {
     for cmd in [&without_diff, &with_diff] {
         assert!(cmd.contains("git status --porcelain=v1 -b"));
         assert!(cmd.contains("git log -1"));
-        assert!(cmd.contains("git diff --stat"));
+        assert!(cmd.contains("git diff --no-ext-diff --no-textconv --stat"));
         assert!(cmd.contains("LC_ALL=C; export LC_ALL"));
         assert!(!cmd.contains("head_buf=$("), "HEAD must be streamed: {cmd}");
         assert!(
@@ -72,6 +72,188 @@ fn show_changes_command_is_read_only() {
             );
         }
     }
+}
+
+#[test]
+fn workspace_diff_sensitive_guard_omits_binary_without_text_hunks() {
+    for secret in [".env", "zz.pem"] {
+        let tmp = tempfile::tempdir().unwrap();
+        init_git_repo(tmp.path());
+        for path in ["ordinary.bin", secret] {
+            fs::write(tmp.path().join(path), b"\0synthetic-before").unwrap();
+        }
+        git_test_command_ok(tmp.path(), "git add . && git commit -m fixture");
+        for path in ["ordinary.bin", secret] {
+            fs::write(tmp.path().join(path), b"\0synthetic-after").unwrap();
+        }
+        let (exit, stdout, stderr, _) =
+            run_command_sync(&show_changes_command(true, 20, 80), tmp.path(), 30);
+        assert_eq!(exit, 0, "{stderr}");
+        let frames = split_show_changes_stdout(&stdout, true);
+        assert!(
+            !frames.diff.contains(secret),
+            "protected binary diff was returned before parsing: {:?}",
+            frames.diff
+        );
+        assert!(
+            frames.diff.contains("Binary files a/ordinary.bin and b/ordinary.bin differ"),
+            "ordinary binary diff should remain visible: {:?}",
+            frames.diff
+        );
+        assert_eq!(frames.diff_policy_files_omitted, Some(1));
+        let output = bounded_show_changes_output_from_frames(
+            &frames, tmp.path(), true, 20, 80, &stderr,
+        );
+        assert_eq!(output["diff_policy_files_omitted"], 1);
+        assert_eq!(output["hunks_truncated"], true);
+        assert!(
+            output["truncation_reasons"].as_array().unwrap().contains(
+                &json!("diff_protected_paths_omitted")
+            ),
+            "{output}"
+        );
+        assert_show_changes_envelope_value_matches_schema(&output, "binary sensitive omission");
+    }
+}
+
+#[test]
+fn workspace_diff_sensitive_guard_filters_before_runner_capture() {
+    let tmp = tempfile::tempdir().unwrap();
+    init_git_repo(tmp.path());
+    for path in [
+        ".env",
+        "runner.toml",
+        "cert.pem",
+        "config/AGENT.TOML",
+        "secrets/config.py",
+        ".env.example",
+        "ordinary ü.txt",
+    ] {
+        if let Some(parent) = tmp.path().join(path).parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        commit_file(tmp.path(), path, "old synthetic value\n", "track fixture");
+        let content = if webcodex_core::sensitive_paths::is_secret_path(path) {
+            "PROTECTED_DIFF_SENTINEL\n"
+        } else {
+            "PUBLIC_DIFF_SENTINEL\n"
+        };
+        fs::write(tmp.path().join(path), content).unwrap();
+    }
+    let command = show_changes_command(true, 20, 80);
+    let (exit, stdout, stderr, _) = run_command_sync(&command, tmp.path(), 30);
+    assert_eq!(exit, 0, "{stderr}");
+    assert!(!stdout.contains("PROTECTED_DIFF_SENTINEL"));
+    assert!(stdout.contains("PUBLIC_DIFF_SENTINEL"));
+    let frames = split_show_changes_stdout(&stdout, true);
+    let output =
+        bounded_show_changes_output_from_frames(&frames, tmp.path(), true, 20, 80, &stderr);
+    assert_eq!(output["hunk_count"], 2);
+    assert_eq!(output["diff_policy_files_omitted"], 5);
+    assert!(output["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|warning| {
+            warning["reason_code"] == "diff_protected_paths_omitted"
+                && warning["message"].is_string()
+        }));
+    assert_eq!(output["hunks_truncated"], true);
+    assert!(output["truncation_reasons"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("diff_protected_paths_omitted")));
+    assert!(output.get("diff_review_handoff").is_none());
+    assert_show_changes_envelope_value_matches_schema(&output, "protected diff omission");
+    assert!(output["hunks"].as_array().unwrap().iter().all(|file| {
+        !webcodex_core::sensitive_paths::is_secret_path(file["path"].as_str().unwrap())
+    }));
+    let limited = bounded_show_changes_output(tmp.path(), true, 1, 80);
+    assert_eq!(limited["hunk_count"], 1);
+    assert_eq!(limited["diff_policy_files_omitted"], 5);
+    assert!(limited["truncation_reasons"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("diff_hunk_count_limit")));
+    assert!(limited.get("diff_review_handoff").is_none());
+    assert_show_changes_envelope_value_matches_schema(
+        &limited,
+        "protected and bounded diff omission",
+    );
+}
+
+#[test]
+fn workspace_diff_sensitive_guard_filters_both_rename_sides_in_parser() {
+    for (old, new) in [
+        ("ordinary.txt", ".env"),
+        ("secrets/old.py", "ordinary.py"),
+        ("ordinary.txt", "runner.toml"),
+    ] {
+        let diff = format!("diff --git a/{old} b/{new}\nrename from {old}\nrename to {new}\n--- a/{old}\n+++ b/{new}\n@@ -1 +1 @@\n-old\n+PROTECTED_DIFF_SENTINEL\n");
+        let output = parse_show_changes_output(
+            "demo",
+            "## main\n M ordinary.txt\n",
+            "",
+            "",
+            Some(&diff),
+            20,
+            80,
+            Some(0),
+            "",
+        );
+        assert!(!output.to_string().contains("PROTECTED_DIFF_SENTINEL"));
+        assert_eq!(output["hunk_count"], 0);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn workspace_diff_sensitive_guard_decodes_quoted_paths_before_capture() {
+    let tmp = tempfile::tempdir().unwrap();
+    init_git_repo(tmp.path());
+    let protected = [".env.example\n", "toKens/config.py", "config/.KEY"];
+    let safe = [
+        "quote\"name.txt",
+        "tab\tname.txt",
+        "line\nname.txt",
+        "ordinary ü.txt",
+        ".env.example",
+    ];
+    for path in protected.iter().chain(safe.iter()) {
+        fs::create_dir_all(tmp.path().join(path).parent().unwrap()).unwrap();
+        fs::write(tmp.path().join(path), "old\n").unwrap();
+    }
+    git_test_command_ok(tmp.path(), "git add . && git commit -m fixture");
+    for path in protected.iter().chain(safe.iter()) {
+        fs::write(
+            tmp.path().join(path),
+            if protected.contains(path) {
+                "PROTECTED_DIFF_SENTINEL\n"
+            } else {
+                "PUBLIC_DIFF_SENTINEL\n"
+            },
+        )
+        .unwrap();
+    }
+    let (exit, stdout, stderr, _) =
+        run_command_sync(&show_changes_command(true, 20, 80), tmp.path(), 30);
+    assert_eq!(exit, 0, "{stderr}");
+    assert!(!stdout.contains("PROTECTED_DIFF_SENTINEL"));
+    assert_eq!(stdout.matches("+PUBLIC_DIFF_SENTINEL").count(), safe.len());
+    let frames = split_show_changes_stdout(&stdout, true);
+    let output =
+        bounded_show_changes_output_from_frames(&frames, tmp.path(), true, 20, 80, &stderr);
+    assert_eq!(output["diff_policy_files_omitted"], protected.len());
+    let mut actual = output["hunks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| file["path"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    let mut expected = safe.to_vec();
+    actual.sort();
+    expected.sort();
+    assert_eq!(actual, expected);
 }
 
 #[test]
@@ -954,6 +1136,7 @@ fn show_changes_schema_covers_truncation_and_transport_fields() {
         "output_budget_bytes",
         "output_truncated",
         "truncation_reasons",
+        "diff_policy_files_omitted",
         "diff_review_handoff",
     ] {
         assert!(
@@ -1028,7 +1211,7 @@ async fn show_changes_include_diff_agent_command_does_not_enqueue_python_helper(
         "read_workspace_changes include_diff must not enqueue a Python helper: {}",
         payload.script
     );
-    assert!(payload.script.contains("git diff --unified="));
+    assert!(payload.script.contains("git diff --no-ext-diff --no-textconv --no-color --src-prefix=a/ --dst-prefix=b/ --unified="));
     let stdout = framed_clean_show_changes_test_stdout("head", true);
     complete_patch_agent_request(&runtime, "show-native", &req.request_id, 0, &stdout, "").await;
     let result = task.await.unwrap();

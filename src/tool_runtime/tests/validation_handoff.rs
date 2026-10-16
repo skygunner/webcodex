@@ -12,12 +12,11 @@ mod project_validation;
 use super::support::*;
 use crate::runner_http::{ShellJobStartMetadata, ShellJobVisibility};
 use crate::runner_protocol::{
-    RunnerCapabilities, RunnerJobUpdateRequest, RunnerResultPayload, RunnerResultRequest,
-    ShellCommandExecutionState, ShellJobActivity, ShellJobActivityPhase, ShellJobActivitySource,
-    ShellJobActivityState, ShellJobOpRequest, ShellJobValidationMetadata,
-    ShellJobValidationProgress, ShellJobValidationStep, JOB_INVENTORY_MAX_TERMINAL_JOBS,
-    VALIDATION_STEP_SPAWN_FAILED_CODE, VALIDATION_STEP_WAIT_FAILED_CODE,
-    VALIDATION_TOOL_UNAVAILABLE_CODE,
+    RunnerCapabilities, RunnerJobUpdateRequest, ShellCommandExecutionState, ShellJobActivity,
+    ShellJobActivityPhase, ShellJobActivitySource, ShellJobActivityState, ShellJobOpRequest,
+    ShellJobValidationMetadata, ShellJobValidationProgress, ShellJobValidationStep,
+    JOB_INVENTORY_MAX_TERMINAL_JOBS, VALIDATION_STEP_SPAWN_FAILED_CODE,
+    VALIDATION_STEP_WAIT_FAILED_CODE, VALIDATION_TOOL_UNAVAILABLE_CODE,
 };
 use crate::tool_runtime::sessions::{SessionTransport, DEFAULT_MAX_EVENTS_PER_SESSION};
 use crate::tool_runtime::validation_events::validation_summary_for_session;
@@ -52,22 +51,6 @@ pub(super) async fn poll_start_validation_job_with_timeout(
     assert_eq!(request.kind, "start_validation_job", "{:?}", request.kind);
     let job_id = request.job_id.clone().expect("start_validation_job job_id");
     (request, job_id)
-}
-
-async fn wait_for_runner_request(
-    runtime: &ToolRuntime,
-    client_id: &str,
-) -> crate::runner_protocol::RunnerRequest {
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        if let Some(request) = probe_patch_agent_request(runtime, client_id).await {
-            return request;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            panic!("agent request was not enqueued within 10 seconds for {client_id}");
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
 }
 
 pub(super) async fn complete_project_validation_plan_request(
@@ -183,7 +166,7 @@ pub(super) async fn reply_project_validation_plan(
     backend: &str,
     expected_action: ProjectValidationAction,
 ) -> (crate::runner_protocol::RunnerRequest, String) {
-    let request = wait_for_runner_request(runtime, client_id).await;
+    let request = wait_for_patch_agent_request(runtime, client_id).await;
     complete_project_validation_plan_request(
         runtime,
         client_id,
@@ -223,28 +206,18 @@ async fn complete_sync_shell_lifecycle(
     stderr: &str,
     error: Option<&str>,
 ) {
-    runtime
-        .runner_registry
-        .complete(RunnerResultPayload {
-            result: RunnerResultRequest {
-                client_id: client_id.to_string(),
-                runner_instance_id: "inst".to_string(),
-                request_id,
-                exit_code,
-                stdout: Some(stdout.to_string()),
-                stderr: Some(stderr.to_string()),
-                stdout_truncated: false,
-                stderr_truncated: false,
-                duration_ms: Some(5),
-                error: error.map(str::to_string),
-            },
-            command_execution_state: Some(execution_state),
-            mcp_gateway: None,
-            plugin_gateway: None,
-            coding_agent: None,
-        })
-        .await
-        .unwrap();
+    complete_patch_agent_execution(
+        runtime,
+        client_id,
+        request_id,
+        execution_state,
+        exit_code,
+        stdout,
+        stderr,
+        error,
+        5,
+    )
+    .await;
 }
 
 pub(super) fn cargo_test_update(
@@ -713,7 +686,7 @@ async fn fast_go_test_uses_exact_structured_argv_cwd_and_records_session_evidenc
                 .await
         }
     });
-    let request = wait_for_runner_request(&runtime, client_id).await;
+    let request = wait_for_patch_agent_request(&runtime, client_id).await;
     assert_eq!(request.kind, "start_validation_job");
     let job_id = request.job_id.clone().expect("start_validation_job job_id");
     assert_eq!(
@@ -823,7 +796,7 @@ async fn go_test_failure_reports_failed_test_identity_in_result_and_session() {
                 .await
         }
     });
-    let request = wait_for_runner_request(&runtime, client_id).await;
+    let request = wait_for_patch_agent_request(&runtime, client_id).await;
     assert_eq!(request.kind, "start_validation_job");
     let job_id = request.job_id.clone().expect("start_validation_job job_id");
     let stdout = concat!(
@@ -919,7 +892,7 @@ async fn long_go_test_hands_off_same_job_and_terminal_evidence_is_queryable() {
                 .await
         }
     });
-    let request = wait_for_runner_request(&runtime, client_id).await;
+    let request = wait_for_patch_agent_request(&runtime, client_id).await;
     assert_eq!(request.kind, "start_validation_job");
     let job_id = request.job_id.clone().expect("start_validation_job job_id");
     let steps: Vec<crate::runner_protocol::ShellJobValidationStep> =
@@ -3626,7 +3599,7 @@ async fn cargo_fmt_ensure_formatted_mutation_uncertainty_forbids_blind_retry() {
                 .await
         }
     });
-    let precheck = wait_for_runner_request(&runtime, client_id).await;
+    let precheck = wait_for_patch_agent_request(&runtime, client_id).await;
     assert_eq!(precheck.command, "cargo fmt -- --check");
     complete_sync_shell_lifecycle(
         &runtime,
@@ -3640,7 +3613,7 @@ async fn cargo_fmt_ensure_formatted_mutation_uncertainty_forbids_blind_retry() {
     )
     .await;
 
-    let request = wait_for_runner_request(&runtime, client_id).await;
+    let request = wait_for_patch_agent_request(&runtime, client_id).await;
     assert_eq!(request.command, "cargo fmt");
     complete_sync_shell_lifecycle(
         &runtime,

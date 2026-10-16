@@ -8,6 +8,87 @@ consumer and optional automatic entry below can inspect that brief and the optio
 read-only Goal recovery context described below; export remains follow-up work. This
 does not establish real two-sided UI acceptance.
 
+## Choose the integration boundary
+
+An external Codex that only calls WebCodex tools needs the supported MCP endpoint,
+an authorized credential with the target tool's scopes, and the exact registered
+Project. It does not need the adapters in this directory, a Workflow Session,
+Goal, durable Agent, AgentTask, or `attempt_ref`. See [MCP access](../../docs/MCP.md)
+for transport, authentication and direct-tool discovery.
+
+The optional observation and handoff adapters below serve explicitly selected
+Workflow Sessions. Their reports remain external claims and their handoffs
+remain bounded saved context. For WebCodex-owned delegation, use the existing
+[managed AgentTask/CodingAgentRun path](../../docs/agent/acp-coding-agent-run.md#managed-agenttask-binding)
+and retain its exact Task, Attempt and Run identities. These three integration
+boundaries have different ownership and acceptance requirements.
+
+## Reproduce the bidirectional acceptance
+
+The opt-in [bidirectional harness](../../scripts/e2e_codex_bidirectional_ws.py)
+runs real Codex against task-owned loopback Server/Runner instances. It uses the
+existing Python clamp fixture and fixed tests from the Runner's
+`coding_agent/tests/dogfood.rs`. This is a POSIX manual test, not ordinary CI.
+See the [2026-10-13 acceptance checkpoint](../../docs/agent/codex-bidirectional-acceptance-2026-10-13.md)
+for exact tested versions, actual failures and the limits of the recorded evidence.
+
+Prepare explicit local dependencies and dogfood binaries:
+
+```sh
+cargo build --locked --profile dogfood -p webcodex --bin webcodex-server -p webcodex-runner --bin webcodex-runner
+npm install --prefix target/codex-bidirectional-deps --no-audit --no-fund --save-exact @agentclientprotocol/codex-acp@2.1.1
+python3 scripts/e2e_codex_bidirectional_ws.py \
+  --output-dir target/codex-bidirectional-run \
+  --bin-dir target/dogfood \
+  --adapter-script target/codex-bidirectional-deps/node_modules/@agentclientprotocol/codex-acp/dist/index.js \
+  --codex-path /absolute/path/to/codex
+```
+
+The output directory must not already exist. The harness uses the selected CLI's
+existing normal authentication and contacts the real model service; it fixes
+`gpt-5.6-luna` and `medium`. Successful `codex login status` only confirms local
+login state. An online authentication failure remains a failed test; use the
+CLI's supported login flow when the account requires reauthentication.
+
+For ordinary consumption, per-invocation configuration supplies the local MCP
+URL, a read-only PAT through an environment variable, and the direct profile
+header. No global Codex MCP configuration is installed. The client exposes only
+`read_files`; the PAT and registered Project enforce the server-side scope.
+Acceptance requires actual completed MCP tool receipts matching independently
+read fixture bytes, the model's separately checked answer, and no newly created
+Workflow Session, Goal, Agent or AgentTask. The consumer's event history is also
+checked for started or failed non-read tool attempts: a later successful MCP
+read must not hide an earlier forbidden tool attempt.
+
+For managed execution, the task-owned Runner pins ACP 2.1.1 and forces the
+model/effort through live ACP configuration admission. The harness preserves
+the exact Task/Attempt/Run, replays that same binding, restarts only its Server,
+and reconciles the original Run while its Runner stays alive. Read
+`phase_before_disconnect`, `run_state_before_disconnect` and
+`execution_state_before_disconnect` before describing the recovery. Before
+restarting, the harness observes that same Run within the configured timeout,
+using its observation cursor, until canonical state proves `running` with
+execution `started`, or a terminal, uncertain or permission-waiting state is
+observed. Run state alone does not prove prompt dispatch. Missing identity/state,
+lost event history or an observation deadline fails the test before restart.
+An already-terminal result or pre-prompt failure can still exercise exact
+reconciliation, but cannot set `recovery.passed=true`; successful coding remains
+separate from recovery coverage. No replacement execution is launched to obtain
+a better test outcome. A transparent test-only relay records only adapter
+identity, effective model/effort and prompt-dispatch counts. A live pre-restart
+observation does not prove that the Run remained active throughout the outage.
+
+Inspect `report.json` by stage. Execution completion, the independent seven
+fixed tests, the additional tests and cleanup are separate results; also check
+`consumer_group_stopped`, `server_stopped`, `runner_stopped` and
+`execution_outcome`. Consumer transcript scratch is removed after bounded
+evidence extraction; diagnostic text is reduced to fixed categories. Private
+local service credentials and recovery configuration remain in `private/`
+with mode 0700/0600 and must not be copied into reports or repository history.
+The finally path stops only task-owned processes. Shared services and Codex
+configuration stay unchanged. Keep an incomplete execution's exact identities
+and observe/reconcile before starting any replacement.
+
 ## Server contract
 
 - `record_external_observation(project, session_id, adapter_id, event_id, observed_tool,
@@ -158,6 +239,15 @@ unknown operations before continuing. The command does not select a Session by
 directory or recency, bind the new local conversation, mark work complete, replay
 an operation, install a Hook, or write a handoff file.
 
+When the Server supplies `acceptance`, the reader validates and preserves that
+bounded sibling projection, including its state, reason codes and evidence
+references. It remains advisory: `ready_for_review` does not mean the task is
+complete, and retained validation or outputs do not prove current source
+freshness. Existing handoff actions remain the recovery guidance. A response
+without `acceptance` leaves it absent; the reader never infers readiness or
+retains an older verdict. Malformed acceptance fails the read without exposing
+the rejected payload or replacing the last valid private snapshot.
+
 When the exact Workflow Session already has one caller-owned active Goal linked by an
 explicit Workflow Session↔Goal correlation, the Server may also return sibling
 `goal_context`. This projection is separate from the 8 KiB `handoff_brief` and contains
@@ -228,7 +318,26 @@ not present cached evidence as current. Unknown outcomes and incomplete coverage
 are preserved. No observations, Goals, business operations or historical events
 are written or replayed by this entry.
 
+An acceptance-only change also refreshes the existing conversation's snapshot
+and Hook context, even when the handoff brief is unchanged. New conversations
+and `SessionStart` receive the current projection through the same read path.
+The [bounded task context](../../docs/implementation/task-context-recovery.md)
+already travels inside `handoff_brief.task`; neither it nor acceptance creates
+a separate local task lifecycle or completion verdict.
+
 ## Verification boundary
+
+Run the harness's deterministic recovery tests without launching services or
+using a model account:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts.tests.test_codex_bidirectional_acceptance -q
+```
+
+These tests cover waiting for canonical execution-start evidence, exact Run and
+TaskAttempt identities, pre-prompt failure and terminal/uncertain recovery,
+cursor use, history loss and bounded waits. They do not establish real-model
+execution, Server-restart acceptance or ChatGPT Host continuation.
 
 Python unit tests use synthetic Hook payloads and controlled senders, including
 uncertain delivery/retry, changed associations, private-file checks, redaction,
@@ -246,3 +355,12 @@ client UI, bind the exact independent local conversation, perform a minimal real
 read, verify one report through actual MCP, and retain `unknown` when no receipt is
 available. Verify the wrong-project and offline cases separately. Do not exercise
 this candidate against a production server that lacks the new endpoints.
+
+## Explicit experience proposals
+
+The optional [experience proposal adapter](EXPERIENCE_PROPOSALS.md)
+([中文](EXPERIENCE_PROPOSALS.zh-CN.md)) stores operator/current-Host candidates as
+Session proposals. An explicit exact-version/destination approval promotes one
+candidate through native Memory CAS or a guarded project Skill definition write.
+It does not extract transcripts or call a model; unresolved effect receipts block
+blind retries. This is independent of handoff generation and recovery Hooks.

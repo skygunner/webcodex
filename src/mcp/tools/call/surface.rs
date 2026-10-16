@@ -127,13 +127,14 @@ impl RuntimeSurface {
             stateless_2026 && runtime_tool_operator_extension_family(&params.name).is_some();
         let workbench_view_call = server_mcp_apps_enabled
             && stateless_2026
-            && matches!(
-                params.name.as_str(),
-                "search_webcodex_resources"
-                    | "read_webcodex_resource"
-                    | "list_sessions"
-                    | "open_webcodex_workbench"
-            );
+            && (super::super::super::workbench::CANONICAL_TOOLS.contains(&params.name.as_str())
+                || matches!(
+                    params.name.as_str(),
+                    "search_webcodex_resources"
+                        | "read_webcodex_resource"
+                        | "list_sessions"
+                        | "open_webcodex_workbench"
+                ));
         let direct_denied = !workbench_view_call
             && !app_only_artifact_read
             && !app_only_goal_plan_sync
@@ -191,7 +192,12 @@ impl RuntimeSurface {
                 agent_continuation_app: agent_continuation_app_admitted,
             },
             work_result_thread_context,
-            discard_recorder: workbench_view_call
+            discard_recorder: (workbench_view_call
+                && (!super::super::super::workbench::CANONICAL_TOOLS
+                    .contains(&params.name.as_str())
+                    || (!via_adaptive_runtime_gateway
+                        && !protocol_extension_admitted
+                        && !is_adaptive_runtime_direct_tool(&params.name))))
                 || matches!(
                     params.name.as_str(),
                     "sync_goal_plan"

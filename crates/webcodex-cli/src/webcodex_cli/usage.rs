@@ -11,7 +11,7 @@ Daily self-hosted setup:\n\
   See `webcodex environment --help` for services, invitations, recovery and upgrades.\n\n\
 Advanced component commands:\n\
   server                        Configure and operate the Server\n\
-  controller                    WSL/Linux terminal control plane for Server, Runner, and Tunnel\n\
+  controller                    CLI/TUI management for Server, Runner, and Tunnel\n\
   pairing create                Create a one-time login code\n\
   login                         Log the project machine in with that code\n\
   project register              Add an existing project for a stopped/legacy Runner\n\
@@ -42,7 +42,7 @@ Options:\n\
 
 pub(crate) fn controller_usage() -> &'static str {
     "Usage: webcodex controller <COMMAND> [OPTIONS]\n\n\
-WSL/Linux terminal control plane for a local or remote WebCodex Server, local Runner, and optional local OpenAI Tunnel.\n\n\
+CLI management tool for a local or remote WebCodex Server, local Runner, and optional local OpenAI Tunnel on WSL/Linux/Unix.\n\n\
 Commands:\n\
   init       Create controller.toml with local defaults\n\
   run        Run the Controller in the foreground and own child processes\n\
@@ -53,10 +53,11 @@ Commands:\n\
   stop       Stop a foreground Controller or installed systemd user service\n\
   restart    Restart the systemd Controller/foreground runtime, or one managed component\n\
   logs       Read live in-memory logs, falling back to the systemd user journal\n\
+  tui        Open a read-only overview of status, projects, and live logs\n\
   uninstall  Stop/disable/remove only the Controller systemd user service (--confirm)\n\
   project    List, register, or unregister projects through an online Runner\n\n\
 Project commands: project list | project register PATH | project remove ID-OR-PATH\n\
-  --user-token-file PATH   User API credential [default: matching Runner connection's webcodex-user-token]\n\
+  --user-token-file PATH   User API credential [default: runner.user_token_file, matching connection, then Runner sibling]\n\
   All project commands require the configured Runner online; no local registry fallback.\n\n\
 Common options:\n\
   --config PATH   Controller config [default: ~/.config/webcodex/controller.toml]\n\
@@ -66,8 +67,12 @@ Common options:\n\
   --no-start      Install/enable the unit without starting it\n\
   --confirm       Required by controller uninstall\n\
   --json          Machine-readable output for status/doctor/project\n\
+  --lines N       Recent log lines [default: 100]\n\
+  -f, --follow    Keep reading new logs until Ctrl+C (logs only)\n\
   -h, --help      Print help and exit\n\n\
-Controller V0 does not modify Desktop and uses existing Server, Runner, and Tunnel process contracts.\n"
+TUI: tui [--config PATH] [--service-file PATH] [--user-token-file PATH]\n\
+  Tab switches project/log focus; arrows/PageUp/PageDown scroll; Space toggles log following; r refreshes; q/Ctrl+C exits.\n\
+Controller provides CLI and TUI management only and uses existing Server, Runner, and Tunnel process contracts.\n"
 }
 
 pub(crate) fn connect_usage() -> &'static str {

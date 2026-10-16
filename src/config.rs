@@ -30,6 +30,52 @@ impl fmt::Debug for Config {
     }
 }
 
+/// Operator-configured instance name used as the Workbench's default label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkbenchConfig {
+    pub instance_name: String,
+}
+
+impl WorkbenchConfig {
+    /// Read and validate `WEBCODEX_INSTANCE_NAME`; absence uses the stable default.
+    pub fn from_env() -> Result<Self, String> {
+        let instance_name = match std::env::var("WEBCODEX_INSTANCE_NAME") {
+            Ok(value) => validate_instance_name(&value)?,
+            Err(std::env::VarError::NotPresent) => "WebCodex".to_owned(),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                return Err("WEBCODEX_INSTANCE_NAME must be valid UTF-8".to_owned());
+            }
+        };
+        Ok(Self { instance_name })
+    }
+}
+
+fn validate_instance_name(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.chars().count() > 80
+        || value.len() > 320
+        || value.chars().any(char::is_control)
+    {
+        return Err("WEBCODEX_INSTANCE_NAME must be non-empty, contain no control characters, and be at most 80 characters and 320 UTF-8 bytes".to_owned());
+    }
+    Ok(value.to_owned())
+}
+
+#[cfg(test)]
+mod workbench_config_tests {
+    use super::validate_instance_name;
+
+    #[test]
+    fn instance_name_validation_matches_workbench_name_bounds() {
+        assert_eq!(validate_instance_name("  Team 🧭 ").unwrap(), "Team 🧭");
+        assert!(validate_instance_name(" \t ").is_err());
+        assert!(validate_instance_name("x\nname").is_err());
+        assert!(validate_instance_name(&"x".repeat(81)).is_err());
+        assert!(validate_instance_name(&"界".repeat(107)).is_err());
+    }
+}
+
 /// Server-side QUIC Runner transport configuration. Sourced from
 /// `WEBCODEX_QUIC_*` env vars, mirroring the project's env-var config pattern.
 /// Kept as a standalone struct (not embedded in [`Config`]) so existing

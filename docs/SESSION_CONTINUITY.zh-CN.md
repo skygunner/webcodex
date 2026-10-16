@@ -12,7 +12,7 @@ WebCodex 将项目工作保存在本地，不依赖承载对话的 ChatGPT 账�
 
 模型使用 `post_session_message`：`kind=decision` 保存已确认决策，`kind=progress` 保存实现状态和剩余工作，按需使用 `todo`、`risk`、`question` 或 `guidance`。稳定的 `delivery_key` 使相同请求在消息及重放记录保留期间可以跨重启安全重试；发送结果不确定时，应使用同一 key 和相同正文核对。
 
-已经使用持久 Goal 的任务，在重要节点调用 `checkpoint_goal`，并让 Goal 与准确的 Session 保持显式关联。执行和验证工具在显式提供授权 recorder 时记录各自的证据；消息中的“测试通过”仍只是报告。
+已经使用持久 Goal 的任务，在重要节点调用 `checkpoint_goal`。证据改变未完成里程碑时，调用 `revise_goal_plan`，提供准确的当前 revision、新的幂等键、有界原因和完整的有序替换计划。已完成步骤的 id 和标题必须保留，保留步骤的状态不变，新 id 从 pending 开始。删除当前步骤后不再有当前步骤；后续通过 checkpoint 显式选择。完成条件不变。准确重放不产生修改，改变内容复用键会冲突，终态 Goal 不可修改。revision 过期后先调用 `get_goal` 重读并重新考虑替换。其 `plan_history` 在 64 KiB 预算内返回最多八个先前快照，并明确给出累计 `total_count`、`returned_count` 和 `truncated`；Session 交接恢复当前计划。让 Goal 与准确的 Session 保持显式关联。执行和验证工具在显式提供授权 recorder 时记录各自的证据；消息中的“测试通过”仍只是报告。
 
 WebCodex 接收工具参数和结果，不会获得宿主对话中的每句话。未保存的讨论和模型内部推理无法恢复。不要将凭据写入消息。保留范围和截断会明确标注；Session 是有界的项目历史，不是无限对话档案。
 

@@ -89,6 +89,7 @@ normal = [
     "webcodex-build-info",
     "webcodex-core",
     "webcodex-environment",
+    "webcodex-process",
     "webcodex-runner-config",
 ]
 dev = []

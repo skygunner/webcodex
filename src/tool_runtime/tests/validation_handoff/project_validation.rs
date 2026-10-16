@@ -968,7 +968,7 @@ async fn project_validation_mismatched_evidence_profile_starts_nothing() {
                     .await
             }
         });
-        let request = wait_for_runner_request(&runtime, "project-validation").await;
+        let request = wait_for_patch_agent_request(&runtime, "project-validation").await;
         assert_eq!(request.kind, "plan_project_validation");
         let semantic: ProjectValidationRequest =
             serde_json::from_str(request.content.as_deref().unwrap()).unwrap();
@@ -1035,7 +1035,7 @@ async fn node_json_project_validation_handoff_owns_counts_and_keeps_freshness_un
                         .await
                 }
             });
-            let planning = wait_for_runner_request(&runtime, "project-validation").await;
+            let planning = wait_for_patch_agent_request(&runtime, "project-validation").await;
             assert_eq!(planning.kind, "plan_project_validation");
             let semantic: ProjectValidationRequest =
                 serde_json::from_str(planning.content.as_deref().unwrap()).unwrap();

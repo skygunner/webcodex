@@ -31,6 +31,23 @@ pub(super) fn browser_observe_audit_projection(call: &BrowserObserveToolCall) ->
 
 pub(super) fn browser_act_audit_projection(call: &BrowserActToolCall) -> Value {
     match call {
+        BrowserActToolCall::BeginUserHandoff {
+            client_id,
+            browser_id,
+            session_id,
+            message_id,
+        } => serde_json::json!({
+            "action": "begin_user_handoff", "client_id": client_id, "browser_id": browser_id,
+            "session_id": session_id, "message_id": message_id,
+        }),
+        BrowserActToolCall::FinishUserHandoff {
+            client_id,
+            browser_id,
+            session_id,
+            ..
+        } => serde_json::json!({
+            "action": "finish_user_handoff", "client_id": client_id, "browser_id": browser_id, "session_id": session_id,
+        }),
         BrowserActToolCall::Batch {
             client_id,
             browser_id,

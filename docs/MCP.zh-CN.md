@@ -467,3 +467,29 @@ operator/gateway primitive 保留。旧的 `export_project_artifact` compatibili
 能力的 ChatGPT 中，可以在 project 与 host 之间直接传递，而不需要模型手工搬运 Base64。
 
 请阅读 [Coding 工作流](CODING_WORKFLOW.zh-CN.md)，使用 canonical `work_on_project` bootstrap / behavioral role 心智模型，并遵循其中的 validation/closeout guidance。运维工具见 [架构](ARCHITECTURE.md) 与 `webcodex` CLI。
+
+## Goal 与 Agent 续接时序诊断
+
+当前资源为 `ui://webcodex/goal-plan/v9`（App 8.0.0）与
+`ui://webcodex/agent-continuation/v21`（App 21.0.0），旧资源别名被拒绝。
+Goal Plan 和 Agent Continuation 卡片提供 **Enable timing diagnostics**，默认关闭。
+每个 View 本地最多保留 64 条时序记录：计划与实际轮询延迟、单调时钟测量的 RPC
+开始/完成/错误耗时（仅工具 RPC）、可见性与卸载。`ui/message` 不单独测量耗时，
+结果仍由现有 prepare/finish 的接受或未知观测表达。关闭即清空，重新挂载从空记录开始。不增加 RPC、
+浏览器持久化、模型消息、时间权威或调度器。Goal 诊断可附带已有的有界 `app_call_id`；
+MCP 适配器验证并移除该字段后才进入 ToolRuntime。Agent 调用保留现有的关联方式。
+
+运维可单独启用 `WEBCODEX_TOOL_REQUEST_TRACE=metadata`，用这些 ID 关联已有的请求
+开始/完成记录。`goal_sync_timing` 记录封闭的核对原因、有效活动年龄、覆盖情况与
+运行中请求数；执行到持久化观测检查时还记录观测年龄与 75 秒租约剩余量。
+`continuation_identity` 用已有 Event/Wake/Attempt ID 关联创建、分发和精确消费。
+这些记录复用有界且失败开放的 trace 写入器，不添加提示词、消息正文、消费 token
+或原始 ClientWindow，也不复制到模型可见的 Goal 结果。现有 full trace 的正文与
+隐私规则独立适用。租约剩余量为负表示观测已过期；缺失观测或部分覆盖不能授予唤醒权限。
+
+单独获授权后，可在真实 ChatGPT 中绑定 Agent 载体并展示精确关联的 Goal，启用本地
+诊断和 metadata trace，对比前台轮询与隐藏聊天/浏览器超过 75 秒的行为。将实际
+定时器间隔、慢 RPC 和错误与 Server 的观测租约对照。过期卡片不得创建 Wake，直到
+后续成功观测满足全部现有资格检查。隐藏/显示、卸载/重挂载及单独获授权的 Server
+重启应保留单飞协调与每个有效活动周期仅一个逻辑 Wake。关联该 Wake 的分发与精确
+消费；Host 接受不等于新模型回合。假时钟本地测试不能证明 ChatGPT 后台调度或无人确认续接。

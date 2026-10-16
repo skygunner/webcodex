@@ -103,6 +103,20 @@ impl<'a> OperationCompletion<'a> {
         snapshot: &mut DesktopStateSnapshot,
         last_switch: Option<&RuntimeSwitchResult>,
     ) -> bool {
+        // A successful RuntimeRefresh is fresh native evidence that the Runner
+        // recovered. Invalidate only the obsolete Runner-offline startup error;
+        // other errors, failed observations and stale readiness must survive.
+        if self.kind == DesktopOperationKind::RuntimeRefresh
+            && self.error.is_none()
+            && snapshot.readiness.runner == RunnerReadiness::Ready
+            && snapshot
+                .runtime_error
+                .as_ref()
+                .is_some_and(|error| error.code == "runner_offline")
+        {
+            snapshot.runtime_error = None;
+            return true;
+        }
         match self.policy.runtime_error {
             RuntimeErrorPolicy::Unchanged => return false,
             RuntimeErrorPolicy::ReflectResult | RuntimeErrorPolicy::PreserveSwitchRecovery => {}

@@ -23,6 +23,7 @@ use webcodex_core::mcp_gateway::{
     McpGatewayProvider, McpGatewayProviderState, McpGatewayRequest, McpGatewayResponse,
     McpGatewayResponsePayload, McpGatewayTool, McpGatewayToolResult, MCP_GATEWAY_MAX_MESSAGE_BYTES,
     MCP_GATEWAY_MAX_PROVIDER_MESSAGE_BYTES, MCP_GATEWAY_MAX_RESULT_BYTES,
+    MCP_GATEWAY_MAX_TOOL_COUNT,
 };
 use webcodex_process::ManagedChild;
 
@@ -318,6 +319,7 @@ impl McpGatewayManager {
                 name,
                 arguments,
                 expected_schema,
+                allow_resource_links,
             } => {
                 let Some((provider, timeout, max_description_bytes)) =
                     self.exact_provider(&provider_id, &provider_instance_id)
@@ -345,7 +347,7 @@ impl McpGatewayManager {
                             return Err(ProviderFailure::not_started("provider_timeout"));
                         }
                         self.commit_provider_dispatch(&provider)?;
-                        connection.tools_call(&name, arguments, remaining)
+                        connection.tools_call(&name, arguments, remaining, allow_resource_links)
                     },
                 ) {
                     Ok(result) => {
@@ -763,12 +765,11 @@ impl ProviderConnection {
         max_description_bytes: usize,
     ) -> Result<Vec<McpGatewayTool>, ProviderFailure> {
         let result = self.request("tools/list", json!({}), timeout)?;
-        validate_json_value(
-            &result,
-            MCP_GATEWAY_MAX_MESSAGE_BYTES,
-            "provider tools response",
-        )
-        .map_err(|_| ProviderFailure::completed("invalid_provider_tools"))?;
+        let encoded = serde_json::to_vec(&result)
+            .map_err(|_| ProviderFailure::completed("invalid_provider_tools"))?;
+        if encoded.len() > MCP_GATEWAY_MAX_MESSAGE_BYTES {
+            return Err(ProviderFailure::completed("invalid_provider_tools"));
+        }
         let object = result
             .as_object()
             .ok_or_else(|| ProviderFailure::completed("invalid_provider_tools"))?;
@@ -784,8 +785,28 @@ impl ProviderConnection {
             .get("tools")
             .and_then(Value::as_array)
             .ok_or_else(|| ProviderFailure::completed("invalid_provider_tools"))?;
+        if raw_tools.len() > MCP_GATEWAY_MAX_TOOL_COUNT {
+            return Err(ProviderFailure::completed("invalid_provider_tools"));
+        }
+        // The catalog has an aggregate byte/count bound; each tool gets its own
+        // JSON node budget. Validate other response fields independently too.
+        let mut envelope = object.clone();
+        envelope.insert("tools".to_string(), json!([]));
+        validate_json_value(
+            &Value::Object(envelope),
+            MCP_GATEWAY_MAX_MESSAGE_BYTES,
+            "provider tools response",
+        )
+        .map_err(|_| ProviderFailure::completed("invalid_provider_tools"))?;
         let mut tools = Vec::with_capacity(raw_tools.len());
         for raw in raw_tools {
+            // Keep the tools/list wrapper so the existing depth bound is unchanged.
+            validate_json_value(
+                &json!({"tools": [raw]}),
+                MCP_GATEWAY_MAX_MESSAGE_BYTES,
+                "provider tool",
+            )
+            .map_err(|_| ProviderFailure::completed("invalid_provider_tools"))?;
             let object = raw
                 .as_object()
                 .ok_or_else(|| ProviderFailure::completed("invalid_provider_tools"))?;
@@ -839,6 +860,7 @@ impl ProviderConnection {
         name: &str,
         arguments: Value,
         timeout: Duration,
+        allow_resource_links: bool,
     ) -> Result<McpGatewayToolResult, ProviderFailure> {
         // Outer MCP caller metadata deliberately stops at the WebCodex trust
         // boundary. Provider tools/call receives only gateway-owned fields.
@@ -884,6 +906,16 @@ impl ProviderConnection {
                         data: data.to_string(),
                         mime_type: mime_type.to_string(),
                     });
+                }
+                "resource_link" => {
+                    if !allow_resource_links {
+                        // An old Server cannot decode this result variant. Since
+                        // tools/call completed, send a deterministic completed error.
+                        return Err(ProviderFailure::completed("unsupported_provider_content"));
+                    }
+                    let link = serde_json::from_value(Value::Object(item.clone()))
+                        .map_err(|_| ProviderFailure::completed("invalid_provider_result"))?;
+                    content.push(link);
                 }
                 _ => {
                     return Err(ProviderFailure::completed("unsupported_provider_content"));

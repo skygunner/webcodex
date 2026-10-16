@@ -127,6 +127,7 @@ fn unrestricted_test_policy() -> RunnerPolicy {
 fn test_config(project_registry_dir: PathBuf) -> RunnerConfig {
     RunnerConfig {
         server_url: "http://127.0.0.1:8000".to_string(),
+        server_url_override: None,
         token: "test-token".to_string(),
         client_id: "oe".to_string(),
         display_name: None,
@@ -174,6 +175,17 @@ fn project_format_capability_matches_supported_native_backends() {
 fn runner_config_control_capability_is_platform_neutral() {
     let capabilities = runner_register_capabilities(&test_config(PathBuf::new()));
     assert!(capabilities.runner_config_control);
+}
+
+#[test]
+fn browser_user_handoff_capability_requires_owned_browser_and_exact_native_surface() {
+    let capabilities = runner_register_capabilities(&test_config(PathBuf::new()));
+    if !cfg!(any(target_os = "macos", windows))
+        || !capabilities.browser_managed_profile
+        || !capabilities.browser_surface_handoff
+    {
+        assert!(!capabilities.browser_user_handoff);
+    }
 }
 
 #[test]

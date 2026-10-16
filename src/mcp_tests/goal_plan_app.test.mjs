@@ -293,7 +293,7 @@ test("Goal continuity keeps Host-carrier readiness visible when activity evidenc
   const view = app("mcp_goal_plan_app.html");
   await view.initialize();
   view.toolResult({ goal_plan: unavailable });
-  assert.equal(view.nodes["auto-resume"].textContent, "Ready");
+  assert.equal(view.nodes["auto-resume"].textContent, "Ready · not a guarantee");
   assert.equal(view.nodes["continuity-state"].textContent, "Unavailable");
   assert.equal(view.nodes.activity.textContent, "Window activity observation unavailable.");
   assert.notEqual(view.nodes.status.textContent, "Invalid Goal Plan state");
@@ -312,7 +312,7 @@ test("Goal continuity refreshes on the same authoritative revision without equat
   const view = app("mcp_goal_plan_app.html");
   await view.initialize();
   view.toolResult({ goal_plan: readyPlan });
-  assert.equal(view.nodes["auto-resume"].textContent, "Ready");
+  assert.equal(view.nodes["auto-resume"].textContent, "Ready · not a guarantee");
   assert.equal(view.nodes["continuity-state"].textContent, "Ready");
 
   await view.fireTimers(12000);
@@ -368,4 +368,40 @@ test("Goal rejects a different identity and ignores results after teardown", asy
   await flush();
   assert.equal(view.nodes.title.textContent, plan.title);
   assert.equal(view.timers.size, 0);
+});
+
+test("opt-in bounded timing tracks delayed hidden polls and slow/error RPC without changing single flight", async () => {
+  const view = app("mcp_goal_plan_app.html");
+  assert.equal(view.document.getElementById("timing-log").textContent, "");
+  view.nodes["timing-toggle"].onclick();
+  await view.initialize();
+  view.toolInput(input);
+  const first = view.calls("sync_goal_plan")[0];
+  assert.match(first.params.arguments.app_call_id, /^wc_app_call_[0-9a-f]{16}_1$/);
+  view.advanceTime(9000);
+  await view.reply(first, toolResult({ goal_plan: plan }));
+  await view.visibility(true);
+  view.advanceTime(80000); // Host throttling exceeds the 75s lease; no browser Wake.
+  await view.fireTimers(56000);
+  assert.equal(view.calls("sync_goal_plan").length, 2);
+  await view.visibility(false);
+  await view.visibility(true);
+  assert.equal(view.calls("sync_goal_plan").length, 2);
+  await view.reject(view.calls("sync_goal_plan")[1]);
+  const events = view.nodes["timing-log"].textContent.split("\n").map(JSON.parse);
+  assert.ok(events.some(event => event.event === "rpc_complete" && event.duration_ms === 9000));
+  assert.ok(events.some(event => event.event === "poll_actual" && event.timer_gap_ms === 80000));
+  assert.ok(events.some(event => event.event === "rpc_error"));
+  assert.equal(view.sent.filter(message => message.method === "ui/message").length, 0);
+  for (let i = 0; i < 80; i++) await view.visibility(i % 2 === 0);
+  assert.equal(view.nodes["timing-log"].textContent.split("\n").length, 64);
+  assert.ok(!view.nodes["timing-log"].textContent.includes(plan.title));
+  await view.teardown();
+  const calls = view.calls("sync_goal_plan").length;
+  await view.visibility(false);
+  assert.equal(view.calls("sync_goal_plan").length, calls);
+  assert.equal(view.timers.size, 0);
+  view.nodes["timing-toggle"].onclick();
+  assert.equal(view.nodes["timing-log"].textContent, "");
+  assert.equal(view.nodes["timing-log"].hidden, true);
 });

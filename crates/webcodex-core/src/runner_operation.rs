@@ -584,6 +584,8 @@ pub enum RunnerBrowserOperationKind {
     AttachExternal,
     LaunchManaged,
     ResolveSurface,
+    BeginUserHandoff,
+    FinishUserHandoff,
     ListBrowsers,
     ListPages,
     Snapshot,
@@ -624,6 +626,8 @@ impl RunnerBrowserOperationKind {
             Self::AttachExternal => "browser_attach",
             Self::LaunchManaged => "browser_launch_managed",
             Self::ResolveSurface => "browser_surface",
+            Self::BeginUserHandoff => "browser_begin_user_handoff",
+            Self::FinishUserHandoff => "browser_finish_user_handoff",
             Self::ListBrowsers => "browser_list_browsers",
             Self::ListPages => "browser_list_pages",
             Self::Snapshot => "browser_snapshot",
@@ -656,6 +660,8 @@ impl RunnerBrowserOperationKind {
             "browser_attach" => Self::AttachExternal,
             "browser_launch_managed" => Self::LaunchManaged,
             "browser_surface" => Self::ResolveSurface,
+            "browser_begin_user_handoff" => Self::BeginUserHandoff,
+            "browser_finish_user_handoff" => Self::FinishUserHandoff,
             "browser_list_browsers" => Self::ListBrowsers,
             "browser_list_pages" => Self::ListPages,
             "browser_snapshot" => Self::Snapshot,
@@ -2408,6 +2414,37 @@ fn ensure_empty_generic_execution_fields(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn browser_user_handoff_wire_roundtrip_preserves_exact_identity_and_bounds() {
+        for kind in [
+            RunnerBrowserOperationKind::BeginUserHandoff,
+            RunnerBrowserOperationKind::FinishUserHandoff,
+        ] {
+            let payload = serde_json::json!({"browser_id":"browser_original","session_id":"session_owner","message_id":"message_question","handoff_fence":"handoff_original"}).to_string();
+            let operation = RunnerOperation::Browser(RunnerBrowserOperation {
+                kind,
+                payload: payload.clone(),
+                timeout_secs: 30,
+            });
+            let wire = RunnerRequest::from_operation(metadata(), operation.clone()).unwrap();
+            assert_eq!(wire.kind, kind.wire_kind());
+            assert!(wire.command.is_empty());
+            assert_eq!(wire.stdin.as_deref(), Some(payload.as_str()));
+            let RunnerOperation::Browser(decoded) = wire.decode_operation().unwrap() else {
+                panic!("exact Browser operation required")
+            };
+            assert_eq!(decoded.kind, kind);
+            assert_eq!(decoded.payload, payload);
+            assert_eq!(decoded.timeout_secs, 30);
+            let mut oversized = wire;
+            oversized.stdin = Some(format!(
+                "{{\"padding\":\"{}\"}}",
+                "x".repeat(kind.max_payload_bytes())
+            ));
+            assert!(oversized.decode_operation().unwrap_err().contains("bound"));
+        }
+    }
+
     use super::*;
 
     fn metadata() -> RunnerInvocationMetadata {

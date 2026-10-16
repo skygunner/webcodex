@@ -10,16 +10,37 @@ use std::sync::{Arc, Mutex};
 #[cfg(unix)]
 use std::time::{Duration, Instant};
 #[cfg(unix)]
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 #[cfg(any(unix, test))]
 use tokio::process::Command;
 #[cfg(unix)]
 use tokio::process::{Child, ChildStdin};
 #[cfg(unix)]
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch};
 
 #[path = "controller_projects.rs"]
 mod projects;
+
+#[cfg(unix)]
+#[path = "controller_runner_observation.rs"]
+mod runner_observation;
+#[path = "controller_runner_query.rs"]
+mod runner_query;
+#[cfg(unix)]
+use runner_observation::RunnerMonitor;
+
+#[cfg(target_os = "linux")]
+#[path = "controller_wsl2_nat.rs"]
+mod wsl2_nat;
+#[cfg(unix)]
+#[path = "controller_wsl2_nat_startup.rs"]
+mod wsl2_startup;
+#[cfg(unix)]
+use wsl2_startup::{Wsl2NatSnapshot, Wsl2NatStartup};
+
+#[cfg(unix)]
+#[path = "controller_tui.rs"]
+mod tui;
 
 #[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
@@ -28,10 +49,17 @@ use tokio::net::{UnixListener, UnixStream};
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(unix)]
 const LOG_LIMIT: usize = 500;
+#[cfg(unix)]
+const LOG_FOLLOWER_LIMIT: usize = 16;
 const CONTROLLER_SERVICE_UNIT: &str = "webcodex-controller.service";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ControllerCommand {
+    Tui {
+        config: PathBuf,
+        service_file: PathBuf,
+        user_token_file: Option<PathBuf>,
+    },
     Init {
         config: PathBuf,
         overwrite: bool,
@@ -73,6 +101,7 @@ pub(crate) enum ControllerCommand {
         config: PathBuf,
         service_file: PathBuf,
         lines: usize,
+        follow: bool,
     },
     Uninstall {
         service_file: PathBuf,
@@ -162,6 +191,7 @@ enum ServerMode {
     #[default]
     Local,
     Remote,
+    Wsl2Nat,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -174,6 +204,12 @@ struct ServerSettings {
     url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    interface: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scheme: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    port: Option<u16>,
 }
 impl Default for ServerSettings {
     fn default() -> Self {
@@ -182,6 +218,9 @@ impl Default for ServerSettings {
             env_file: None,
             url: None,
             enabled: None,
+            interface: None,
+            scheme: None,
+            port: None,
         }
     }
 }
@@ -191,12 +230,15 @@ impl Default for ServerSettings {
 struct RunnerSettings {
     enabled: bool,
     config: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user_token_file: Option<PathBuf>,
 }
 impl Default for RunnerSettings {
     fn default() -> Self {
         Self {
             enabled: true,
             config: PathBuf::new(),
+            user_token_file: None,
         }
     }
 }
@@ -225,6 +267,10 @@ struct ComponentSnapshot {
     phase: &'static str,
     pid: Option<u32>,
     restart_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    observed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    observation_error: Option<&'static str>,
 }
 #[cfg(unix)]
 #[derive(Debug, Clone, Serialize)]
@@ -234,6 +280,8 @@ struct ControllerSnapshot {
     server: ComponentSnapshot,
     runner: ComponentSnapshot,
     tunnel: ComponentSnapshot,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wsl2_nat_target: Option<Wsl2NatSnapshot>,
 }
 
 #[cfg(unix)]
@@ -264,6 +312,8 @@ impl RuntimeComponent {
             phase: self.phase,
             pid: self.process.as_ref().and_then(|p| p.child.id()),
             restart_count: self.restart_count,
+            observed_at: None,
+            observation_error: None,
         }
     }
 }
@@ -274,12 +324,15 @@ struct ControllerRuntime {
     server: RuntimeComponent,
     runner: RuntimeComponent,
     tunnel: RuntimeComponent,
-    log: Arc<Mutex<VecDeque<String>>>,
+    log: Arc<Mutex<ControllerLog>>,
+    log_followers: tokio::task::JoinSet<()>,
     shutdown: bool,
     tunnel_ready_rx: Option<watch::Receiver<bool>>,
+    wsl2_startup: Wsl2NatStartup,
+    runner_monitor: RunnerMonitor,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct RunnerConfigView {
     server_url: String,
     client_id: String,
@@ -383,6 +436,8 @@ struct IpcRequest {
     component: Option<Component>,
     #[serde(default)]
     lines: Option<usize>,
+    #[serde(default)]
+    follow: bool,
 }
 
 pub(crate) fn default_controller_config_path() -> Result<PathBuf, String> {
@@ -520,6 +575,13 @@ fn controller_socket(config: &ControllerConfig) -> Result<PathBuf, String> {
 }
 
 impl ServerSettings {
+    fn wsl2_interface(&self) -> &str {
+        self.interface.as_deref().unwrap_or("eth0")
+    }
+    fn wsl2_scheme(&self) -> &str {
+        self.scheme.as_deref().unwrap_or("http")
+    }
+
     fn is_local(&self) -> bool {
         self.mode == ServerMode::Local
     }
@@ -548,11 +610,26 @@ impl ServerSettings {
 }
 
 fn validate_config(cfg: &ControllerConfig) -> Result<(), String> {
+    if cfg
+        .runner
+        .user_token_file
+        .as_ref()
+        .is_some_and(|path| path.as_os_str().is_empty())
+    {
+        return Err("runner.user_token_file must not be empty".into());
+    }
     if cfg.server.enabled == Some(false) {
         return Err(
             "server.enabled=false is no longer supported; select server.mode=\"local\" or \"remote\""
                 .to_string(),
         );
+    }
+    if cfg.server.mode != ServerMode::Wsl2Nat
+        && (cfg.server.interface.is_some()
+            || cfg.server.scheme.is_some()
+            || cfg.server.port.is_some())
+    {
+        return Err("server.interface/scheme/port require server.mode=\"wsl2_nat\"".into());
     }
     match cfg.server.mode {
         ServerMode::Local => {
@@ -564,6 +641,36 @@ fn validate_config(cfg: &ControllerConfig) -> Result<(), String> {
                 .is_some_and(|url| !url.trim().is_empty())
             {
                 return Err("server.url must be omitted when server.mode=\"local\"".to_string());
+            }
+        }
+        ServerMode::Wsl2Nat => {
+            if !cfg!(target_os = "linux") {
+                return Err("wsl2_nat requires a Linux Runner inside WSL2 NAT".into());
+            }
+            let interface = cfg.server.wsl2_interface();
+            if interface.is_empty()
+                || interface.len() > 15
+                || interface == "."
+                || interface == ".."
+                || !interface
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
+            {
+                return Err("server.interface must be a valid Linux interface name".into());
+            }
+            if !matches!(cfg.server.wsl2_scheme(), "http" | "https") {
+                return Err("server.scheme must be http or https".into());
+            }
+            if cfg.server.port.is_none_or(|port| port == 0) {
+                return Err("server.port is required and must be in 1..=65535".into());
+            }
+            if cfg.server.env_file.is_some() || cfg.server.url.is_some() {
+                return Err("server.env_file and server.url must be omitted for wsl2_nat".into());
+            }
+            if cfg.tunnel.enabled || !cfg.runner.enabled {
+                return Err(
+                    "wsl2_nat requires runner.enabled=true and tunnel.enabled=false".into(),
+                );
             }
         }
         ServerMode::Remote => {
@@ -587,7 +694,7 @@ fn validate_config(cfg: &ControllerConfig) -> Result<(), String> {
         return Err("runner.config is required when runner.enabled=true".to_string());
     }
     if cfg.tunnel.enabled && cfg.tunnel.provider != "openai" {
-        return Err("Controller V0 supports only tunnel.provider=\"openai\"".to_string());
+        return Err("Controller supports only tunnel.provider=\"openai\"".to_string());
     }
     if cfg.controller.max_restart_attempts == 0 {
         return Err("controller.max_restart_attempts must be greater than zero".to_string());
@@ -657,6 +764,9 @@ fn configured_server_url(config: &ControllerConfig) -> Result<String, String> {
     match config.server.mode {
         ServerMode::Local => server_base_url(config.server.local_env_file()?),
         ServerMode::Remote => config.server.remote_url(),
+        ServerMode::Wsl2Nat => {
+            Err("wsl2_nat_target_unresolved: use the active Controller target".into())
+        }
     }
 }
 
@@ -674,7 +784,7 @@ fn runner_view(path: &Path) -> Result<RunnerConfigView, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("failed to read Runner config {}: {e}", path.display()))?;
     toml::from_str(&text)
-        .map_err(|e| format!("failed to parse Runner config {}: {e}", path.display()))
+        .map_err(|_| "runner_config_invalid: could not parse Runner configuration".to_string())
 }
 
 fn same_server_origin(left: &str, right: &str) -> bool {
@@ -695,32 +805,7 @@ fn validate_runner_target(
     if same_server_origin(&view.server_url, controller_server_url) {
         return Ok(());
     }
-    Err(format!(
-        "Runner server_url {:?} does not match Controller Server {}",
-        view.server_url, controller_server_url
-    ))
-}
-
-#[cfg(any(unix, test))]
-fn runtime_has_online_runner(output: &Value, client_id: &str) -> bool {
-    output
-        .pointer("/runners/clients")
-        .and_then(Value::as_array)
-        .is_some_and(|items| {
-            items.iter().any(|item| {
-                item.get("client_id").and_then(Value::as_str) == Some(client_id)
-                    && item.get("status").and_then(Value::as_str) == Some("online")
-            })
-        })
-}
-
-#[cfg(any(unix, test))]
-fn runner_phase_after_start(online_verified: bool) -> &'static str {
-    if online_verified {
-        "ready"
-    } else {
-        "running_unverified"
-    }
+    Err("Runner server_url does not match Controller Server".into())
 }
 
 fn controller_environment_value(path: &Path, key: &str) -> Result<Option<String>, String> {
@@ -749,18 +834,34 @@ fn remove_controller_tunnel_credentials(command: &mut Command) {
         .env_remove("CONTROL_PLANE_API_KEY");
 }
 #[cfg(unix)]
-fn log_line(log: &Arc<Mutex<VecDeque<String>>>, source: &str, line: impl AsRef<str>) {
-    let mut guard = log.lock().unwrap_or_else(|p| p.into_inner());
-    guard.push_back(format!("[{source}] {}", line.as_ref()));
-    while guard.len() > LOG_LIMIT {
-        guard.pop_front();
+struct ControllerLog {
+    lines: VecDeque<String>,
+    updates: broadcast::Sender<String>,
+}
+#[cfg(unix)]
+impl ControllerLog {
+    fn new() -> Self {
+        Self {
+            lines: VecDeque::new(),
+            updates: broadcast::channel(LOG_LIMIT).0,
+        }
     }
+}
+#[cfg(unix)]
+fn log_line(log: &Arc<Mutex<ControllerLog>>, source: &str, line: impl AsRef<str>) {
+    let mut guard = log.lock().unwrap_or_else(|p| p.into_inner());
+    let line = format!("[{source}] {}", line.as_ref());
+    guard.lines.push_back(line.clone());
+    while guard.lines.len() > LOG_LIMIT {
+        guard.lines.pop_front();
+    }
+    let _ = guard.updates.send(line);
 }
 #[cfg(unix)]
 fn spawn_log_reader<R>(
     reader: R,
     source: &'static str,
-    log: Arc<Mutex<VecDeque<String>>>,
+    log: Arc<Mutex<ControllerLog>>,
     tunnel_tx: Option<watch::Sender<bool>>,
 ) where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
@@ -787,7 +888,7 @@ fn spawn_log_reader<R>(
 fn spawn_process(
     mut command: Command,
     source: &'static str,
-    log: Arc<Mutex<VecDeque<String>>>,
+    log: Arc<Mutex<ControllerLog>>,
     tunnel_tx: Option<watch::Sender<bool>>,
 ) -> Result<ManagedProcess, String> {
     let mut child = command
@@ -874,21 +975,31 @@ impl ControllerRuntime {
             runner: RuntimeComponent::new(config.runner.enabled),
             tunnel: RuntimeComponent::new(config.tunnel.enabled),
             config,
-            log: Arc::new(Mutex::new(VecDeque::new())),
+            log: Arc::new(Mutex::new(ControllerLog::new())),
+            log_followers: tokio::task::JoinSet::new(),
             shutdown: false,
             tunnel_ready_rx: None,
+            wsl2_startup: Wsl2NatStartup::default(),
+            runner_monitor: RunnerMonitor::default(),
         }
     }
     fn snapshot(&self) -> ControllerSnapshot {
+        let mut runner = self.runner.snapshot();
+        self.runner_monitor.decorate(&mut runner, Instant::now());
         ControllerSnapshot {
             controller: if self.shutdown { "stopping" } else { "running" },
             server_mode: self.config.server.mode,
             server: self.server.snapshot(),
-            runner: self.runner.snapshot(),
+            runner,
             tunnel: self.tunnel.snapshot(),
+            wsl2_nat_target: (self.config.server.mode == ServerMode::Wsl2Nat)
+                .then(|| self.wsl2_startup.snapshot.clone()),
         }
     }
     async fn start_all(&mut self) -> Result<(), String> {
+        if self.config.server.mode == ServerMode::Wsl2Nat {
+            return self.schedule_wsl2_start();
+        }
         if self.config.server.is_local() {
             self.start_component(Component::Server).await?;
         } else {
@@ -935,9 +1046,20 @@ impl ControllerRuntime {
             }
             Component::Runner => {
                 let view = runner_view(&self.config.runner.config)?;
-                let server_url = configured_server_url(&self.config)?;
-                validate_runner_target(&view, &server_url)?;
-                self.stop_component(Component::Runner).await;
+                let server_url = if self.config.server.mode == ServerMode::Wsl2Nat {
+                    self.wsl2_startup
+                        .snapshot
+                        .effective_url
+                        .clone()
+                        .ok_or("wsl2_nat_target_unresolved")?
+                } else {
+                    let url = configured_server_url(&self.config)?;
+                    validate_runner_target(&view, &url)?;
+                    url
+                };
+                if self.config.server.mode != ServerMode::Wsl2Nat {
+                    self.stop_component(Component::Runner).await;
+                }
                 self.runner.phase = "starting";
                 let bin = super::discover_internal_binary("webcodex-runner").ok_or_else(|| {
                     "webcodex-runner was not found beside webcodex or in PATH".to_string()
@@ -951,11 +1073,18 @@ impl ControllerRuntime {
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped())
                     .kill_on_drop(true);
+                if self.config.server.mode == ServerMode::Wsl2Nat {
+                    wsl2_startup::configure_runner_command(&mut command, &server_url)?;
+                }
                 remove_controller_tunnel_credentials(&mut command);
                 self.runner.process =
                     Some(spawn_process(command, "runner", self.log.clone(), None)?);
-                let online_verified = self.wait_runner_startup(&view, &server_url).await?;
-                self.runner.phase = runner_phase_after_start(online_verified);
+                self.runner_monitor.start(
+                    server_url,
+                    view,
+                    self.wsl2_startup.snapshot.generation.clone(),
+                );
+                self.poll_runner_observation().await;
             }
             Component::Tunnel => {
                 if !self.config.server.is_local() {
@@ -1006,6 +1135,12 @@ impl ControllerRuntime {
         Ok(())
     }
     async fn stop_component(&mut self, component: Component) {
+        if component == Component::Runner {
+            self.runner_monitor.reset();
+        }
+        if component == Component::Runner && self.config.server.mode == ServerMode::Wsl2Nat {
+            self.wsl2_startup.cancel();
+        }
         if component == Component::Server && !self.config.server.is_local() {
             self.server.phase = "remote";
             return;
@@ -1065,6 +1200,10 @@ impl ControllerRuntime {
                 self.stop_component(Component::Server).await;
                 self.start_all().await
             }
+            Some(Component::Runner) if self.config.server.mode == ServerMode::Wsl2Nat => {
+                self.stop_component(Component::Runner).await;
+                self.schedule_wsl2_start()
+            }
             Some(Component::Runner) => self.start_component(Component::Runner).await,
             Some(Component::Tunnel) => self.start_component(Component::Tunnel).await,
         }
@@ -1077,37 +1216,6 @@ impl ControllerRuntime {
         } else {
             wait_remote_server_reachable(&base).await
         }
-    }
-    async fn wait_runner_startup(
-        &mut self,
-        view: &RunnerConfigView,
-        server_url: &str,
-    ) -> Result<bool, String> {
-        if self.config.server.is_local() {
-            let token = server_token(self.config.server.local_env_file()?)?;
-            wait_runtime_status(server_url, token.as_deref(), |output| {
-                runtime_has_online_runner(output, &view.client_id)
-            })
-            .await?;
-            return Ok(true);
-        }
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while Instant::now() < deadline {
-            if let Some(status) = self
-                .runner
-                .process
-                .as_mut()
-                .and_then(|process| process.child.try_wait().ok().flatten())
-            {
-                return Err(format!("Runner exited before becoming stable: {status}"));
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-        // Without a user Runtime credential the Controller cannot prove that
-        // a remote Server has registered this Runner. Surviving startup only
-        // proves the local process is stable; project commands perform the
-        // authoritative online check before any project operation.
-        Ok(false)
     }
     async fn wait_tunnel_ready(&mut self) -> Result<(), String> {
         let Some(mut rx) = self.tunnel_ready_rx.clone() else {
@@ -1132,6 +1240,9 @@ impl ControllerRuntime {
         }
     }
     async fn reap_and_recover(&mut self) {
+        if self.config.server.mode == ServerMode::Wsl2Nat {
+            self.poll_wsl2_start().await;
+        }
         for component in [Component::Server, Component::Runner, Component::Tunnel] {
             let target = match component {
                 Component::Server => &mut self.server,
@@ -1147,6 +1258,32 @@ impl ControllerRuntime {
             };
             target.process = None;
             target.phase = "failed";
+            if component == Component::Runner {
+                self.runner_monitor.reset();
+            }
+            if component == Component::Runner && self.config.server.mode == ServerMode::Wsl2Nat {
+                self.wsl2_startup.cancel();
+                if matches!(status.code(), Some(2 | 77 | 78)) {
+                    self.wsl2_startup.snapshot.error = Some(
+                        if status.code() == Some(77) {
+                            "runner_auth_failed"
+                        } else {
+                            "runner_configuration_failed"
+                        }
+                        .into(),
+                    );
+                    log_line(
+                        &self.log,
+                        "controller",
+                        self.wsl2_startup
+                            .snapshot
+                            .error
+                            .as_deref()
+                            .unwrap_or("runner_failed"),
+                    );
+                    continue;
+                }
+            }
             log_line(
                 &self.log,
                 "controller",
@@ -1161,6 +1298,25 @@ impl ControllerRuntime {
             }
             target.restart_count += 1;
             target.phase = "restarting";
+            if component == Component::Runner && self.config.server.mode == ServerMode::Wsl2Nat {
+                match self.schedule_wsl2_start() {
+                    Ok(()) => {
+                        self.wsl2_startup.retry_at = Some(
+                            Instant::now()
+                                + Duration::from_secs(
+                                    self.config.controller.restart_delay_secs.min(30),
+                                ),
+                        )
+                    }
+                    Err(error) => {
+                        log_line(&self.log, "controller", error);
+                        self.wsl2_startup.snapshot.error =
+                            Some("runner_configuration_failed".into());
+                        self.runner.phase = "failed";
+                    }
+                }
+                continue;
+            }
             tokio::time::sleep(Duration::from_secs(
                 self.config.controller.restart_delay_secs,
             ))
@@ -1173,6 +1329,7 @@ impl ControllerRuntime {
                 break;
             }
         }
+        self.poll_runner_observation().await;
     }
 }
 
@@ -1188,8 +1345,12 @@ fn render_default_config() -> Result<String, String> {
             env_file: Some(home.join(".config/webcodex/webcodex.env")),
             url: None,
             enabled: None,
+            interface: None,
+            scheme: None,
+            port: None,
         },
         runner: RunnerSettings {
+            user_token_file: None,
             enabled: true,
             config: home.join(".config/webcodex/runner.toml"),
         },
@@ -1228,6 +1389,7 @@ fn doctor_report(config: &ControllerConfig, environment_file: &Path) -> Result<V
     let server_ok = match config.server.mode {
         ServerMode::Local => server_env && server_url.is_some() && server_bin == Some(true),
         ServerMode::Remote => server_url.is_some(),
+        ServerMode::Wsl2Nat => false,
     };
     let ok = server_ok
         && (!config.runner.enabled
@@ -1256,6 +1418,57 @@ fn doctor_report(config: &ControllerConfig, environment_file: &Path) -> Result<V
         },
         "existing_service_conflicts": service_conflicts
     }))
+}
+
+fn runner_observation_text(runtime: &Value) -> String {
+    let runner = &runtime["runner"];
+    let mut text = String::new();
+    if let Some(at) = runner["observed_at"].as_str() {
+        text.push_str(&format!("Runner observed: {at}\n"));
+    }
+    if let Some(error) = runner["observation_error"].as_str() {
+        text.push_str(&format!("Runner observation: {error}\n"));
+    }
+    text
+}
+
+fn runner_doctor_text(report: &Value) -> String {
+    let runner = &report["runner"];
+    if runner["enabled"] == false {
+        return "disabled".into();
+    }
+    let configuration = if runner["config_file"] == true
+        && runner["binary"] == true
+        && runner["server_matches_controller"] == true
+    {
+        "ok"
+    } else {
+        "check required"
+    };
+    format!(
+        "{} (configuration: {configuration})",
+        runner["phase"].as_str().unwrap_or("unknown")
+    )
+}
+
+fn wsl2_target_text(report: &Value) -> String {
+    let Some(target) = report
+        .get("wsl2_nat_target")
+        .filter(|value| value.is_object())
+    else {
+        return String::new();
+    };
+    format!(
+        "WSL2 NAT target: {} ({})\nDiscovery: {} / {}\n{}",
+        target["effective_url"].as_str().unwrap_or("unresolved"),
+        target["source"].as_str().unwrap_or("unknown"),
+        target["resolution_state"].as_str().unwrap_or("unknown"),
+        target["probe_state"].as_str().unwrap_or("unknown"),
+        target["error"]
+            .as_str()
+            .map(|error| format!("Error: {error}\n"))
+            .unwrap_or_default(),
+    )
 }
 
 #[cfg(unix)]
@@ -1314,9 +1527,22 @@ fn remove_stale_controller_socket(path: &Path) -> Result<(), String> {
 
 #[cfg(unix)]
 async fn ipc_call(socket: &Path, request: Value) -> Result<Value, String> {
-    let mut stream = UnixStream::connect(socket)
+    let stream = UnixStream::connect(socket)
         .await
         .map_err(|e| format!("Controller is not running at {}: {e}", socket.display()))?;
+    ipc_exchange(stream, request).await
+}
+
+#[cfg(unix)]
+async fn ipc_exchange(mut stream: UnixStream, request: Value) -> Result<Value, String> {
+    // Status/control replies are small. A valid 500-line log tail can exceed
+    // 64 KiB; preserve a finite larger limit only for that explicit operation.
+    // Local restarts may include several child stops and readiness windows.
+    let (reply_limit, reply_timeout) = match request["method"].as_str() {
+        Some("logs") => (8 * 1024 * 1024usize, Duration::from_secs(3)),
+        Some("restart") => (65_536usize, Duration::from_secs(120)),
+        _ => (65_536usize, Duration::from_secs(3)),
+    };
     stream
         .write_all(
             serde_json::to_string(&request)
@@ -1327,20 +1553,126 @@ async fn ipc_call(socket: &Path, request: Value) -> Result<Value, String> {
         .map_err(|e| e.to_string())?;
     stream.write_all(b"\n").await.map_err(|e| e.to_string())?;
     let mut line = String::new();
-    BufReader::new(stream)
-        .read_line(&mut line)
+    let mut reader = BufReader::new(stream).take(reply_limit as u64 + 1);
+    tokio::time::timeout(reply_timeout, reader.read_line(&mut line))
         .await
+        .map_err(|_| "Controller response timeout")?
         .map_err(|e| e.to_string())?;
+    if line.len() > reply_limit || !line.ends_with('\n') {
+        return Err("invalid or oversized Controller response".into());
+    }
     serde_json::from_str(&line).map_err(|e| format!("invalid Controller response: {e}"))
 }
 #[cfg(unix)]
+async fn write_log_response<W: tokio::io::AsyncWrite + Unpin>(
+    write: &mut W,
+    value: Value,
+) -> Result<(), String> {
+    let mut bytes = serde_json::to_vec(&value).map_err(|e| e.to_string())?;
+    bytes.push(b'\n');
+    write.write_all(&bytes).await.map_err(|e| e.to_string())
+}
+
+#[cfg(unix)]
+async fn stream_log_updates<W: tokio::io::AsyncWrite + Unpin>(
+    write: &mut W,
+    initial: Vec<String>,
+    mut updates: broadcast::Receiver<String>,
+) -> Result<(), String> {
+    write_log_response(
+        write,
+        json!({"ok":true,"result":{"lines":initial,"following":true}}),
+    )
+    .await?;
+    loop {
+        match updates.recv().await {
+            Ok(line) => {
+                write_log_response(write, json!({"ok":true,"result":{"lines":[line]}})).await?;
+            }
+            Err(broadcast::error::RecvError::Lagged(_)) => {
+                return write_log_response(
+                    write,
+                    json!({"ok":false,"error":"Controller log follower fell behind; rerun controller logs -f to read the latest logs"}),
+                )
+                .await;
+            }
+            Err(broadcast::error::RecvError::Closed) => return Ok(()),
+        }
+    }
+}
+
+#[cfg(unix)]
+async fn follow_controller_logs<W: tokio::io::AsyncWrite + Unpin>(
+    mut stream: UnixStream,
+    lines: usize,
+    output: &mut W,
+) -> Result<(), String> {
+    write_log_response(
+        &mut stream,
+        json!({"method":"logs","lines":lines,"follow":true}),
+    )
+    .await?;
+    let mut reader = BufReader::new(stream);
+    let mut first = true;
+    loop {
+        let mut line = String::new();
+        if reader
+            .read_line(&mut line)
+            .await
+            .map_err(|e| e.to_string())?
+            == 0
+        {
+            return Err("Controller log stream disconnected; rerun controller logs -f after the Controller is available".to_string());
+        }
+        let value: Value = serde_json::from_str(&line)
+            .map_err(|e| format!("invalid Controller log response: {e}"))?;
+        if value["ok"] != true {
+            return Err(value["error"]
+                .as_str()
+                .unwrap_or("Controller log request failed")
+                .to_string());
+        }
+        if first && value["result"]["following"] != true {
+            return Err("The running Controller does not support log following; restart it with the updated binary".to_string());
+        }
+        first = false;
+        let items = value["result"]["lines"]
+            .as_array()
+            .ok_or_else(|| "invalid Controller log response: missing lines".to_string())?;
+        for item in items {
+            let line = item
+                .as_str()
+                .ok_or_else(|| "invalid Controller log response: expected a string".to_string())?;
+            output
+                .write_all(line.as_bytes())
+                .await
+                .map_err(|e| e.to_string())?;
+            output.write_all(b"\n").await.map_err(|e| e.to_string())?;
+        }
+        output.flush().await.map_err(|e| e.to_string())?;
+    }
+}
+
+#[cfg(unix)]
 async fn handle_ipc(runtime: &mut ControllerRuntime, stream: UnixStream) -> Result<(), String> {
+    if stream
+        .peer_cred()
+        .map_err(|_| "Controller peer unavailable")?
+        .uid()
+        != unsafe { libc::geteuid() }
+    {
+        return Err("Controller IPC requires the same user".into());
+    }
     let (read, mut write) = stream.into_split();
     let mut line = String::new();
-    BufReader::new(read)
-        .read_line(&mut line)
+    let mut read = BufReader::new(read).take(8193);
+    tokio::time::timeout(Duration::from_secs(1), read.read_line(&mut line))
         .await
+        .map_err(|_| "Controller request timeout")?
         .map_err(|e| e.to_string())?;
+    if line.len() > 8192 || !line.ends_with('\n') {
+        return Err("invalid or oversized Controller request".into());
+    }
     let req: IpcRequest =
         serde_json::from_str(&line).map_err(|e| format!("invalid Controller request: {e}"))?;
     let result = match req.method.as_str() {
@@ -1355,9 +1687,32 @@ async fn handle_ipc(runtime: &mut ControllerRuntime, stream: UnixStream) -> Resu
         }
         "logs" => {
             let lines = req.lines.unwrap_or(100).min(LOG_LIMIT);
-            let guard = runtime.log.lock().unwrap_or_else(|p| p.into_inner());
-            let mut items: Vec<_> = guard.iter().rev().take(lines).cloned().collect();
-            items.reverse();
+            // Subscribe while holding the same lock as log_line so the tail/update
+            // boundary cannot duplicate or lose an entry.
+            let (items, updates) = {
+                let guard = runtime.log.lock().unwrap_or_else(|p| p.into_inner());
+                let mut items: Vec<_> = guard.lines.iter().rev().take(lines).cloned().collect();
+                items.reverse();
+                (items, req.follow.then(|| guard.updates.subscribe()))
+            };
+            if let Some(updates) = updates {
+                while runtime.log_followers.try_join_next().is_some() {}
+                if runtime.log_followers.len() >= LOG_FOLLOWER_LIMIT {
+                    write_log_response(
+                        &mut write,
+                        json!({"ok":false,"error":"Controller log follower limit reached"}),
+                    )
+                    .await?;
+                    return Ok(());
+                }
+                runtime.log_followers.spawn(async move {
+                    tokio::select! {
+                        _ = read.read_u8() => {},
+                        _ = stream_log_updates(&mut write, items, updates) => {},
+                    }
+                });
+                return Ok(());
+            }
             json!({"lines":items})
         }
         other => return Err(format!("unknown Controller method: {other}")),
@@ -1426,9 +1781,41 @@ async fn run_controller(config_path: &Path) -> Result<(), String> {
             break;
         }
     }
+    runtime.log_followers.abort_all();
     runtime.stop_all().await;
     let _ = std::fs::remove_file(&socket);
     Ok(())
+}
+
+fn parse_controller_tui_command(args: &[String]) -> Result<ControllerCommand, String> {
+    let mut config = None;
+    let mut service_file = None;
+    let mut user_token_file = None;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "-h" | "--help" => return Err(super::controller_usage().to_string()),
+            "--config" | "--service-file" | "--user-token-file" => {
+                let value =
+                    PathBuf::from(iter.next().ok_or_else(|| format!("{arg} requires PATH"))?);
+                match arg.as_str() {
+                    "--config" => config = Some(value),
+                    "--service-file" => service_file = Some(value),
+                    _ => user_token_file = Some(value),
+                }
+            }
+            other => return Err(format!("unknown controller tui option: {other}")),
+        }
+    }
+    Ok(ControllerCommand::Tui {
+        config: config
+            .map(Ok)
+            .unwrap_or_else(default_controller_config_path)?,
+        service_file: service_file
+            .map(Ok)
+            .unwrap_or_else(default_controller_service_file)?,
+        user_token_file,
+    })
 }
 
 pub(crate) fn parse_controller_command(args: &[String]) -> Result<ControllerCommand, String> {
@@ -1441,6 +1828,9 @@ pub(crate) fn parse_controller_command(args: &[String]) -> Result<ControllerComm
     if command == "project" {
         return parse_controller_project_command(&args[1..]);
     }
+    if command == "tui" {
+        return parse_controller_tui_command(&args[1..]);
+    }
     let mut config = None;
     let mut environment_file = None;
     let mut service_file = None;
@@ -1450,6 +1840,7 @@ pub(crate) fn parse_controller_command(args: &[String]) -> Result<ControllerComm
     let mut json = false;
     let mut component = None;
     let mut lines = 100usize;
+    let mut follow = false;
     let mut iter = args[1..].iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -1475,6 +1866,7 @@ pub(crate) fn parse_controller_command(args: &[String]) -> Result<ControllerComm
             "--no-start" => no_start = true,
             "--confirm" => confirm = true,
             "--json" => json = true,
+            "-f" | "--follow" if command == "logs" => follow = true,
             "--lines" => {
                 lines = iter
                     .next()
@@ -1551,6 +1943,7 @@ pub(crate) fn parse_controller_command(args: &[String]) -> Result<ControllerComm
             config: resolve_config()?,
             service_file: resolve_service_file()?,
             lines,
+            follow,
         }),
         "uninstall" => Ok(ControllerCommand::Uninstall {
             service_file: resolve_service_file()?,
@@ -1565,6 +1958,25 @@ pub(crate) fn parse_controller_command(args: &[String]) -> Result<ControllerComm
 
 pub(crate) async fn run_controller_command(command: ControllerCommand) -> Result<String, String> {
     match command {
+        ControllerCommand::Tui {
+            config,
+            service_file,
+            user_token_file,
+        } => {
+            #[cfg(unix)]
+            {
+                tui::run(config, service_file, user_token_file).await?;
+                Ok(String::new())
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = (config, service_file, user_token_file);
+                Err(
+                    "webcodex controller tui is currently supported only on WSL/Linux/Unix"
+                        .to_string(),
+                )
+            }
+        }
         ControllerCommand::Init { config, overwrite } => {
             if config.exists() && !overwrite {
                 return Err(format!(
@@ -1590,17 +2002,29 @@ pub(crate) async fn run_controller_command(command: ControllerCommand) -> Result
         } => {
             let cfg = read_config(&config)?;
             let report = doctor_report(&cfg, &environment_file)?;
+            #[cfg(unix)]
+            let report = {
+                let mut report = report;
+                if cfg.server.mode == ServerMode::Wsl2Nat {
+                    wsl2_startup::doctor(&cfg, &mut report).await?;
+                } else {
+                    let runtime = runner_observation::live_snapshot(&cfg).await?;
+                    runner_observation::attach_runtime(&mut report, runtime);
+                }
+                report
+            };
             if as_json {
                 return serde_json::to_string_pretty(&report).map_err(|e| e.to_string());
             }
             Ok(format!(
-                "Controller doctor: {}\nServer: {}\nRunner: {}\nTunnel: {}\n",
+                "Controller doctor: {}\nServer: {}\nRunner: {}\nTunnel: {}\n{}",
                 if report["ok"].as_bool() == Some(true) {
                     "PASS"
                 } else {
                     "FAIL"
                 },
                 match report["server"]["mode"].as_str() {
+                    Some("wsl2_nat") if report["server"]["url"].as_str().is_some() => "wsl2_nat",
                     Some("remote") if report["server"]["url"].as_str().is_some() => "remote",
                     Some("local")
                         if report["server"]["env_file"].as_bool() == Some(true)
@@ -1610,16 +2034,7 @@ pub(crate) async fn run_controller_command(command: ControllerCommand) -> Result
                     }
                     _ => "check required",
                 },
-                if report["runner"]["enabled"].as_bool() == Some(false) {
-                    "disabled"
-                } else if report["runner"]["config_file"].as_bool() == Some(true)
-                    && report["runner"]["binary"].as_bool() == Some(true)
-                    && report["runner"]["server_matches_controller"].as_bool() == Some(true)
-                {
-                    "ok"
-                } else {
-                    "check required"
-                },
+                runner_doctor_text(&report),
                 if report["tunnel"]["enabled"].as_bool() == Some(false) {
                     "disabled"
                 } else if report["tunnel"]["credentials_present"].as_bool() == Some(true) {
@@ -1627,6 +2042,11 @@ pub(crate) async fn run_controller_command(command: ControllerCommand) -> Result
                 } else {
                     "credentials missing"
                 },
+                format!(
+                    "{}{}",
+                    wsl2_target_text(&report),
+                    runner_observation_text(&report["runtime"])
+                ),
             ))
         }
         ControllerCommand::Run { config } => {
@@ -1693,7 +2113,7 @@ pub(crate) async fn run_controller_command(command: ControllerCommand) -> Result
                             .map_err(|e| e.to_string());
                         }
                         return Ok(format!(
-                            "Controller: {}\nMode: {}\nServer: {}\nRunner: {}\nTunnel: {}\nService: {} / {}\n",
+                            "Controller: {}\nMode: {}\nServer: {}\nRunner: {}\nTunnel: {}\nService: {} / {}\n{}",
                             result["controller"].as_str().unwrap_or("unknown"),
                             source,
                             result["server"]["phase"].as_str().unwrap_or("unknown"),
@@ -1701,6 +2121,7 @@ pub(crate) async fn run_controller_command(command: ControllerCommand) -> Result
                             result["tunnel"]["phase"].as_str().unwrap_or("unknown"),
                             service.active,
                             service.enabled,
+                            format!("{}{}", wsl2_target_text(result), runner_observation_text(result)),
                         ));
                     }
                 }
@@ -1802,12 +2223,22 @@ pub(crate) async fn run_controller_command(command: ControllerCommand) -> Result
             config,
             service_file,
             lines,
+            follow,
         } => {
             #[cfg(unix)]
             {
                 if let Ok(cfg) = read_config(&config) {
                     let socket = controller_socket(&cfg)?;
-                    if let Ok(value) =
+                    if follow {
+                        if let Ok(stream) = UnixStream::connect(&socket).await {
+                            let mut stdout = tokio::io::stdout();
+                            tokio::select! {
+                                result = follow_controller_logs(stream, lines, &mut stdout) => result?,
+                                result = tokio::signal::ctrl_c() => result.map_err(|e| format!("failed to wait for Ctrl+C: {e}"))?,
+                            }
+                            return Ok(String::new());
+                        }
+                    } else if let Ok(value) =
                         ipc_call(&socket, json!({"method":"logs","lines":lines})).await
                     {
                         let mut out = String::new();
@@ -1832,7 +2263,7 @@ pub(crate) async fn run_controller_command(command: ControllerCommand) -> Result
                         &unit,
                         lines.min(u32::MAX as usize) as u32,
                         None,
-                        false,
+                        follow,
                     );
                 }
                 Err(
@@ -1842,7 +2273,7 @@ pub(crate) async fn run_controller_command(command: ControllerCommand) -> Result
             }
             #[cfg(not(unix))]
             {
-                let _ = (config, service_file, lines);
+                let _ = (config, service_file, lines, follow);
                 Err("webcodex controller is currently supported only on WSL/Linux/Unix".to_string())
             }
         }
@@ -1862,6 +2293,10 @@ pub(crate) async fn run_controller_command(command: ControllerCommand) -> Result
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/controller_logs.rs"]
+mod logs_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1916,8 +2351,12 @@ mod tests {
                 env_file: Some("/tmp/server.env".into()),
                 url: None,
                 enabled: None,
+                interface: None,
+                scheme: None,
+                port: None,
             },
             runner: RunnerSettings {
+                user_token_file: None,
                 enabled: false,
                 config: PathBuf::new(),
             },
@@ -1940,8 +2379,12 @@ mod tests {
                 env_file: None,
                 url: Some("https://runtime.example.test".into()),
                 enabled: None,
+                interface: None,
+                scheme: None,
+                port: None,
             },
             runner: RunnerSettings {
+                user_token_file: None,
                 enabled: true,
                 config: "/tmp/runner.toml".into(),
             },
@@ -1952,37 +2395,6 @@ mod tests {
             },
         };
         assert!(validate_config(&cfg).unwrap_err().contains("remote"));
-    }
-
-    #[test]
-    fn runner_readiness_uses_canonical_runner_projection_only() {
-        let canonical = json!({
-            "runners": {
-                "clients": [{
-                    "client_id": "special",
-                    "status": "online"
-                }]
-            }
-        });
-        assert!(runtime_has_online_runner(&canonical, "special"));
-
-        let legacy = json!({
-            "agents": {
-                "summary": {
-                    "clients": [{
-                        "client_id": "special",
-                        "status": "online"
-                    }]
-                }
-            }
-        });
-        assert!(!runtime_has_online_runner(&legacy, "special"));
-    }
-
-    #[test]
-    fn remote_runner_process_stability_is_not_online_readiness() {
-        assert_eq!(runner_phase_after_start(true), "ready");
-        assert_eq!(runner_phase_after_start(false), "running_unverified");
     }
 
     #[test]
@@ -2080,8 +2492,12 @@ mod tests {
                 env_file: Some("/tmp/server.env".into()),
                 url: None,
                 enabled: None,
+                interface: None,
+                scheme: None,
+                port: None,
             },
             runner: RunnerSettings {
+                user_token_file: None,
                 enabled: false,
                 config: PathBuf::new(),
             },

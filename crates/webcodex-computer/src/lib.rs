@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 #[cfg(any(test, target_os = "macos"))]
 use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -868,6 +868,7 @@ pub struct ComputerConfig {
 
 pub struct ComputerRuntime {
     config: ComputerConfig,
+    browser_user_handoffs: Mutex<HashMap<String, SurfaceRecord>>,
     surfaces: Mutex<HashMap<String, SurfaceRecord>>,
     elements: Mutex<ElementRegistry>,
     applications: Mutex<HashMap<String, ApplicationRecord>>,
@@ -879,6 +880,7 @@ impl ComputerRuntime {
     pub fn new(config: ComputerConfig) -> Self {
         Self {
             config,
+            browser_user_handoffs: Mutex::new(HashMap::new()),
             surfaces: Mutex::new(HashMap::new()),
             elements: Mutex::new(ElementRegistry::default()),
             applications: Mutex::new(HashMap::new()),
@@ -892,7 +894,114 @@ impl ComputerRuntime {
     }
 
     pub fn write_clipboard(&self, text: &str) -> Result<Value, String> {
+        let _handoff = self.native_effect_guard()?;
         platform::write_clipboard(text)
+    }
+
+    /// Runner-only input reservation for a live, exactly resolved Browser window.
+    /// Native focus, pointer and clipboard effects share one desktop, so all
+    /// Computer effects stay blocked until every explicit reservation is released.
+    /// The guard also serializes reservation admission with in-flight native input.
+    pub fn begin_browser_user_handoff(&self, surface_id: &str, fence: &str) -> Result<(), String> {
+        if fence.is_empty()
+            || fence.len() > 128
+            || !fence
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+        {
+            return Err("invalid_request: Browser handoff fence is invalid".into());
+        }
+        let mut holds = self
+            .browser_user_handoffs
+            .lock()
+            .map_err(|_| "computer_state_error: Browser handoff lock poisoned".to_string())?;
+        let record = self
+            .surfaces
+            .lock()
+            .map_err(|_| "computer_state_error: surface registry lock poisoned".to_string())?
+            .get(surface_id)
+            .cloned()
+            .ok_or_else(|| "stale_surface: unknown or stale surface_id".to_string())?;
+        if let Some(existing) = holds.get(fence) {
+            return if existing == &record {
+                Ok(())
+            } else {
+                Err("browser_user_handoff_conflict: fence belongs to another surface".into())
+            };
+        }
+        if holds.len() >= MAX_WINDOWS {
+            return Err("browser_user_handoff_limit: native input reservations are full".into());
+        }
+        holds.insert(fence.to_string(), record);
+        Ok(())
+    }
+
+    /// Validate the exact reservation and invalidate pre-handoff observations.
+    /// Keep native input blocked until the Browser owner observes a fresh snapshot
+    /// and releases this reservation through cancel_browser_user_handoff.
+    pub fn finish_browser_user_handoff(&self, fence: &str) -> Result<(), String> {
+        let holds = self
+            .browser_user_handoffs
+            .lock()
+            .map_err(|_| "computer_state_error: Browser handoff lock poisoned".to_string())?;
+        if !holds.contains_key(fence) {
+            return Err(
+                "browser_user_handoff_stale: native input reservation is unavailable".into(),
+            );
+        }
+        self.elements
+            .lock()
+            .map_err(|_| "computer_state_error: element registry lock poisoned".to_string())?
+            .clear();
+        self.display_snapshots
+            .lock()
+            .map_err(|_| {
+                "computer_state_error: display snapshot registry lock poisoned".to_string()
+            })?
+            .bindings
+            .clear();
+        Ok(())
+    }
+
+    /// Browser fresh-snapshot recovery or close/shutdown releases the reservation.
+    /// Releasing an already-removed reservation is inert.
+    pub fn cancel_browser_user_handoff(&self, fence: &str) -> Result<(), String> {
+        let mut holds = self
+            .browser_user_handoffs
+            .lock()
+            .map_err(|_| "computer_state_error: Browser handoff lock poisoned".to_string())?;
+        if !holds.contains_key(fence) {
+            return Ok(());
+        }
+        self.elements
+            .lock()
+            .map_err(|_| "computer_state_error: element registry lock poisoned".to_string())?
+            .clear();
+        self.display_snapshots
+            .lock()
+            .map_err(|_| {
+                "computer_state_error: display snapshot registry lock poisoned".to_string()
+            })?
+            .bindings
+            .clear();
+        holds.remove(fence);
+        Ok(())
+    }
+
+    fn native_effect_guard(
+        &self,
+    ) -> Result<MutexGuard<'_, HashMap<String, SurfaceRecord>>, String> {
+        let holds = self
+            .browser_user_handoffs
+            .lock()
+            .map_err(|_| "computer_state_error: Browser handoff lock poisoned".to_string())?;
+        if !holds.is_empty() {
+            return Err(
+                "browser_user_handoff_active: native desktop effects are paused for user input"
+                    .into(),
+            );
+        }
+        Ok(holds)
     }
 
     /// Runner-internal Browser handoff. The caller must retain an exact live
@@ -1178,6 +1287,7 @@ impl ComputerRuntime {
         x: u32,
         y: u32,
     ) -> Result<Value, String> {
+        let _handoff = self.native_effect_guard()?;
         if !valid_display_id(display_id) || snapshot_generation == 0 {
             return Err(
                 "invalid_request: pointer display_id or snapshot_generation is invalid".to_string(),
@@ -1232,6 +1342,7 @@ impl ComputerRuntime {
         }))
     }
     pub fn launch_application(&self, application_id: &str) -> Result<Value, String> {
+        let _handoff = self.native_effect_guard()?;
         self.with_current_application(application_id, |record| {
             platform::launch_application(application_id, record)
         })
@@ -1356,6 +1467,7 @@ impl ComputerRuntime {
     }
 
     pub fn activate_window(&self, surface_id: &str) -> Result<Value, String> {
+        let _handoff = self.native_effect_guard()?;
         if surface_id.is_empty() || surface_id.len() > MAX_SURFACE_ID_BYTES {
             return Err("invalid_request: surface_id is invalid".to_string());
         }
@@ -1375,6 +1487,7 @@ impl ComputerRuntime {
         element_id: &str,
         action: ComputerAction,
     ) -> Result<Value, String> {
+        let _handoff = self.native_effect_guard()?;
         if surface_id.is_empty() || surface_id.len() > MAX_SURFACE_ID_BYTES {
             return Err("invalid_request: surface_id is invalid".to_string());
         }
@@ -1405,6 +1518,7 @@ impl ComputerRuntime {
     }
 
     pub fn scroll_to_element(&self, surface_id: &str, element_id: &str) -> Result<Value, String> {
+        let _handoff = self.native_effect_guard()?;
         if surface_id.is_empty() || surface_id.len() > MAX_SURFACE_ID_BYTES {
             return Err("invalid_request: surface_id is invalid".to_string());
         }
@@ -1440,6 +1554,7 @@ impl ComputerRuntime {
         key: &str,
         modifiers: &[String],
     ) -> Result<Value, String> {
+        let _handoff = self.native_effect_guard()?;
         if surface_id.is_empty() || surface_id.len() > MAX_SURFACE_ID_BYTES {
             return Err("invalid_request: surface_id is invalid".to_string());
         }
@@ -1461,6 +1576,7 @@ impl ComputerRuntime {
         element_id: &str,
         text: &str,
     ) -> Result<Value, String> {
+        let _handoff = self.native_effect_guard()?;
         if surface_id.is_empty() || surface_id.len() > MAX_SURFACE_ID_BYTES {
             return Err("invalid_request: surface_id is invalid".to_string());
         }

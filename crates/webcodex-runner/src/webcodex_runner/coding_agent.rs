@@ -257,6 +257,22 @@ fn project_binding_matches(
     runtime_project_id: &str,
     root: &str,
 ) -> bool {
+    project_binding_matches_with_access(
+        project_registry_dir,
+        client_id,
+        runtime_project_id,
+        root,
+        true,
+    )
+}
+
+fn project_binding_matches_with_access(
+    project_registry_dir: &Path,
+    client_id: &str,
+    runtime_project_id: &str,
+    root: &str,
+    require_writable: bool,
+) -> bool {
     let Ok(requested_root) = canonicalize_existing(Path::new(root)) else {
         return false;
     };
@@ -267,7 +283,7 @@ fn project_binding_matches(
         .into_iter()
         .any(|project| {
             if format!("agent:{client_id}:{}", project.id) != runtime_project_id
-                || !project.allow_patch
+                || (require_writable && !project.allow_patch)
                 || project.disabled
             {
                 return false;
@@ -279,25 +295,18 @@ fn project_binding_matches(
         })
 }
 
-/// Check only configured mappings in the running Runner process. Never
-/// collect environment values, arbitrary process names or filesystem paths.
-fn diagnostic_env_source_presence(
+/// Evaluate only the explicitly configured ACP environment sources within
+/// the *running Runner process*. Values and undeclared names never leave this
+/// function, including when the source contains non-Unicode bytes.
+fn declared_env_source_presence(
     provider: &AcpAgentConfig,
-) -> webcodex_core::coding_agent::CodingAgentProviderDiagnostics {
-    webcodex_core::coding_agent::CodingAgentProviderDiagnostics {
-        provider_id: provider.id.clone(),
-        env_sources: provider
-            .env_from_env
-            .iter()
-            .map(|(destination, source)| {
-                webcodex_core::coding_agent::CodingAgentEnvSourcePresence {
-                    destination: destination.clone(),
-                    source: source.clone(),
-                    present: std::env::var_os(source).is_some(),
-                }
-            })
-            .collect(),
-    }
+    mut present: impl FnMut(&str) -> bool,
+) -> BTreeMap<String, bool> {
+    provider
+        .env_from_env
+        .iter()
+        .map(|(destination, source)| (destination.clone(), present(source)))
+        .collect()
 }
 
 fn resolve_environment(
@@ -334,6 +343,20 @@ fn response_error(
     )
 }
 impl CodingAgentManager {
+    /// First-stage, read-only ACP readiness primitive. Lookup is provider-ID
+    /// scoped and snapshots the process environment at call time rather than
+    /// using the configuration process's possibly stale environment. Only
+    /// configured destination keys and presence bits are returned.
+    pub(crate) fn declared_provider_env_presence(
+        &self,
+        provider_id: &str,
+    ) -> Option<BTreeMap<String, bool>> {
+        let entry = self.providers.get(provider_id)?;
+        Some(declared_env_source_presence(&entry.config, |name| {
+            std::env::var_os(name).is_some()
+        }))
+    }
+
     pub(crate) fn new(
         config: &AcpConfig,
         client_id: &str,
@@ -496,6 +519,8 @@ impl CodingAgentManager {
         match request {
             CodingAgentRequest::Start(request) => self.start(request, project_registry_dir),
             CodingAgentRequest::Diagnose(request) => {
+                // No ACP process is launched. Even this observation must use
+                // the exact provider generation and authorized Project root.
                 if !self.accepting.load(Ordering::Acquire) {
                     return response_error(
                         CodingAgentDispatchState::NotStarted,
@@ -523,8 +548,27 @@ impl CodingAgentManager {
                         "reobserve",
                     );
                 }
+                if !project_binding_matches_with_access(
+                    project_registry_dir,
+                    &self.client_id,
+                    &request.runtime_project_id,
+                    &request.project_root,
+                    false,
+                ) {
+                    return response_error(
+                        CodingAgentDispatchState::NotStarted,
+                        "stale_coding_agent_project",
+                        "authorized Project root no longer matches Runner registry",
+                        "stale_state",
+                        "reobserve",
+                    );
+                }
                 CodingAgentResponse::success(CodingAgentResponsePayload::Diagnose {
-                    diagnostic: diagnostic_env_source_presence(&provider.config),
+                    provider_id: request.provider_id.clone(),
+                    provider_instance_id: provider.instance_id.clone(),
+                    env_presence: self
+                        .declared_provider_env_presence(&request.provider_id)
+                        .expect("selected configured provider was checked above"),
                 })
             }
             CodingAgentRequest::Observe(request) => {

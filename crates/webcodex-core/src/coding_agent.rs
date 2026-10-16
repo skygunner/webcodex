@@ -301,30 +301,17 @@ pub struct CodingAgentCancelRequest {
     pub run_id: String,
 }
 
-/// Read-only, Runner-process source presence check. Correlation run_id never
-/// creates or reserves a CodingAgentRun.
+/// Identity-fenced, no-spawn diagnostic for one authorized Project/provider.
+/// Its run_id is solely an ephemeral correlation value, never a persisted Run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CodingAgentDiagnoseRequest {
     pub run_id: String,
+    pub runtime_project_id: String,
+    pub project_root: String,
     pub provider_id: String,
     pub provider_instance_id: String,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CodingAgentEnvSourcePresence {
-    pub destination: String,
-    pub source: String,
-    pub present: bool,
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CodingAgentProviderDiagnostics {
-    pub provider_id: String,
-    pub env_sources: Vec<CodingAgentEnvSourcePresence>,
-}
-pub const CODING_AGENT_MAX_ENV_SOURCE_MAPPINGS: usize = 64;
-pub const CODING_AGENT_MAX_ENV_NAME_BYTES: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
@@ -378,7 +365,10 @@ pub enum CodingAgentResponsePayload {
         run: CodingAgentRunSnapshot,
     },
     Diagnose {
-        diagnostic: CodingAgentProviderDiagnostics,
+        provider_id: String,
+        provider_instance_id: String,
+        /// Configured destination environment names, mapped only to booleans.
+        env_presence: BTreeMap<String, bool>,
     },
 }
 
@@ -528,6 +518,17 @@ pub fn validate_request(request: &CodingAgentRequest) -> Result<(), String> {
         CodingAgentRequest::Diagnose(request) => {
             validate_provider_id(&request.provider_id)?;
             validate_provider_instance_id(&request.provider_instance_id)?;
+            if request.runtime_project_id.trim().is_empty()
+                || request.runtime_project_id.len() > CODING_AGENT_MAX_PROJECT_ID_BYTES
+            {
+                return Err("diagnostic runtime_project_id is invalid".into());
+            }
+            if request.project_root.is_empty()
+                || request.project_root.len() > CODING_AGENT_MAX_PROJECT_ROOT_BYTES
+                || request.project_root.contains('\0')
+            {
+                return Err("diagnostic project_root is invalid".into());
+            }
         }
     }
     Ok(())
@@ -552,30 +553,29 @@ pub fn validate_response_for_request(
     };
     if let (
         CodingAgentRequest::Diagnose(request),
-        CodingAgentResponsePayload::Diagnose { diagnostic },
+        CodingAgentResponsePayload::Diagnose {
+            provider_id,
+            provider_instance_id,
+            env_presence,
+        },
     ) = (request, payload)
     {
-        if diagnostic.provider_id != request.provider_id
-            || diagnostic.env_sources.len() > CODING_AGENT_MAX_ENV_SOURCE_MAPPINGS
+        if provider_id != &request.provider_id
+            || provider_instance_id != &request.provider_instance_id
+            || env_presence.len() > CODING_AGENT_MAX_CONFIG_OPTIONS
         {
-            return Err("ACP diagnostic provider or mapping count is invalid".into());
+            return Err("ACP diagnostic provider identity or size is invalid".into());
         }
-        let mut seen = std::collections::BTreeSet::new();
-        for source in &diagnostic.env_sources {
-            if source.destination.is_empty()
-                || source.source.is_empty()
-                || source.destination.len() > CODING_AGENT_MAX_ENV_NAME_BYTES
-                || source.source.len() > CODING_AGENT_MAX_ENV_NAME_BYTES
-                || source.destination.chars().any(|c| c.is_control())
-                || source.source.chars().any(|c| c.is_control())
-                || !seen.insert(source.destination.to_ascii_uppercase())
+        for key in env_presence.keys() {
+            if key.is_empty()
+                || key.len() > CODING_AGENT_MAX_CONFIG_KEY_BYTES
+                || key.contains(['\0', '\r', '\n'])
             {
-                return Err("ACP diagnostic environment mapping is invalid".into());
+                return Err("ACP diagnostic destination key is invalid".into());
             }
         }
         return Ok(());
     }
-
     let run = match (request, payload) {
         (CodingAgentRequest::Start(_), CodingAgentResponsePayload::Start { run }) => run,
         (CodingAgentRequest::Observe(_), CodingAgentResponsePayload::Observe { observation }) => {
@@ -1484,6 +1484,56 @@ mod tests {
     }
 
     #[test]
+    fn diagnostic_wire_is_identity_fenced_and_does_not_accept_raw_secrets() {
+        let request = CodingAgentRequest::Diagnose(CodingAgentDiagnoseRequest {
+            run_id: "wc_agent_run_diag_core_994".into(),
+            runtime_project_id: "agent:runner:demo".into(),
+            project_root: "/workspace/demo".into(),
+            provider_id: "codex".into(),
+            provider_instance_id: "acp_current".into(),
+        });
+        validate_request(&request).unwrap();
+        let serialized_request = serde_json::to_string(&request).unwrap();
+        assert!(!serialized_request.contains("secret"));
+        assert!(!serialized_request.contains("executable"));
+        assert!(!serialized_request.contains("command"));
+        assert_eq!(
+            serde_json::from_str::<CodingAgentRequest>(&serialized_request).unwrap(),
+            request
+        );
+
+        let response = CodingAgentResponse::success(CodingAgentResponsePayload::Diagnose {
+            provider_id: "codex".into(),
+            provider_instance_id: "acp_current".into(),
+            env_presence: BTreeMap::from([("API_KEY".into(), true)]),
+        });
+        validate_response_for_request(&request, &response).unwrap();
+        let mut stale = response.clone();
+        if let Some(CodingAgentResponsePayload::Diagnose {
+            provider_instance_id,
+            ..
+        }) = &mut stale.payload
+        {
+            *provider_instance_id = "acp_old".into();
+        }
+        assert!(validate_response_for_request(&request, &stale).is_err());
+
+        let mut oversized = response.clone();
+        if let Some(CodingAgentResponsePayload::Diagnose { env_presence, .. }) =
+            &mut oversized.payload
+        {
+            env_presence.insert("x".repeat(CODING_AGENT_MAX_CONFIG_KEY_BYTES + 1), true);
+        }
+        assert!(validate_response_for_request(&request, &oversized).is_err());
+
+        let mut invalid = request.clone();
+        if let CodingAgentRequest::Diagnose(diag) = &mut invalid {
+            diag.project_root = String::new();
+        }
+        assert!(validate_request(&invalid).is_err());
+    }
+
+    #[test]
     fn request_round_trip_is_closed_and_bounded() {
         let request = CodingAgentRequest::Start(CodingAgentStartRequest {
             run_id: "wc_agent_run_0123456789abcdef".to_string(),
@@ -1505,73 +1555,5 @@ mod tests {
             serde_json::from_str::<CodingAgentRequest>(&json).unwrap(),
             request
         );
-    }
-}
-
-#[cfg(test)]
-mod provider_diagnostic_contract_tests {
-    use super::*;
-
-    #[test]
-    fn diagnose_response_enforces_explicit_provider_bounds_and_no_duplicate_mappings() {
-        let request = CodingAgentRequest::Diagnose(CodingAgentDiagnoseRequest {
-            run_id: "wc_agent_run_diag_0001".into(),
-            provider_id: "codex".into(),
-            provider_instance_id: "acp_test-instance".into(),
-        });
-        validate_request(&request).unwrap();
-        let good = CodingAgentResponse::success(CodingAgentResponsePayload::Diagnose {
-            diagnostic: CodingAgentProviderDiagnostics {
-                provider_id: "codex".into(),
-                env_sources: vec![CodingAgentEnvSourcePresence {
-                    destination: "ACP_VISIBLE".into(),
-                    source: "CODEX_PATH".into(),
-                    present: true,
-                }],
-            },
-        });
-        validate_response_for_request(&request, &good).unwrap();
-
-        let mut mismatched = good.clone();
-        let Some(CodingAgentResponsePayload::Diagnose { ref mut diagnostic }) = mismatched.payload
-        else {
-            unreachable!()
-        };
-        diagnostic.provider_id = "another-provider".into();
-        assert!(validate_response_for_request(&request, &mismatched).is_err());
-
-        let mut duplicates = good.clone();
-        let Some(CodingAgentResponsePayload::Diagnose { ref mut diagnostic }) = duplicates.payload
-        else {
-            unreachable!()
-        };
-        diagnostic.env_sources.push(CodingAgentEnvSourcePresence {
-            destination: "acp_visible".into(),
-            source: "ANOTHER_SOURCE".into(),
-            present: false,
-        });
-        assert!(validate_response_for_request(&request, &duplicates).is_err());
-
-        let mut too_long = good.clone();
-        let Some(CodingAgentResponsePayload::Diagnose { ref mut diagnostic }) = too_long.payload
-        else {
-            unreachable!()
-        };
-        diagnostic.env_sources[0].source = "X".repeat(257);
-        assert!(validate_response_for_request(&request, &too_long).is_err());
-
-        let mut too_many = good.clone();
-        let Some(CodingAgentResponsePayload::Diagnose { ref mut diagnostic }) = too_many.payload
-        else {
-            unreachable!()
-        };
-        diagnostic.env_sources = (0..=CODING_AGENT_MAX_ENV_SOURCE_MAPPINGS)
-            .map(|i| CodingAgentEnvSourcePresence {
-                destination: format!("DEST_{i}"),
-                source: "SECRET_NAME".into(),
-                present: false,
-            })
-            .collect();
-        assert!(validate_response_for_request(&request, &too_many).is_err());
     }
 }

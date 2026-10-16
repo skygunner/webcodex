@@ -426,3 +426,175 @@ fn natural_process_exit_is_observed_before_cleanup() {
     assert_eq!(failure, AcpFailure::ProcessExited);
     assert!(!failure.safe_message().contains("23"));
 }
+
+#[test]
+fn declared_acp_environment_presence_only_returns_configured_boolean_destinations() {
+    let provider = AcpAgentConfig {
+        id: "codex".into(),
+        name: "Codex".into(),
+        executable: "never-spawn-this-binary".into(),
+        args: vec!["secret-command-argument".into()],
+        env_from_env: BTreeMap::from([
+            ("API_KEY".into(), "PRIVATE_SECRET_ENV".into()),
+            ("CODEX_PATH".into(), "ACP_CONFIG_SOURCE".into()),
+        ]),
+        allowed_config_options: Vec::new(),
+    };
+    let mut probed = Vec::new();
+    let result = declared_env_source_presence(&provider, |source| {
+        probed.push(source.to_owned());
+        source == "ACP_CONFIG_SOURCE"
+    });
+    assert_eq!(
+        result,
+        BTreeMap::from([("API_KEY".into(), false), ("CODEX_PATH".into(), true),])
+    );
+    assert_eq!(probed, vec!["PRIVATE_SECRET_ENV", "ACP_CONFIG_SOURCE"]);
+    let serialized = serde_json::to_string(&result).unwrap();
+    for forbidden in [
+        "PRIVATE_SECRET_ENV",
+        "ACP_CONFIG_SOURCE",
+        "never-spawn-this-binary",
+        "secret-command-argument",
+    ] {
+        assert!(!serialized.contains(forbidden));
+    }
+}
+
+#[test]
+fn acp_environment_presence_does_not_probe_unlisted_sources() {
+    let provider = AcpAgentConfig {
+        id: "codex".into(),
+        name: "Codex".into(),
+        executable: "unused".into(),
+        args: Vec::new(),
+        env_from_env: BTreeMap::new(),
+        allowed_config_options: Vec::new(),
+    };
+    let result = declared_env_source_presence(&provider, |_| {
+        panic!("unlisted environment sources must not be inspected")
+    });
+    assert!(result.is_empty());
+}
+
+#[test]
+fn provider_env_presence_uses_explicit_provider_id_and_omits_values() {
+    let temp = TempDir::new().unwrap();
+    let mut config = fake_config("do-not-launch".into(), Vec::new());
+    config.agents[0].env_from_env = BTreeMap::from([
+        ("PATH_DESTINATION".into(), "PATH".into()),
+        (
+            "MISSING_DESTINATION".into(),
+            "WEBCODEX_TEST_NEVER_SET_ENV_994".into(),
+        ),
+    ]);
+    let manager = CodingAgentManager::with_store(&config, temp.path().join("store")).unwrap();
+    assert!(manager.declared_provider_env_presence("unknown").is_none());
+    let readiness = manager.declared_provider_env_presence("codex").unwrap();
+    assert_eq!(readiness.get("PATH_DESTINATION"), Some(&true));
+    assert_eq!(readiness.get("MISSING_DESTINATION"), Some(&false));
+    assert_eq!(readiness.len(), 2);
+    let output = serde_json::to_string(&readiness).unwrap();
+    assert!(!output.contains("WEBCODEX_TEST_NEVER_SET_ENV_994"));
+    assert!(!output.contains("PATH="));
+    assert!(!output.contains("do-not-launch"));
+}
+
+#[test]
+#[cfg(unix)]
+fn acp_diagnose_runner_request_is_identity_fenced_read_only_and_no_spawn() {
+    use webcodex_core::coding_agent::{validate_response_for_request, CodingAgentDiagnoseRequest};
+    let temp = crate::tests::executable_tempdir();
+    let projects = project_fixture(&temp);
+    let project_root = temp.path().join("repo");
+    let mut config = fake_config("never-launch-this-acp-binary".into(), vec![]);
+    config.agents[0].env_from_env = BTreeMap::from([
+        ("KNOWN_DEST".into(), "PATH".into()),
+        (
+            "MISSING_DEST".into(),
+            "WEBCODEX_TEST_994_MISSING_SOURCE".into(),
+        ),
+    ]);
+    let manager = CodingAgentManager::with_store(&config, temp.path().join("store")).unwrap();
+    let instance = manager.providers()[0].provider_instance_id.clone();
+    let make_request = || {
+        CodingAgentRequest::Diagnose(CodingAgentDiagnoseRequest {
+            run_id: "wc_agent_run_diagnosis_readonly_994".into(),
+            runtime_project_id: "agent:test:demo".into(),
+            project_root: project_root.to_string_lossy().to_string(),
+            provider_id: "codex".into(),
+            provider_instance_id: instance.clone(),
+        })
+    };
+    let valid_request = make_request();
+    let response = manager.handle(valid_request.clone(), &projects);
+    validate_response_for_request(&valid_request, &response).unwrap();
+    let Some(CodingAgentResponsePayload::Diagnose {
+        provider_id,
+        provider_instance_id,
+        env_presence,
+    }) = response.payload
+    else {
+        panic!(
+            "diagnostic should return typed presence only: {:?}",
+            response.error
+        );
+    };
+    assert_eq!(provider_id, "codex");
+    assert_eq!(provider_instance_id, instance);
+    assert_eq!(env_presence["KNOWN_DEST"], true);
+    assert_eq!(env_presence["MISSING_DEST"], false);
+    let serialized = serde_json::to_string(&env_presence).unwrap();
+    assert!(!serialized.contains("WEBCODEX_TEST_994_MISSING_SOURCE"));
+    assert!(!serialized.contains("never-launch-this-acp-binary"));
+    assert!(manager.runs.lock().unwrap().is_empty());
+
+    let mut stale = make_request();
+    let CodingAgentRequest::Diagnose(stale_request) = &mut stale else {
+        unreachable!()
+    };
+    stale_request.provider_instance_id = "acp_stale_generation".into();
+    let reply = manager.handle(stale.clone(), &projects);
+    assert_eq!(
+        reply.error.as_ref().unwrap().code,
+        "stale_coding_agent_provider"
+    );
+    validate_response_for_request(&stale, &reply).unwrap();
+
+    let mut wrong_project = make_request();
+    let CodingAgentRequest::Diagnose(wrong) = &mut wrong_project else {
+        unreachable!()
+    };
+    wrong.runtime_project_id = "agent:test:other_project".into();
+    let reply = manager.handle(wrong_project.clone(), &projects);
+    assert_eq!(
+        reply.error.as_ref().unwrap().code,
+        "stale_coding_agent_project"
+    );
+    validate_response_for_request(&wrong_project, &reply).unwrap();
+
+    // A read-only Project may be inspected; the same binding must not grant
+    // the separate Start operation writable authority.
+    std::fs::write(
+        projects.join("p.toml"),
+        format!(
+            "id = \"demo\"\npath = {:?}\nallow_patch = false\n",
+            project_root.to_string_lossy()
+        ),
+    )
+    .unwrap();
+    let readonly_request = make_request();
+    let readonly_reply = manager.handle(readonly_request.clone(), &projects);
+    validate_response_for_request(&readonly_request, &readonly_reply).unwrap();
+    assert!(matches!(
+        readonly_reply.payload,
+        Some(CodingAgentResponsePayload::Diagnose { .. })
+    ));
+    assert!(!project_binding_matches(
+        &projects,
+        "test",
+        "agent:test:demo",
+        project_root.to_string_lossy().as_ref()
+    ));
+    assert!(manager.runs.lock().unwrap().is_empty());
+}

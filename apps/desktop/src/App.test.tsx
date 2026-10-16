@@ -1026,6 +1026,39 @@ beforeEach(() => {
     expect(alert).toHaveTextContent("exit code 1");
   });
 
+  it("clears a transient runner_offline alert after state observation sees the Runner ready", async () => {
+    const stoppedState: DesktopState = {
+      ...readyState,
+      readiness: {
+        ...readyState.readiness,
+        runtime_ready: false,
+        ready_for_chatgpt: false,
+        server: "ready",
+        runner: "stopped",
+        project: "configured",
+        summary_kind: "runner_disconnected",
+        next_action_kind: "start_runner",
+      },
+    };
+    const runnerError = {
+      code: "runner_offline",
+      message: "Runner did not become connected",
+      next_action: "Retry setup.",
+    };
+    // Native startup errors survive in runtime_error even when a later
+    // getState observes the Runner ready before RuntimeRefresh settles.
+    api.getState.mockResolvedValueOnce({ ...stoppedState, runtime_error: runnerError })
+      .mockResolvedValue({ ...readyState, runtime_error: runnerError });
+    api.resumeSavedRuntime.mockRejectedValue(runnerError);
+
+    renderApp();
+    const submit = await screen.findByRole("button", { name: "启动 WebCodex" });
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(api.getState).toHaveBeenCalledTimes(2));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("shows one provider failure on Home and opens the matching extension tab", async () => {
     const failure = {
       code: "mcp_provider_executable_unavailable",

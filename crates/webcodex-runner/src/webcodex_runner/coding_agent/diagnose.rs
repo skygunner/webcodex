@@ -18,6 +18,26 @@ use webcodex_core::coding_agent::{
     CODING_AGENT_MAX_CONFIG_SELECT_CHOICES,
 };
 
+/// Read at most one bounded ACP frame. `read_line` would only check the
+/// size after allocating an arbitrarily long provider-controlled line.
+/// A limited BufRead view enforces the byte cap before parsing or allocation.
+pub(super) fn read_bounded_diagnostic_frame<R: BufRead>(reader: &mut R) -> Option<ReaderEvent> {
+    let mut frame = Vec::new();
+    let event = reader
+        .take((ACP_MESSAGE_MAX_BYTES + 1) as u64)
+        .read_until(b'\n', &mut frame);
+    match event {
+        Ok(0) => None,
+        Ok(size) if size > ACP_MESSAGE_MAX_BYTES => Some(ReaderEvent::TooLarge),
+        Ok(_) => Some(
+            serde_json::from_slice::<Value>(&frame)
+                .map(ReaderEvent::Message)
+                .unwrap_or(ReaderEvent::Malformed),
+        ),
+        Err(error) => Some(ReaderEvent::Io(error.kind())),
+    }
+}
+
 /// Owns the ephemeral probe process and its sole outbound writer. Dropping it
 /// terminates the whole process tree and drains the I/O owners, so success,
 /// fault, timeout, and Runner shutdown all clean up identically.
@@ -73,26 +93,18 @@ impl EphemeralAcpProbe {
             .spawn(move || {
                 let mut reader = BufReader::new(stdout);
                 loop {
-                    let mut line = String::new();
-                    match reader.read_line(&mut line) {
-                        Ok(0) => {
-                            let _ = tx.send(ReaderEvent::Eof);
-                            break;
-                        }
-                        Ok(_) if line.len() <= ACP_MESSAGE_MAX_BYTES => {
-                            let value = serde_json::from_str::<Value>(&line)
-                                .map(ReaderEvent::Message)
-                                .unwrap_or(ReaderEvent::Malformed);
-                            if tx.send(value).is_err() {
+                    match read_bounded_diagnostic_frame(&mut reader) {
+                        Some(ReaderEvent::Message(value)) => {
+                            if tx.send(ReaderEvent::Message(value)).is_err() {
                                 break;
                             }
                         }
-                        Ok(_) => {
-                            let _ = tx.send(ReaderEvent::TooLarge);
+                        Some(failure) => {
+                            let _ = tx.send(failure);
                             break;
                         }
-                        Err(error) => {
-                            let _ = tx.send(ReaderEvent::Io(error.kind()));
+                        None => {
+                            let _ = tx.send(ReaderEvent::Eof);
                             break;
                         }
                     }
@@ -171,7 +183,7 @@ fn probe_stop(
 /// that exceed the budgets or fall outside the bounded identity vocabulary are
 /// dropped and reported through the truncated flags rather than widening the
 /// response contract.
-fn project_live_options(
+pub(super) fn project_live_options(
     advertised: Vec<agent_client_protocol_schema::v1::SessionConfigOption>,
 ) -> (Vec<CodingAgentLiveConfigOption>, bool) {
     let mut truncated = false;
@@ -195,16 +207,15 @@ fn project_live_options(
                     SessionConfigSelectOptions::Grouped(groups) => {
                         groups.into_iter().flat_map(|group| group.options).collect()
                     }
-                    // A future grouping shape still admits its option id and
-                    // current selection, but never a guessed choice list.
+                    // Without an understood advertised choice list, a
+                    // provider-controlled current value is not verified as a
+                    // safe choice identifier. Never project it independently.
                     _ => {
-                        let current = select.current_value.to_string();
                         projected.push(CodingAgentLiveConfigOption {
                             id,
                             label,
                             kind: "select".into(),
-                            current: diagnostic_identity_key_is_bounded(&current)
-                                .then_some(current),
+                            current: None,
                             choices: Vec::new(),
                             choices_truncated: true,
                         });
@@ -230,11 +241,18 @@ fn project_live_options(
                     });
                 }
                 let current = select.current_value.to_string();
+                // An arbitrary currentValue need not be among the provider's
+                // selection IDs; it could contain a private opaque value.
+                // Only repeat IDs that this projection also safely exposes.
+                let current = choices
+                    .iter()
+                    .any(|choice| choice.value == current)
+                    .then_some(current);
                 projected.push(CodingAgentLiveConfigOption {
                     id,
                     label,
                     kind: "select".into(),
-                    current: diagnostic_identity_key_is_bounded(&current).then_some(current),
+                    current,
                     choices,
                     choices_truncated,
                 });
@@ -283,7 +301,26 @@ impl CodingAgentManager {
     ) -> CodingAgentLiveAcpDiagnostic {
         // One live probe at a time per Runner keeps the ephemeral process
         // population bounded even under concurrent diagnostic requests.
-        let _probe_permit = self.live_probe_permit.lock().unwrap();
+        // Never queue a launch for an unbounded time outside its work budget.
+        // A busy Runner returns a closed diagnostic rather than building a
+        // queue of waiting requests and potentially starting processes later.
+        let _probe_permit = match self.live_probe_permit.try_lock() {
+            Ok(permit) => permit,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return probe_stop(
+                    request,
+                    CodingAgentDiagnoseOutcome::Busy,
+                    CodingAgentDiagnosePhase::Spawn,
+                );
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return probe_stop(
+                    request,
+                    CodingAgentDiagnoseOutcome::Interrupted,
+                    CodingAgentDiagnosePhase::Spawn,
+                );
+            }
+        };
         let deadline = Instant::now() + self.live_probe_budget();
         let environment = match resolve_environment(&provider.config) {
             Ok(environment) => environment,

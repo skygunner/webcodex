@@ -1,7 +1,47 @@
+use super::super::diagnose::{project_live_options, read_bounded_diagnostic_frame};
 use super::super::protocol::{wait_response, AcpFailure, ReaderEvent};
 use super::*;
 
 const PRIVATE_DIAGNOSTIC: &str = "synthetic-secret-/private/operator/auth-session";
+
+#[test]
+fn unadvertised_select_current_never_leaks_into_diagnostic() {
+    // A provider may send a private currentValue not offered as a selectable
+    // identity. Never reflect it just because it fits a byte-length budget.
+    let secret = "private_token_not_in_advertised_choices_123456";
+    let option: SessionConfigOption = serde_json::from_value(json!({
+        "id": "model", "name": "Model", "type": "select",
+        "currentValue": secret,
+        "options": [{"value": "gpt-6", "name": "GPT 6"}],
+    }))
+    .unwrap();
+    let (projected, truncated) = project_live_options(vec![option]);
+    assert!(!truncated);
+    assert_eq!(projected.len(), 1);
+    assert_eq!(projected[0].id, "model");
+    assert_eq!(projected[0].choices.len(), 1);
+    assert_eq!(projected[0].choices[0].value, "gpt-6");
+    assert_eq!(projected[0].current, None);
+    assert!(!serde_json::to_string(&projected).unwrap().contains(secret));
+}
+
+#[test]
+fn live_diagnostic_reader_caps_unterminated_frame_before_allocating_unbounded_memory() {
+    // A hostile ACP provider can stream an arbitrarily long line without
+    // sending the newline. The reader must stop after the declared frame bound.
+    let mut input = std::io::Cursor::new(vec![b'x'; ACP_MESSAGE_MAX_BYTES * 4]);
+    assert!(matches!(
+        read_bounded_diagnostic_frame(&mut input),
+        Some(ReaderEvent::TooLarge)
+    ));
+    assert!(input.position() <= (ACP_MESSAGE_MAX_BYTES + 1) as u64);
+    let mut valid = std::io::Cursor::new(b"{\"id\":1,\"result\":{}}\n".to_vec());
+    assert!(matches!(
+        read_bounded_diagnostic_frame(&mut valid),
+        Some(ReaderEvent::Message(_))
+    ));
+    assert!(read_bounded_diagnostic_frame(&mut valid).is_none());
+}
 
 #[test]
 fn response_faults_keep_safe_distinct_causes() {
@@ -623,6 +663,48 @@ fn live_diagnose_request(
 
 #[test]
 #[cfg(unix)]
+fn concurrent_live_probe_is_rejected_without_unbounded_mutex_wait() {
+    use webcodex_core::coding_agent::{CodingAgentDiagnoseOutcome, CodingAgentDiagnosePhase};
+    let temp = crate::tests::executable_tempdir();
+    let manager = CodingAgentManager::with_store(
+        &fake_config("not-a-real-executable".into(), Vec::new()),
+        temp.path().join("store"),
+    )
+    .unwrap();
+    let projects = project_fixture(&temp);
+    let request = live_diagnose_request(
+        &manager,
+        &temp.path().join("repo"),
+        "wc_agent_run_diagnosebusy01",
+        true,
+    );
+    // Pretend a different live probe already owns the single process permit.
+    let permit = manager.live_probe_permit.lock().unwrap();
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let worker = {
+        let manager = Arc::clone(&manager);
+        std::thread::spawn(move || {
+            let _ = tx.send(manager.handle(request, &projects));
+        })
+    };
+    let promptly = rx.recv_timeout(Duration::from_millis(500));
+    drop(permit); // Release even if the candidate blocks, so the test can end.
+    worker.join().unwrap();
+    let response = promptly.expect("a live probe must not queue without a work deadline");
+    let Some(CodingAgentResponsePayload::Diagnose {
+        live_acp: Some(live),
+        ..
+    }) = response.payload
+    else {
+        panic!("busy response needs a bounded diagnostic payload");
+    };
+    assert_eq!(live.outcome, CodingAgentDiagnoseOutcome::Busy);
+    assert_eq!(live.phase, CodingAgentDiagnosePhase::Spawn);
+    assert!(live.options.is_empty());
+}
+
+#[test]
+#[cfg(unix)]
 fn acp_diagnose_live_probe_reports_live_options_with_only_initialize_and_session_new() {
     use webcodex_core::coding_agent::{
         validate_response_for_request, CodingAgentDiagnoseOutcome, CodingAgentDiagnosePhase,
@@ -921,7 +1003,13 @@ fn acp_diagnose_live_probe_provider_exit_is_classified_without_status_leak() {
         );
     };
     let live = live_acp.expect("explicitly authorized live probe result");
-    assert_eq!(live.outcome, CodingAgentDiagnoseOutcome::ProcessExited);
+    // Closing stdout can race process reaping: without a pre-cleanup exit
+    // observation the honest closed outcome is transport_failed. Both are
+    // safe, and the separate natural-exit test proves the classified upgrade.
+    assert!(matches!(
+        live.outcome,
+        CodingAgentDiagnoseOutcome::ProcessExited | CodingAgentDiagnoseOutcome::TransportFailed
+    ));
     assert_eq!(live.phase, CodingAgentDiagnosePhase::Initialize);
     assert!(live.options.is_empty());
     let serialized = serde_json::to_string(&live).unwrap();

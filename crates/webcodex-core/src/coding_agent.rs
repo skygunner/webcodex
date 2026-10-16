@@ -354,6 +354,8 @@ pub enum CodingAgentDiagnoseOutcome {
     /// A successful ACP answer did not match the stable v1 response shape.
     InvalidResponse,
     Timeout,
+    /// Another live probe already owns the one allowed ephemeral process slot.
+    Busy,
     /// The Runner stopped accepting work before the probe finished.
     Interrupted,
 }

@@ -5,12 +5,15 @@
 Upstream issue: https://github.com/yyjeqhc/webcodex/issues/994
 Base: upstream `main` commit `c425f837b990c000b4dec196650d96e410c67594`.
 
-This is an **incomplete implementation branch**, not an upstream-ready PR.
-No Runtime/MCP/Runner operation is exposed yet. Do not deploy or claim the
-issue acceptance criteria have passed until the diagnostic surface and live
-ACP probing are implemented and tested.
+This is the historical design and verification record for a **Runner-only
+partial implementation**, not acceptance of the complete operator-facing
+Issue #994. A typed Runner `Diagnose` operation now exists, but no
+Server/ToolRuntime, Desktop, CLI, or MCP surface invokes it yet. Such a future
+entry must independently authorize the exact Runner, provider generation, and
+Project (and explicitly authorize process launch for a live probe). Do not
+claim the complete issue or deploy an unreviewed operator-facing entry.
 
-### Implemented building block
+### Initial building block (historical stage 1)
 
 - `CodingAgentManager::declared_provider_env_presence(provider_id)`
   scopes lookup to an explicitly selected **configured** provider.
@@ -24,7 +27,7 @@ ACP probing are implemented and tested.
 - Caveat: the canonical helper currently lacks a consumption path; Rust may
   report `dead_code` until the diagnostic operation is added.
 
-### Next implementation pieces before PR
+### Historical checklist before the Runner-only PR
 
 1. Add a read-only Runner request/response variant, bound to an explicitly
    selected provider ID and instance, with the existing Runner/provider
@@ -122,18 +125,24 @@ fence.
 - The projection is a closed bounded identity view: option id/label,
   `select`/`boolean` kind, safe current selection, and choice values with
   labels. Budgets: 32 options, 64 choices per option, 128-byte
-  identities, 256-byte labels (truncated). Options outside the identity
+  identities, 256-byte labels (truncated). A select currentValue is emitted
+  only when it matches an actually projected advertised choice; unlisted
+  private-looking current values are not reflected. Options outside the identity
   vocabulary are dropped and reported through `options_truncated` /
   `choices_truncated` rather than widening the contract.
 - Failures never carry provider text: a closed
   `CodingAgentDiagnoseOutcome` (`ok`, `env_unavailable`, `spawn_failed`,
   `process_exited`, `transport_failed`, `rejected`,
-  `protocol_unsupported`, `invalid_response`, `timeout`, `interrupted`)
+  `protocol_unsupported`, `invalid_response`, `timeout`, `busy`,
+  `interrupted`)
   plus the reached `CodingAgentDiagnosePhase` are the only fault
   vocabulary. A failed probe always reports empty options. stderr is
   drained to a sink and never captured.
 - One live probe runs at a time per Runner (`live_probe_permit`), under
-  a single bounded budget (30s total, matching `ACP_SETUP_TIMEOUT`).
+  a single bounded budget (30s total, matching `ACP_SETUP_TIMEOUT`). Other
+  concurrent live probes return `busy` immediately rather than queueing
+  outside this deadline. Diagnostic stdout frames are capped while reading,
+  so a provider cannot stream an unterminated line into unbounded memory.
 - `validate_response_for_request` rejects unrequested `live_acp`, a
   missing `live_acp` when authorized, non-v1 protocol versions, options
   on failed outcomes, and any identity/label outside the budgets.

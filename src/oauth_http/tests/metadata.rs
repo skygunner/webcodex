@@ -57,10 +57,9 @@ async fn oauth_protected_resource_metadata_fields() {
     assert_eq!(methods.len(), 1);
     assert_eq!(methods[0], "header");
 
-    assert_eq!(
-        body["scopes_supported"],
-        serde_json::json!(oauth_discovery_scopes_supported())
-    );
+    // The global resource must not request every scope on behalf of a
+    // registered OAuth client whose allowed scope ceiling is narrower.
+    assert!(body.get("scopes_supported").is_none());
 
     // resource_name
     assert_eq!(body["resource_name"], "WebCodex");
@@ -252,7 +251,7 @@ async fn openid_configuration_not_exposed() {
 }
 
 #[tokio::test]
-async fn oauth_protected_resource_metadata_advertises_global_scopes() {
+async fn oauth_protected_resource_metadata_omits_global_scope_ceiling() {
     let config = test_config(oauth2_enabled());
     let (_tmp, db) = test_db();
     let service = Service::new(build_router(config, db));
@@ -261,10 +260,9 @@ async fn oauth_protected_resource_metadata_advertises_global_scopes() {
         .await;
     assert_eq!(resp.status_code, Some(StatusCode::OK));
     let body: serde_json::Value = resp.take_json().await.unwrap();
-    assert_eq!(
-        body["scopes_supported"],
-        serde_json::json!(oauth_discovery_scopes_supported())
-    );
+    // The global resource must not request every scope on behalf of a
+    // registered OAuth client whose allowed scope ceiling is narrower.
+    assert!(body.get("scopes_supported").is_none());
 }
 
 #[tokio::test]

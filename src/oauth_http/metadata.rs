@@ -40,13 +40,18 @@ pub(crate) async fn oauth_metadata(depot: &mut Depot, res: &mut Response) {
         .unwrap_or("http://localhost");
     let resource = format!("{}/mcp", issuer.trim_end_matches('/'));
 
-    let metadata = serde_json::json!({
+    let mut metadata = serde_json::json!({
         "resource": resource,
         "authorization_servers": [issuer],
         "bearer_methods_supported": ["header"],
-        "scopes_supported": advertised_scopes(&config),
         "resource_name": "WebCodex",
     });
+    // A global OAuth client may have a narrower registered scope ceiling.
+    // An unqualified resource-level All-scopes request would then fail
+    // invalid_scope. Only a Project Share has a fixed, authorizable ceiling.
+    if config.oauth2.project_share_grant_id.is_some() {
+        metadata["scopes_supported"] = serde_json::json!(advertised_scopes(&config));
+    }
 
     res.render(Json(metadata));
 }

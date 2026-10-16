@@ -156,15 +156,15 @@ async fn oauth2_mcp_tools_list_projects_per_tool_security_schemes() {
         let name = tool["name"].as_str().unwrap();
         let expected = crate::auth::oauth_mcp_security_scheme_scopes(name);
         match expected {
-            Some(scopes) => {
+            Some(scope_options) => {
                 let schemes = tool["securitySchemes"]
                     .as_array()
                     .unwrap_or_else(|| panic!("{name} missing securitySchemes: {tool:?}"));
-                assert_eq!(schemes.len(), 1, "{name}: {schemes:?}");
-                assert_eq!(schemes[0]["type"], "oauth2", "{name}: {schemes:?}");
-                let advertised = schemes[0]["scopes"].as_array().unwrap();
-                let advertised: Vec<&str> = advertised.iter().filter_map(|s| s.as_str()).collect();
-                assert_eq!(advertised, scopes, "{name} policy mismatch");
+                assert_eq!(schemes.len(), scope_options.len(), "{name}: {schemes:?}");
+                for (scheme, scopes) in schemes.iter().zip(scope_options) {
+                    assert_eq!(scheme["type"], "oauth2", "{name}: {schemes:?}");
+                    assert_eq!(scheme["scopes"], json!(scopes), "{name} policy mismatch");
+                }
             }
             None => assert!(
                 tool.get("securitySchemes").is_none(),

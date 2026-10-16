@@ -135,15 +135,17 @@ pub(crate) fn oauth_scope_policy_for_runtime_tool(tool_name: &str) -> OAuthToolS
         .unwrap_or(OAuthToolScopePolicy::Unknown)
 }
 
-/// Project a runtime tool's existing authority policy onto the MCP
-/// `securitySchemes[].scopes` list. `RequireAll`/`RequireAny` expose their real
-/// candidate scopes; `Unknown` exposes none so metadata can never widen access.
-pub(crate) fn oauth_mcp_security_scheme_scopes(tool_name: &str) -> Option<Vec<&'static str>> {
+/// Project the existing tool authority policy into OAuth alternatives.
+/// Each security scheme is one sufficient way to authorize the tool: RequireAny
+/// therefore produces separate one-scope alternatives, while RequireAll keeps
+/// every required scope in one scheme. Unknown exposes no authorization hint.
+pub(crate) fn oauth_mcp_security_scheme_scopes(tool_name: &str) -> Option<Vec<Vec<&'static str>>> {
     match oauth_scope_policy_for_runtime_tool(tool_name) {
-        OAuthToolScopePolicy::Require(scope) => Some(vec![scope]),
-        OAuthToolScopePolicy::RequireAny(scopes) | OAuthToolScopePolicy::RequireAll(scopes) => {
-            Some(scopes.to_vec())
+        OAuthToolScopePolicy::Require(scope) => Some(vec![vec![scope]]),
+        OAuthToolScopePolicy::RequireAny(scopes) => {
+            Some(scopes.iter().copied().map(|scope| vec![scope]).collect())
         }
+        OAuthToolScopePolicy::RequireAll(scopes) => Some(vec![scopes.to_vec()]),
         OAuthToolScopePolicy::Unknown => None,
     }
 }
@@ -223,6 +225,28 @@ mod tests {
     use super::*;
     use crate::tool_runtime::metadata::lookup_tool_metadata;
     use crate::tool_runtime::tool_definition::known_tool_names;
+
+    #[test]
+    fn oauth_mcp_security_scheme_scope_options_preserve_any_and_all() {
+        // A control or launch credential can authorize control_browser;
+        // requiring both in a single OAuth scheme misrepresents that choice.
+        assert_eq!(
+            serde_json::json!(oauth_mcp_security_scheme_scopes("control_browser")),
+            serde_json::json!([[SCOPE_BROWSER_CONTROL], [SCOPE_BROWSER_LAUNCH]])
+        );
+        assert_eq!(
+            serde_json::json!(oauth_mcp_security_scheme_scopes("control_computer")),
+            serde_json::json!([[SCOPE_COMPUTER_CONTROL], [SCOPE_COMPUTER_LAUNCH]])
+        );
+        assert_eq!(
+            serde_json::json!(oauth_mcp_security_scheme_scopes("save_computer_snapshot")),
+            serde_json::json!([[SCOPE_PROJECT_WRITE, SCOPE_COMPUTER_READ]])
+        );
+        assert_eq!(
+            serde_json::json!(oauth_mcp_security_scheme_scopes("definitely_not_a_tool")),
+            serde_json::Value::Null
+        );
+    }
 
     #[test]
     fn validate_scopes_rejects_unknown() {

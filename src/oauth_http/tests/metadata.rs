@@ -57,9 +57,9 @@ async fn oauth_protected_resource_metadata_fields() {
     assert_eq!(methods.len(), 1);
     assert_eq!(methods[0], "header");
 
-    assert!(
-        body.get("scopes_supported").is_none(),
-        "MCP resource metadata must let the registered client define its scope ceiling"
+    assert_eq!(
+        body["scopes_supported"],
+        serde_json::json!(oauth_discovery_scopes_supported())
     );
 
     // resource_name
@@ -252,7 +252,7 @@ async fn openid_configuration_not_exposed() {
 }
 
 #[tokio::test]
-async fn oauth_protected_resource_metadata_omits_scopes_supported() {
+async fn oauth_protected_resource_metadata_advertises_global_scopes() {
     let config = test_config(oauth2_enabled());
     let (_tmp, db) = test_db();
     let service = Service::new(build_router(config, db));
@@ -261,5 +261,42 @@ async fn oauth_protected_resource_metadata_omits_scopes_supported() {
         .await;
     assert_eq!(resp.status_code, Some(StatusCode::OK));
     let body: serde_json::Value = resp.take_json().await.unwrap();
-    assert!(body.get("scopes_supported").is_none());
+    assert_eq!(
+        body["scopes_supported"],
+        serde_json::json!(oauth_discovery_scopes_supported())
+    );
+}
+
+#[tokio::test]
+async fn project_share_discovery_endpoints_agree_on_bounded_all_scopes() {
+    let config = test_config(oauth2_enabled_project_share(TEST_PROJECT_SHARE_SESSION_ID));
+    let (_tmp, db) = test_db();
+    let service = Service::new(build_router(config, db));
+    let mut resource = TestClient::get("http://localhost/.well-known/oauth-protected-resource")
+        .send(&service)
+        .await;
+    let mut authorization =
+        TestClient::get("http://localhost/.well-known/oauth-authorization-server")
+            .send(&service)
+            .await;
+    assert_eq!(resource.status_code, Some(StatusCode::OK));
+    assert_eq!(authorization.status_code, Some(StatusCode::OK));
+    let resource: serde_json::Value = resource.take_json().await.unwrap();
+    let authorization: serde_json::Value = authorization.take_json().await.unwrap();
+    let mut expected = crate::auth::PROJECT_SHARE_OAUTH_SCOPES.to_vec();
+    expected.push(OAUTH_OFFLINE_ACCESS_SCOPE);
+    assert_eq!(resource["scopes_supported"], serde_json::json!(expected));
+    assert_eq!(
+        authorization["scopes_supported"],
+        resource["scopes_supported"]
+    );
+    for scope in [
+        "account:manage",
+        "runner:manage",
+        "computer:read",
+        "browser:read",
+        "ssh:local",
+    ] {
+        assert!(!expected.contains(&scope));
+    }
 }

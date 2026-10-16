@@ -77,18 +77,22 @@ mod query_token_tests {
     }
 }
 
-/// Build a `WWW-Authenticate: Bearer` challenge value that includes the
-/// protected resource metadata URL when OAuth2 is enabled. Returns `None`
-/// when OAuth2 is not configured or has no issuer.
-fn oauth2_bearer_challenge(config: &Config) -> Option<String> {
+/// Build the OAuth bearer challenge shared by HTTP and MCP metadata.
+pub(crate) fn oauth2_bearer_challenge(config: &Config, invalid_token: bool) -> Option<String> {
     if !config.oauth2.enabled {
         return None;
     }
     let issuer = config.oauth2.issuer.as_deref()?;
-    Some(format!(
+    let mut challenge = format!(
         "Bearer resource_metadata=\"{}/.well-known/oauth-protected-resource\"",
         issuer.trim_end_matches('/')
-    ))
+    );
+    if invalid_token {
+        challenge.push_str(
+            ", error=\"invalid_token\", error_description=\"Authentication is required\"",
+        );
+    }
+    Some(challenge)
 }
 
 pub(crate) fn oauth_insufficient_scope_body(description: impl Into<String>) -> serde_json::Value {
@@ -298,7 +302,9 @@ impl Handler for AuthMiddleware {
                     .await;
             let Some(context) = context else {
                 res.status_code(StatusCode::UNAUTHORIZED);
-                if let Some(challenge) = oauth2_bearer_challenge(&config) {
+                if let Some(challenge) =
+                    oauth2_bearer_challenge(&config, req.headers().contains_key("authorization"))
+                {
                     if let Ok(value) = salvo::http::HeaderValue::from_str(&challenge) {
                         res.headers_mut().insert("www-authenticate", value);
                     }
@@ -362,7 +368,7 @@ impl Handler for AuthMiddleware {
                     return;
                 }
                 res.status_code(StatusCode::UNAUTHORIZED);
-                if let Some(challenge) = oauth2_bearer_challenge(&config) {
+                if let Some(challenge) = oauth2_bearer_challenge(&config, false) {
                     if let Ok(val) = salvo::http::HeaderValue::from_str(&challenge) {
                         res.headers_mut().insert("www-authenticate", val);
                     }
@@ -487,7 +493,7 @@ impl Handler for AuthMiddleware {
                 }
                 // Unknown or managed-prefix-invalid token: reject.
                 res.status_code(StatusCode::UNAUTHORIZED);
-                if let Some(challenge) = oauth2_bearer_challenge(&config) {
+                if let Some(challenge) = oauth2_bearer_challenge(&config, true) {
                     if let Ok(val) = salvo::http::HeaderValue::from_str(&challenge) {
                         res.headers_mut().insert("www-authenticate", val);
                     }
@@ -504,7 +510,7 @@ impl Handler for AuthMiddleware {
                 };
                 res.status_code(status);
                 if status == StatusCode::UNAUTHORIZED {
-                    if let Some(challenge) = oauth2_bearer_challenge(&config) {
+                    if let Some(challenge) = oauth2_bearer_challenge(&config, true) {
                         if let Ok(val) = salvo::http::HeaderValue::from_str(&challenge) {
                             res.headers_mut().insert("www-authenticate", val);
                         }

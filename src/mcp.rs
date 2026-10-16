@@ -1421,8 +1421,14 @@ fn scope_forbidden(
     required_scope: Option<&'static str>,
     description: impl Into<String>,
 ) -> McpOutcome {
+    let mut body = crate::auth::scope_forbidden_body(auth, required_scope, description);
+    if body["error"] == "insufficient_scope" {
+        body["_meta"] = serde_json::json!({
+            "mcp/www_authenticate": [crate::auth::oauth_insufficient_scope_challenge(required_scope)],
+        });
+    }
     McpOutcome::Forbidden {
-        body: crate::auth::scope_forbidden_body(auth, required_scope, description),
+        body,
         required_scope,
     }
 }

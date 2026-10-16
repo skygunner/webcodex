@@ -132,6 +132,7 @@ class Fixture(Smoke):
         commands = [
             ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
              "-subj", "/CN=WebCodex disposable CA", "-addext", "basicConstraints=critical,CA:TRUE",
+             "-addext", "keyUsage=critical,keyCertSign,cRLSign",
              "-keyout", str(ca_key), "-out", str(ca)],
             ["openssl", "req", "-new", "-newkey", "rsa:2048", "-nodes", "-config", str(config),
              "-keyout", str(key), "-out", str(csr)],

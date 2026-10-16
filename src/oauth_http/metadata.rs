@@ -1,6 +1,18 @@
 use salvo::prelude::*;
 
-use super::{authorization_response_issuer, oauth_discovery_scopes_supported};
+use super::{
+    authorization_response_issuer, oauth_discovery_scopes_supported, OAUTH_OFFLINE_ACCESS_SCOPE,
+};
+
+fn advertised_scopes(config: &crate::Config) -> Vec<&'static str> {
+    if config.oauth2.project_share_grant_id.is_some() {
+        let mut scopes = crate::auth::PROJECT_SHARE_OAUTH_SCOPES.to_vec();
+        scopes.push(OAUTH_OFFLINE_ACCESS_SCOPE);
+        scopes
+    } else {
+        oauth_discovery_scopes_supported()
+    }
+}
 
 /// Return protected resource metadata (RFC 9728 §3.1).
 ///
@@ -32,6 +44,7 @@ pub(crate) async fn oauth_metadata(depot: &mut Depot, res: &mut Response) {
         "resource": resource,
         "authorization_servers": [issuer],
         "bearer_methods_supported": ["header"],
+        "scopes_supported": advertised_scopes(&config),
         "resource_name": "WebCodex",
     });
 
@@ -73,7 +86,7 @@ pub(crate) async fn oauth_authorization_server_metadata(depot: &mut Depot, res: 
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": ["client_secret_post"],
         "authorization_response_iss_parameter_supported": authorization_response_issuer(&config).is_some(),
-        "scopes_supported": oauth_discovery_scopes_supported(),
+        "scopes_supported": advertised_scopes(&config),
     });
 
     res.render(Json(metadata));

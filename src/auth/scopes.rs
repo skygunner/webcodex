@@ -135,6 +135,19 @@ pub(crate) fn oauth_scope_policy_for_runtime_tool(tool_name: &str) -> OAuthToolS
         .unwrap_or(OAuthToolScopePolicy::Unknown)
 }
 
+/// Project a runtime tool's existing authority policy onto the MCP
+/// `securitySchemes[].scopes` list. `RequireAll`/`RequireAny` expose their real
+/// candidate scopes; `Unknown` exposes none so metadata can never widen access.
+pub(crate) fn oauth_mcp_security_scheme_scopes(tool_name: &str) -> Option<Vec<&'static str>> {
+    match oauth_scope_policy_for_runtime_tool(tool_name) {
+        OAuthToolScopePolicy::Require(scope) => Some(vec![scope]),
+        OAuthToolScopePolicy::RequireAny(scopes) | OAuthToolScopePolicy::RequireAll(scopes) => {
+            Some(scopes.to_vec())
+        }
+        OAuthToolScopePolicy::Unknown => None,
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn required_oauth_scope_for_path_method(
     method: &str,

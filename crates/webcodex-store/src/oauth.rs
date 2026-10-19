@@ -220,6 +220,23 @@ impl Database {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Active clients bound to this ingress, in the same order as client management.
+    pub fn list_oauth_clients_for_public_ingress(
+        &self,
+        entry_id: &str,
+    ) -> anyhow::Result<Vec<OAuthClientRecord>> {
+        let conn = self.lock_connection(crate::StoreDomain::OAuth);
+        let mut stmt = conn.prepare(
+            "SELECT c.id, c.client_id, c.client_secret_hash, c.name, c.owner_user_id,
+                    c.owner_project_grant_id, c.owner_shared_key_hash, c.redirect_uris,
+                    c.allowed_scopes, c.created_at, c.revoked_at
+             FROM oauth_clients c JOIN oauth_public_ingress_clients b ON b.client_id=c.client_id
+             WHERE b.entry_id=?1 AND c.revoked_at IS NULL ORDER BY c.created_at DESC",
+        )?;
+        let rows = stmt.query_map([entry_id], row_to_oauth_client)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     /// Replace the redirect URI set for one active OAuth client without touching
     /// client secrets, access tokens, refresh tokens, or authorization codes.
     /// The expected value is a compare-and-swap guard for concurrent management.

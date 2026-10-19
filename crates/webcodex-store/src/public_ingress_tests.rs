@@ -1117,3 +1117,69 @@ fn public_ingress_oauth_client_replacement_is_atomic_and_fenced() {
         .revoked_at
         .is_none());
 }
+
+#[test]
+fn ingress_client_lookup_excludes_revoked_unbound_and_other_entries() {
+    let fixture = Fixture::new(PublicIngressMode::Named);
+    let first = fixture.activate();
+    let mut other = fixture.client.clone();
+    other.id = "other-row".into();
+    other.client_id = "other-client".into();
+    fixture.db.insert_oauth_client(&other).unwrap();
+    assert_eq!(
+        fixture
+            .db
+            .list_oauth_clients_for_public_ingress(&first.entry_id)
+            .unwrap()
+            .len(),
+        1
+    );
+    let mut spec = fixture.spec.clone();
+    spec.entry_id = "other-entry".into();
+    spec.profile_id = "other-profile".into();
+    spec.origin = "https://other.example".into();
+    let second = fixture
+        .db
+        .prepare_public_ingress_entry(&spec, None)
+        .unwrap()
+        .unwrap();
+    fixture
+        .db
+        .set_public_ingress_admission(&second.fence(), true)
+        .unwrap();
+    fixture
+        .db
+        .bind_oauth_client_to_public_ingress(&other.client_id, &second.fence())
+        .unwrap();
+    let clients = fixture
+        .db
+        .list_oauth_clients_for_public_ingress(&first.entry_id)
+        .unwrap();
+    assert_eq!(clients.len(), 1);
+    assert_eq!(clients[0].client_id, fixture.client.client_id);
+    assert_eq!(clients[0].redirect_uris, fixture.client.redirect_uris);
+    assert_eq!(clients[0].allowed_scopes, fixture.client.allowed_scopes);
+    assert_eq!(clients[0].owner_user_id, fixture.client.owner_user_id);
+    fixture
+        .db
+        .revoke_oauth_client(&fixture.client.id, fixture.now)
+        .unwrap();
+    assert!(fixture
+        .db
+        .list_oauth_clients_for_public_ingress(&first.entry_id)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        fixture
+            .db
+            .list_oauth_clients_for_public_ingress(&second.entry_id)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(fixture
+        .db
+        .list_oauth_clients_for_public_ingress("missing")
+        .unwrap()
+        .is_empty());
+}

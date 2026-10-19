@@ -225,6 +225,7 @@ fn oauth_handoff_is_once_and_replacement_revokes_previous_client() {
         .db
         .set_public_ingress_admission(&entry.fence(), true)
         .unwrap());
+    assert!(!control.status("quick").unwrap().oauth_configured);
     let first = control
         .provision_oauth(
             "quick",
@@ -235,6 +236,7 @@ fn oauth_handoff_is_once_and_replacement_revokes_previous_client() {
         )
         .unwrap();
     assert!(first["client_secret"].as_str().is_some());
+    assert!(control.status("quick").unwrap().oauth_configured);
     let repeated = control
         .provision_oauth(
             "quick",
@@ -265,11 +267,28 @@ fn oauth_handoff_is_once_and_replacement_revokes_previous_client() {
         )
         .unwrap();
     assert_ne!(replacement["client_id"], first["client_id"]);
+    assert!(control.status("quick").unwrap().oauth_configured);
+    assert_eq!(
+        control
+            .db
+            .list_oauth_clients_for_public_ingress(&entry.entry_id)
+            .unwrap()
+            .len(),
+        1
+    );
     assert!(control
         .db
         .get_oauth_client_by_client_id(first["client_id"].as_str().unwrap())
         .unwrap()
         .is_none());
+    control
+        .db
+        .revoke_oauth_client_by_client_id(
+            replacement["client_id"].as_str().unwrap(),
+            chrono::Utc::now().timestamp(),
+        )
+        .unwrap();
+    assert!(!control.status("quick").unwrap().oauth_configured);
     assert!(control
         .provision_oauth(
             "quick",

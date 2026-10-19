@@ -161,19 +161,9 @@ impl CloudflareControl {
             .get_public_ingress_entry_for_profile(id)
             .map_err(|_| "ingress_store_unavailable")?;
         let oauth_configured = entry.as_ref().is_some_and(|entry| {
-            self.db.list_oauth_clients().is_ok_and(|clients| {
-                clients
-                    .iter()
-                    .filter(|client| client.revoked_at.is_none())
-                    .any(|client| {
-                        self.db
-                            .oauth_client_public_ingress_entry_id(&client.client_id)
-                            .ok()
-                            .flatten()
-                            .as_deref()
-                            == Some(&entry.entry_id)
-                    })
-            })
+            self.db
+                .list_oauth_clients_for_public_ingress(&entry.entry_id)
+                .is_ok_and(|clients| !clients.is_empty())
         });
         let observed_authorization = entry.as_ref().is_some_and(|entry| {
             self.db
@@ -959,20 +949,9 @@ impl CloudflareControl {
         }
         let clients = self
             .db
-            .list_oauth_clients()
+            .list_oauth_clients_for_public_ingress(&entry.entry_id)
             .map_err(|_| "ingress_store_unavailable")?;
-        for client in clients
-            .iter()
-            .filter(|client| client.revoked_at.is_none())
-            .filter(|client| {
-                self.db
-                    .oauth_client_public_ingress_entry_id(&client.client_id)
-                    .ok()
-                    .flatten()
-                    .as_deref()
-                    == Some(&entry.entry_id)
-            })
-        {
+        for client in &clients {
             if !replace {
                 if client.redirect_uris != redirect_uri || client.allowed_scopes != scopes.join(" ")
                 {

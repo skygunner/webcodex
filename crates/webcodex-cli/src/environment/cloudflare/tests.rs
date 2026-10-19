@@ -196,16 +196,70 @@ fn oauth_replacement_requires_explicit_command_scoped_opt_in() {
     }
 }
 
+async fn read_control_request(stream: &mut (impl tokio::io::AsyncRead + Unpin)) -> Vec<u8> {
+    use tokio::io::AsyncReadExt;
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            assert!(request.len() < 4096, "control request too large");
+            request.push(stream.read_u8().await.expect("incomplete control headers"));
+        }
+        let body_len = std::str::from_utf8(&request)
+            .unwrap()
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+            .map(|(_, value)| value.trim().parse::<usize>().unwrap())
+            .unwrap_or(0);
+        assert!(
+            body_len <= 4096 - request.len(),
+            "control request too large"
+        );
+        let header_len = request.len();
+        request.resize(header_len + body_len, 0);
+        stream
+            .read_exact(&mut request[header_len..])
+            .await
+            .expect("incomplete control body");
+        request
+    })
+    .await
+    .expect("control request timed out")
+}
+
+#[tokio::test]
+async fn control_fixture_waits_for_fragmented_headers_and_body() {
+    use tokio::io::AsyncWriteExt;
+    let (mut client, mut server) = tokio::io::duplex(128);
+    client
+        .write_all(b"POST / HTTP/1.1\r\nContent-Len")
+        .await
+        .unwrap();
+    let mut read = Box::pin(read_control_request(&mut server));
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(10), &mut read)
+            .await
+            .is_err()
+    );
+    client.write_all(b"gth: 4\r\n\r\nab").await.unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(10), &mut read)
+            .await
+            .is_err()
+    );
+    client.write_all(b"cd").await.unwrap();
+    assert!(read.await.ends_with(b"abcd"));
+}
+
 #[tokio::test]
 async fn rejected_control_never_echoes_response_credentials_or_follows_redirect() {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncWriteExt;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.unwrap();
-        let mut request = vec![0; 4096];
-        let size = socket.read(&mut request).await.unwrap();
-        let request = String::from_utf8_lossy(&request[..size]);
+        let request = read_control_request(&mut socket).await;
+        let request = String::from_utf8_lossy(&request);
         assert!(request.contains("POST /api/connections/cloudflare"));
         assert!(request
             .to_ascii_lowercase()
@@ -226,7 +280,7 @@ async fn rejected_control_never_echoes_response_credentials_or_follows_redirect(
 
 #[tokio::test]
 async fn control_restart_hint_requires_exact_bounded_unapplied_ingress_response() {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncWriteExt;
     let restart = json!({
         "error": "cloudflare_ingress_not_applied",
         "next_action": "restart_server",
@@ -246,15 +300,7 @@ async fn control_restart_hint_requires_exact_bounded_unapplied_ingress_response(
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                let mut request = Vec::new();
-                while !request.ends_with(b"\r\n\r\n") {
-                    assert!(request.len() < 4096, "control request headers too large");
-                    request.push(socket.read_u8().await.expect("incomplete control headers"));
-                }
-            })
-            .await
-            .expect("control request headers timed out");
+            read_control_request(&mut socket).await;
             socket.write_all(format!(
                 "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len(),

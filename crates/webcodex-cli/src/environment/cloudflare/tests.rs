@@ -246,8 +246,15 @@ async fn control_restart_hint_requires_exact_bounded_unapplied_ingress_response(
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let mut request = [0; 4096];
-            socket.read(&mut request).await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    assert!(request.len() < 4096, "control request headers too large");
+                    request.push(socket.read_u8().await.expect("incomplete control headers"));
+                }
+            })
+            .await
+            .expect("control request headers timed out");
             socket.write_all(format!(
                 "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len(),

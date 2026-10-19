@@ -289,6 +289,30 @@ async fn live_runner_prevents_discovery_and_auth_exit_does_not_restart() {
     assert!(runtime.wsl2_startup.retry_at.is_none());
 }
 
+async fn read_probe_headers(stream: &mut (impl tokio::io::AsyncRead + Unpin)) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            assert!(request.len() < 4096, "probe request headers too large");
+            request.push(stream.read_u8().await.expect("incomplete probe headers"));
+        }
+    })
+    .await
+    .expect("probe request headers timed out");
+}
+
+#[tokio::test]
+async fn probe_headers_wait_for_fragmented_request() {
+    let (mut client, mut server) = tokio::io::duplex(128);
+    client.write_all(b"GET / HTTP/1.1\r\n").await.unwrap();
+    let mut read = Box::pin(read_probe_headers(&mut server));
+    assert!(tokio::time::timeout(Duration::from_millis(10), &mut read)
+        .await
+        .is_err());
+    client.write_all(b"Host: localhost\r\n\r\n").await.unwrap();
+    read.await;
+}
+
 #[tokio::test]
 async fn server_auth_status_proves_only_reachability_and_redirects_are_rejected() {
     for status in [200, 401, 403, 302, 500] {
@@ -296,8 +320,7 @@ async fn server_auth_status_proves_only_reachability_and_redirects_are_rejected(
         let url = format!("http://{}", listener.local_addr().unwrap());
         let task = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
-            let mut request = [0; 4096];
-            stream.read(&mut request).await.unwrap();
+            read_probe_headers(&mut stream).await;
             stream.write_all(format!("HTTP/1.1 {status} Test\r\nContent-Length: 0\r\nLocation: http://127.0.0.1:1\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
         });
         assert_eq!(probe(&url).await.is_ok(), matches!(status, 200 | 401 | 403));

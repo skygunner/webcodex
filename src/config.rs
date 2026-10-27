@@ -457,7 +457,16 @@ pub struct OAuth2Config {
     /// Ephemeral share-session fence. A new `webcodex share --auth oauth`
     /// process uses a new value, invalidating every older project-share grant.
     pub project_share_session_id: Option<String>,
+    /// Parent directories this project share may admit new Projects from, on
+    /// demand, for its own project-share OAuth subjects. Empty by default:
+    /// without an explicit grant the exact-path project fence stays in force.
+    pub project_share_roots: Vec<PathBuf>,
 }
+
+/// Upper bound on parent-root grants per share. Keeps the per-token attach and
+/// the path fence bounded; one share with eight parent roots is already far
+/// beyond any real working setup.
+pub const MAX_PROJECT_SHARE_ROOTS: usize = 8;
 
 impl fmt::Debug for OAuth2Config {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -488,6 +497,7 @@ impl fmt::Debug for OAuth2Config {
                 "project_share_session_id",
                 &self.project_share_session_id.as_ref().map(|_| "[REDACTED]"),
             )
+            .field("project_share_roots_count", &self.project_share_roots.len())
             .finish()
     }
 }
@@ -506,6 +516,7 @@ impl Default for OAuth2Config {
             trust_loopback_api_token_mcp_file_import: false,
             project_share_grant_id: None,
             project_share_session_id: None,
+            project_share_roots: Vec::new(),
         }
     }
 }
@@ -579,6 +590,15 @@ impl OAuth2Config {
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
+        let project_share_roots = std::env::var("WEBCODEX_OAUTH2_PROJECT_SHARE_ROOTS")
+            .ok()
+            .map(|value| {
+                std::env::split_paths(&value)
+                    .filter(|path| !path.as_os_str().is_empty())
+                    .take(MAX_PROJECT_SHARE_ROOTS)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         Self {
             issuer,
             enabled,
@@ -591,6 +611,7 @@ impl OAuth2Config {
             trust_loopback_api_token_mcp_file_import,
             project_share_grant_id,
             project_share_session_id,
+            project_share_roots,
         }
     }
 }

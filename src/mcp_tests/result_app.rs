@@ -1725,6 +1725,8 @@ fn result_app_auth() -> crate::auth::AuthContext {
         allowed_client_id: None,
         shared_key_hash: None,
         project_grant_id: None,
+
+        project_root_scopes: Vec::new(),
     }
 }
 

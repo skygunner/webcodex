@@ -873,6 +873,8 @@ mod tests {
             allowed_client_id: None,
             shared_key_hash: None,
             project_grant_id: None,
+
+            project_root_scopes: Vec::new(),
         }
     }
 

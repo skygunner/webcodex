@@ -527,6 +527,8 @@ async fn runtime_conversation_import_host_ref_saves_pptx_through_artifact_path_b
         allowed_client_id: None,
         shared_key_hash: None,
         project_grant_id: None,
+
+        project_root_scopes: Vec::new(),
     };
     let outcome = tokio::time::timeout(
         Duration::from_secs(5),
@@ -607,6 +609,8 @@ async fn runtime_conversation_import_rejects_untrusted_api_transport() {
         allowed_client_id: None,
         shared_key_hash: None,
         project_grant_id: None,
+
+        project_root_scopes: Vec::new(),
     };
     let call = ToolCall::from_tool_name(
         "import_host_files",

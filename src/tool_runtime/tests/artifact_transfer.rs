@@ -43,6 +43,8 @@ fn transfer_auth(username: &str) -> AuthContext {
         allowed_client_id: Some("transfer-test-client".to_string()),
         shared_key_hash: None,
         project_grant_id: None,
+
+        project_root_scopes: Vec::new(),
     }
 }
 

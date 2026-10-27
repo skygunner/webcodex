@@ -1,5 +1,7 @@
 //! Depot-injected authentication identity and credential classification.
 
+use std::path::PathBuf;
+
 use crate::auth::scopes::SCOPE_ADMIN;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +47,11 @@ pub struct AuthContext {
     pub shared_key_hash: Option<String>,
     /// Stable, non-secret identity of the configured project credential.
     pub project_grant_id: Option<String>,
+    /// Canonical parent directories an explicitly authorized project-share
+    /// subject may admit new Projects from. Populated only for OAuth
+    /// project-share subjects whose share was started with `--project-roots`;
+    /// every other credential class keeps this empty.
+    pub project_root_scopes: Vec<PathBuf>,
 }
 
 impl AuthContext {
@@ -61,6 +68,7 @@ impl AuthContext {
             allowed_client_id: None,
             shared_key_hash: None,
             project_grant_id: None,
+            project_root_scopes: Vec::new(),
         }
     }
 

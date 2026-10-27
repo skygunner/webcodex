@@ -16,6 +16,8 @@ fn managed_oauth_auth_context(
         allowed_client_id: Some("oauth-client".to_string()),
         shared_key_hash: shared_key_hash.map(str::to_string),
         project_grant_id: None,
+
+        project_root_scopes: Vec::new(),
     }
 }
 

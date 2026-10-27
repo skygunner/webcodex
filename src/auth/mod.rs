@@ -67,9 +67,9 @@ pub(crate) use project_credential::{
 };
 pub(crate) use project_share::{
     configured_project_share_subject, generate_project_share_session_id,
-    parse_project_share_subject_id, project_share_scopes_are_bounded,
-    validate_project_share_grant_subject, PROJECT_SHARE_OAUTH_SCOPES,
-    PROJECT_SHARE_OAUTH_SUBJECT_KIND, PROJECT_SHARE_OAUTH_TOKEN_KIND,
+    parse_project_share_subject_id, project_share_root_scopes_from_config,
+    project_share_scopes_are_bounded, validate_project_share_grant_subject,
+    PROJECT_SHARE_OAUTH_SCOPES, PROJECT_SHARE_OAUTH_SUBJECT_KIND, PROJECT_SHARE_OAUTH_TOKEN_KIND,
 };
 
 pub use scopes::{

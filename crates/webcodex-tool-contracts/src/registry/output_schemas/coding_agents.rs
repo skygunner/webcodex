@@ -1,7 +1,7 @@
 use serde_json::{json, Value};
 use webcodex_core::coding_agent::{
-    CodingAgentEventKind, CodingAgentExecutionState, CodingAgentProviderSummary,
-    CodingAgentRunState,
+    CodingAgentEventKind, CodingAgentExecutionState, CodingAgentLiveAcpDiagnostic,
+    CodingAgentProviderSummary, CodingAgentRunState, CODING_AGENT_MAX_ENV_MAPPINGS,
 };
 
 use crate::schema_generation::typed_host_schema;
@@ -140,6 +140,46 @@ pub(super) fn output_schema_for_tool(name: &str) -> Option<Value> {
                     "True when cancellation was requested for a nonterminal Run.",
                 ),
             ));
+            Some(wrapped_output_schema(fields))
+        }
+        "diagnose_coding_agent" => {
+            // No Run exists for a diagnostic, so common_run_fields does not
+            // apply: the projection is the bounded diagnostic itself.
+            let fields = vec![
+                (
+                    "project",
+                    schema_type(
+                        "string",
+                        "Exact registered runtime Project id the diagnostic was authorized against.",
+                    ),
+                ),
+                (
+                    "provider_id",
+                    schema_type(
+                        "string",
+                        "Logical operator-configured provider id that was diagnosed.",
+                    ),
+                ),
+                (
+                    "env_presence",
+                    json!({
+                        "type": "object",
+                        "description": "Declared env_from_env destination names mapped to presence booleans read from the running Runner process. Never values and never unrelated environment names.",
+                        "additionalProperties": {"type": "boolean"},
+                        "maxProperties": CODING_AGENT_MAX_ENV_MAPPINGS
+                    }),
+                ),
+                (
+                    "live_acp",
+                    json!({
+                        "description": "Present only when the request explicitly authorized the live ACP probe; otherwise absent.",
+                        "anyOf": [
+                            typed_host_schema::<CodingAgentLiveAcpDiagnostic>(),
+                            {"type": "null"}
+                        ]
+                    }),
+                ),
+            ];
             Some(wrapped_output_schema(fields))
         }
         _ => None,

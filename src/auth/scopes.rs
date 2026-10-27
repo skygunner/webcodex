@@ -800,6 +800,10 @@ mod tests {
                 "cancel_coding_agent",
                 OAuthToolScopePolicy::Require(SCOPE_CODING_AGENT_RUN),
             ),
+            (
+                "diagnose_coding_agent",
+                OAuthToolScopePolicy::Require(SCOPE_CODING_AGENT_RUN),
+            ),
         ] {
             assert_eq!(oauth_scope_policy_for_runtime_tool(tool), policy, "{tool}");
         }

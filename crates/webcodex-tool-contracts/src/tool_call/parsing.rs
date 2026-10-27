@@ -482,6 +482,7 @@ impl ToolCall {
             Self::CodingAgentStart { .. } => "start_coding_agent",
             Self::CodingAgentObserve { .. } => "observe_coding_agent",
             Self::CodingAgentCancel { .. } => "cancel_coding_agent",
+            Self::CodingAgentDiagnose { .. } => "diagnose_coding_agent",
             Self::RunScript { .. } => "run_script",
             Self::RunShell { .. } => "run_shell",
             Self::OpenSessionShell { .. } => "open_session_shell",
@@ -807,6 +808,7 @@ impl ToolCall {
             Self::RunProcess { project, .. }
             | Self::RunDetachedProcess { project, .. }
             | Self::CodingAgentStart { project, .. }
+            | Self::CodingAgentDiagnose { project, .. }
             | Self::StartAgentTaskCodingRun { project, .. }
             | Self::RunScript { project, .. }
             | Self::RunShell { project, .. }

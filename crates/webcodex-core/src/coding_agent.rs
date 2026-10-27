@@ -12,6 +12,10 @@ use std::collections::BTreeMap;
 pub const CODING_AGENT_MAX_PROVIDERS: usize = 8;
 pub const CODING_AGENT_MAX_PROVIDER_ID_BYTES: usize = 64;
 pub const CODING_AGENT_MAX_PROVIDER_NAME_BYTES: usize = 128;
+/// Bound for one provider's declared `env_from_env` mappings; the Runner's
+/// ACP config validation shares this constant, so the Diagnose presence map
+/// and its output schema can never disagree with what was admitted.
+pub const CODING_AGENT_MAX_ENV_MAPPINGS: usize = 64;
 pub const CODING_AGENT_MAX_RUN_ID_BYTES: usize = 96;
 pub const CODING_AGENT_MAX_INTENT_FINGERPRINT_BYTES: usize = 96;
 pub const CODING_AGENT_MAX_PROJECT_ID_BYTES: usize = 512;

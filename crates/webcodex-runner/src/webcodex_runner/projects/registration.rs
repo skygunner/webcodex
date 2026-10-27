@@ -749,15 +749,20 @@ pub(crate) fn handle_resolve_or_register_project_operation(
     if let Some(granted_roots) = &granted_roots {
         // Share-grant admission is judged on the Runner's own canonical
         // resolution of the committed target, component-wise against the
-        // Server-granted canonical roots. This is the last gate before any
-        // resolution outcome below: neither an existing registration nor a
-        // fresh registration may be resolved outside the grant, and the
-        // Runner filesystem allowed_roots above is a coarser boundary that
-        // never substitutes for it.
-        if !granted_roots
-            .iter()
-            .any(|root| canonical_path.starts_with(root))
-        {
+        // Server-granted roots. Both sides are compared in canonical form so a
+        // text difference (an unresolved component, or a Windows verbatim
+        // namespace prefix) cannot decide admission; a root this Runner cannot
+        // resolve stays denied.
+        // This is the last gate before any resolution outcome below: neither an
+        // existing registration nor a fresh registration may be resolved outside
+        // the grant, and the Runner filesystem allowed_roots above is a coarser
+        // boundary that never substitutes for it.
+        let admitted = granted_roots.iter().any(|root| {
+            canonicalize_existing(root).is_ok_and(|root| {
+                webcodex_runner_config::paths::path_is_within(&canonical_path, &root)
+            })
+        });
+        if !admitted {
             return structured_project_error_cmd(
                 start,
                 "project_path_outside_granted_roots",

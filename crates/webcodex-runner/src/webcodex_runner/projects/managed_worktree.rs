@@ -700,9 +700,15 @@ pub(crate) fn handle_prepare_managed_worktree_operation(
         // Share-grant admission is judged on the Runner's own canonical
         // resolution of the source before any git invocation or registry
         // write: a source that resolved inside the grant at Server-fence time
-        // but elsewhere here fails closed. The derived worktree destination is
+        // but elsewhere here fails closed. Roots are compared in canonical form
+        // too, so unresolved text or a Windows verbatim prefix cannot decide it;
+        // an unresolvable root stays denied. The derived worktree destination is
         // not part of this check; allowed_roots above still governs it.
-        if !granted_roots.iter().any(|root| source.starts_with(root)) {
+        let admitted = granted_roots.iter().any(|root| {
+            canonicalize_existing(root)
+                .is_ok_and(|root| webcodex_runner_config::paths::path_is_within(&source, &root))
+        });
+        if !admitted {
             return managed_worktree_error(
                 start,
                 "project_path_outside_granted_roots",

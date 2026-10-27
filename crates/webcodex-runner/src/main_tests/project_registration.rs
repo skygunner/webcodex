@@ -843,6 +843,47 @@ fn resolve_or_register_project_accepts_target_inside_granted_roots_idempotently(
 }
 
 #[test]
+fn resolve_or_register_project_accepts_unresolved_granted_root() {
+    let tmp = tempfile::tempdir().unwrap();
+    let granted = tmp.path().join("granted");
+    let inner = granted.join("inner");
+    std::fs::create_dir_all(&inner).unwrap();
+    let project_registry_dir = tmp.path().join("project-registry");
+    std::fs::create_dir(&project_registry_dir).unwrap();
+    let policy = project_policy(tmp.path());
+
+    // The Server canonicalizes granted roots, but admission must not depend on
+    // that text form: the Runner resolves each root itself before comparing.
+    let unresolved_granted = granted.join("..").join("granted");
+    let resolved = project_ok(handle_resolve_or_register_project(
+        &policy,
+        &project_registry_dir,
+        &project_request(
+            "resolve_or_register_project",
+            serde_json::json!({
+                "path": inner.to_string_lossy(),
+                "project_root_scopes": [unresolved_granted.to_string_lossy()],
+            }),
+        ),
+    ));
+    assert_eq!(resolved["outcome"], "auto_registered");
+
+    // A root this filesystem cannot resolve stays denied.
+    let missing = project_err(handle_resolve_or_register_project(
+        &policy,
+        &project_registry_dir,
+        &project_request(
+            "resolve_or_register_project",
+            serde_json::json!({
+                "path": inner.to_string_lossy(),
+                "project_root_scopes": [tmp.path().join("missing-root").to_string_lossy()],
+            }),
+        ),
+    ));
+    assert_eq!(missing, "project_path_outside_granted_roots");
+}
+
+#[test]
 fn resolve_or_register_project_rejects_malformed_grant_scopes_fail_closed() {
     let tmp = tempfile::tempdir().unwrap();
     let granted = tmp.path().join("granted");

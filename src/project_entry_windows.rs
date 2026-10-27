@@ -89,6 +89,34 @@ pub(super) fn write_new_private_file(path: &Path, content: &[u8]) -> Result<(), 
     result
 }
 
+/// Windows half of [`super::setup_service::replace_private_file`]: create the
+/// replacement segment under the target's name plus a fresh suffix, protect it
+/// with the same current-user DACL machinery, sync it, and rename it over the
+/// target. The rename replaces the target name itself (including a planted
+/// reparse point) instead of writing through it.
+pub(super) fn write_replace_private_segment(
+    temporary: &Path,
+    content: &[u8],
+) -> Result<(), String> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .access_mode(GENERIC_WRITE | READ_CONTROL | WRITE_DAC)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(temporary)
+        .map_err(|_| "could not create the private state replacement file".to_string())?;
+    let result = (|| {
+        reject_reparse(&file, "private Windows replacement file")?;
+        protect_handle(file.as_raw_handle() as _, false)?;
+        file.write_all(content)
+            .map_err(|_| "could not write private Windows state".to_string())?;
+        file.sync_all()
+            .map_err(|_| "could not sync private Windows state".to_string())
+    })();
+    drop(file);
+    result
+}
+
 fn reject_reparse(file: &File, label: &str) -> Result<(), String> {
     let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
     if unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) } == 0 {

@@ -674,6 +674,9 @@ pub(crate) fn render_error(error: &ProductError, json: bool) -> String {
 pub(super) struct ProjectShareOAuthRuntimeOptions {
     pub(super) project_grant_id: String,
     pub(super) session_id: String,
+    /// Canonical parent-root grant handed to the spawned Server through
+    /// `WEBCODEX_OAUTH2_PROJECT_SHARE_ROOTS`. Empty keeps the exact-path fence.
+    pub(super) project_roots: Vec<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -859,12 +862,27 @@ pub(super) async fn start_local_runtime(
                 oauth.project_grant_id,
             )
             .env("WEBCODEX_OAUTH2_PROJECT_SHARE_SESSION_ID", oauth.session_id);
+        if oauth.project_roots.is_empty() {
+            server_command.env_remove("WEBCODEX_OAUTH2_PROJECT_SHARE_ROOTS");
+        } else {
+            // One canonical path per share; the OS path-list separator keeps
+            // multi-root grants unambiguous on every supported platform.
+            let roots = std::env::join_paths(&oauth.project_roots).map_err(|error| {
+                ProductError::new(
+                    "project_registration_invalid",
+                    format!("could not encode project share roots: {error}"),
+                    Some("Use parent directories without the platform path separator."),
+                )
+            })?;
+            server_command.env("WEBCODEX_OAUTH2_PROJECT_SHARE_ROOTS", roots);
+        }
     } else {
         server_command
             .env("WEBCODEX_OAUTH2_ENABLED", "false")
             .env_remove("WEBCODEX_OAUTH2_ISSUER")
             .env_remove("WEBCODEX_OAUTH2_PROJECT_SHARE_GRANT_ID")
-            .env_remove("WEBCODEX_OAUTH2_PROJECT_SHARE_SESSION_ID");
+            .env_remove("WEBCODEX_OAUTH2_PROJECT_SHARE_SESSION_ID")
+            .env_remove("WEBCODEX_OAUTH2_PROJECT_SHARE_ROOTS");
     }
     configure_console_assets_environment(&mut server_command, console_assets_dir.as_deref());
     let mut server = server_command.spawn().map_err(|_| {

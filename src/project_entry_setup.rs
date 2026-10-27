@@ -1188,3 +1188,100 @@ pub(super) fn write_new_private(path: &Path, content: &[u8]) -> Result<(), Produ
         })
     }
 }
+
+/// Atomically create or replace an updatable private state file.
+///
+/// Unlike [`write_new_private`], which deliberately refuses to touch an
+/// existing file, this is for state a later share launch must be able to
+/// update or clear in place (currently the project-share parent-root grant).
+/// The replacement file is created fresh in the SAME protected directory as
+/// the target, fully written and synced, and then renamed over the target, so
+/// a failure never leaves a half-written configuration and never destroys the
+/// previous value. Renaming replaces the target name itself: a symlink planted
+/// at the target path is replaced rather than written through, and the
+/// replacement file never inherits a broad pre-existing permission.
+pub(super) fn replace_private_file(path: &Path, content: &[u8]) -> Result<(), ProductError> {
+    let Some(parent) = path.parent() else {
+        return Err(ProductError::new(
+            "project_registration_invalid",
+            "WebCodex private state path has no parent directory",
+            Some("Check the project state location, then retry."),
+        ));
+    };
+    create_private_dir(parent)?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("state");
+    let temporary = parent.join(format!("{file_name}.replace-{}", Uuid::new_v4().simple()));
+    let write_result = (|| -> Result<(), ProductError> {
+        #[cfg(windows)]
+        {
+            super::windows_private_state::write_replace_private_segment(&temporary, content)
+                .map_err(|message| {
+                    ProductError::new(
+                        "project_registration_invalid",
+                        message,
+                        Some("Check local filesystem permissions and reparse points, then retry."),
+                    )
+                })
+        }
+        #[cfg(not(windows))]
+        {
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(&temporary).map_err(|_| {
+                ProductError::new(
+                    "project_registration_invalid",
+                    "WebCodex could not create the private state replacement file",
+                    Some("Check local filesystem permissions, then retry."),
+                )
+            })?;
+            file.write_all(content).map_err(|_| {
+                ProductError::new(
+                    "project_registration_invalid",
+                    "WebCodex could not write the private state replacement file",
+                    Some("Check local filesystem permissions, then retry."),
+                )
+            })?;
+            file.sync_all().map_err(|_| {
+                ProductError::new(
+                    "project_registration_invalid",
+                    "WebCodex could not sync the private state replacement file",
+                    Some("Check local filesystem permissions, then retry."),
+                )
+            })
+        }
+    })();
+    if let Err(error) = write_result {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error);
+    }
+    std::fs::rename(&temporary, path).map_err(|error| {
+        let _ = std::fs::remove_file(&temporary);
+        ProductError::new(
+            "project_registration_invalid",
+            format!("WebCodex could not replace the private state file: {error}"),
+            Some("Check local filesystem permissions, then retry."),
+        )
+    })
+}
+
+/// Remove an updatable private state file. A missing file is already the
+/// cleared state, so removal is idempotent by construction.
+pub(super) fn remove_private_state_file(path: &Path) -> Result<(), ProductError> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(ProductError::new(
+            "project_registration_invalid",
+            format!("WebCodex could not remove the private state file: {error}"),
+            Some("Check local filesystem permissions, then retry."),
+        )),
+    }
+}

@@ -1948,6 +1948,8 @@ impl ToolRuntime {
                     "stderr_lines": next_stderr_line.saturating_sub(1),
                     "stdout_returned_lines": wait.stdout_returned_lines,
                     "stderr_returned_lines": wait.stderr_returned_lines,
+                    "stdout_returned_bytes": stdout.len(),
+                    "stderr_returned_bytes": stderr.len(),
                     "stdout_truncated": wait.stdout_truncated,
                     "stderr_truncated": wait.stderr_truncated,
                     "stdout_retained_from_line": job.stdout_retained_from_line,

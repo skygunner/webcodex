@@ -49,6 +49,7 @@ pub(crate) struct ShareCommandOptions {
     pub(crate) tunnel: TunnelProvider,
     pub(crate) auth: ShareAuth,
     pub(crate) oauth_redirect_uri: Option<String>,
+    pub(crate) oauth_persist_on_restart: bool,
     pub(crate) public_url: Option<String>,
     pub(crate) copy_url: bool,
     pub(crate) stop_on_stdin_eof: bool,
@@ -58,6 +59,7 @@ pub(crate) fn parse_share_options(args: &[String]) -> Result<ShareCommandOptions
     let mut tunnel = TunnelProvider::CloudflareQuick;
     let mut auth = ShareAuth::Bearer;
     let mut oauth_redirect_uri = None;
+    let mut oauth_persist_on_restart = false;
     let mut public_url = None;
     let mut copy_url = true;
     let mut stop_on_stdin_eof = false;
@@ -121,6 +123,7 @@ pub(crate) fn parse_share_options(args: &[String]) -> Result<ShareCommandOptions
                     return Err("--public-url may be specified only once".to_string());
                 }
             }
+            "--oauth-persist-on-restart" => oauth_persist_on_restart = true,
             "--no-copy-url" => copy_url = false,
             "--stop-on-stdin-eof" => stop_on_stdin_eof = true,
             flag => project_args.push(flag.to_string()),
@@ -145,6 +148,9 @@ pub(crate) fn parse_share_options(args: &[String]) -> Result<ShareCommandOptions
     if let Some(redirect_uri) = oauth_redirect_uri.as_deref() {
         crate::oauth_http::validate_redirect_uri(redirect_uri)?;
     }
+    if oauth_persist_on_restart && auth != ShareAuth::OAuth {
+        return Err("--oauth-persist-on-restart requires --auth oauth".to_string());
+    }
     let project = parse_options(&project_args, "share")?;
     if project.json && auth == ShareAuth::OAuth {
         return Err(
@@ -160,6 +166,7 @@ pub(crate) fn parse_share_options(args: &[String]) -> Result<ShareCommandOptions
         tunnel,
         auth,
         oauth_redirect_uri,
+        oauth_persist_on_restart,
         public_url,
         copy_url,
         stop_on_stdin_eof,
@@ -339,6 +346,7 @@ fn prepare_share_oauth_client(
     config: &ProjectConfig,
     paths: &ProjectPaths,
     redirect_uri: &str,
+    persist_on_restart: bool,
 ) -> Result<ShareOAuthClient, ProductError> {
     crate::oauth_http::validate_redirect_uri(redirect_uri).map_err(|message| {
         share_oauth_state_error(format!("invalid OAuth redirect URI: {message}"))
@@ -413,7 +421,12 @@ fn prepare_share_oauth_client(
                 share_oauth_state_error("WebCodex could not restore the share OAuth client")
             })?;
         }
-        revoke_previous_share_oauth_grants(&db, &client_id)?;
+        // An ordinary restart retires the previous run's grants. Persistence is
+        // an explicit opt-in: expiry, revocation and token replay rules still
+        // decide whether a retained grant remains usable.
+        if !persist_on_restart {
+            revoke_previous_share_oauth_grants(&db, &client_id)?;
+        }
         return Ok(ShareOAuthClient {
             client_id,
             client_secret,
@@ -630,14 +643,23 @@ pub(crate) async fn share(options: &ShareCommandOptions) -> Result<(), ProductEr
                 .oauth_redirect_uri
                 .as_deref()
                 .ok_or_else(|| share_oauth_state_error("OAuth redirect URI is missing"))?,
+            options.oauth_persist_on_restart,
         )?),
     };
     let project_share_oauth = oauth_client
         .as_ref()
-        .map(|_| ProjectShareOAuthRuntimeOptions {
-            project_grant_id: config.project_grant_id(&paths),
-            session_id: crate::auth::generate_project_share_session_id(),
-        });
+        .map(|client| {
+            Ok(ProjectShareOAuthRuntimeOptions {
+                project_grant_id: config.project_grant_id(&paths),
+                session_id: if options.oauth_persist_on_restart {
+                    crate::auth::project_share_session_id_for_client(&client.client_id)
+                        .map_err(share_oauth_state_error)?
+                } else {
+                    crate::auth::generate_project_share_session_id()
+                },
+            })
+        })
+        .transpose()?;
 
     // All process/network readiness for this share uses one absolute budget.
     // Managed binary acquisition and local state setup above are preflight, not
@@ -1441,6 +1463,171 @@ mod tests {
         ])
         .unwrap_err();
         assert!(oauth.contains("OAuth client secrets are intentionally excluded"));
+    }
+
+    #[test]
+    fn oauth_persist_on_restart_is_an_explicit_oauth_only_choice() {
+        let oauth = parse_share_options(&[
+            "--auth".to_string(),
+            "oauth".to_string(),
+            "--oauth-redirect-uri".to_string(),
+            "https://client.example/callback".to_string(),
+        ])
+        .unwrap();
+        assert!(!oauth.oauth_persist_on_restart);
+        let persistent = parse_share_options(&[
+            "--auth".to_string(),
+            "oauth".to_string(),
+            "--oauth-redirect-uri".to_string(),
+            "https://client.example/callback".to_string(),
+            "--oauth-persist-on-restart".to_string(),
+        ])
+        .unwrap();
+        assert!(persistent.oauth_persist_on_restart);
+        assert!(parse_share_options(&["--oauth-persist-on-restart".to_string()]).is_err());
+        assert!(parse_share_options(&[
+            "--auth".to_string(),
+            "bearer".to_string(),
+            "--oauth-persist-on-restart".to_string(),
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn project_share_restart_preserves_client_and_only_retires_default_mode_grants() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = temp.path().join("project-state");
+        let data = state.join("data");
+        fs::create_dir_all(&data).unwrap();
+        let paths = ProjectPaths {
+            data,
+            credentials: state.join("credentials"),
+            project_registry: state.join("project-registry"),
+            logs: state.join("logs"),
+            config: state.join("project.toml"),
+            bootstrap_key: state.join("bootstrap-key"),
+            project_credential: state.join("project-credential"),
+            agent_token: state.join("agent-token"),
+            runner_config: state.join("runner-config"),
+            state,
+        };
+        let config = ProjectConfig {
+            version: 1,
+            project_name: "test-project".to_string(),
+            root: temp.path().join("project"),
+            profile: "default".to_string(),
+            port: 24444,
+            executor_project_id: "test-project".to_string(),
+            executor_client_id: "test-client".to_string(),
+        };
+        let redirect = "https://client.example/callback";
+        let first = prepare_share_oauth_client(&config, &paths, redirect, true).unwrap();
+        let stable = crate::auth::project_share_session_id_for_client(&first.client_id).unwrap();
+        let db = crate::Database::open(&paths.data.join("webcodex.db")).unwrap();
+        let now = chrono::Utc::now().timestamp();
+        let access = crate::auth::generate_oauth_access_token();
+        let refresh = crate::auth::generate_oauth_refresh_token();
+        let revoked = crate::auth::generate_oauth_access_token();
+        let subject = format!("{}|{stable}", config.project_grant_id(&paths));
+        db.insert_oauth_access_token(&crate::models::OAuthAccessTokenRecord {
+            admin_authority: false,
+            id: uuid::Uuid::new_v4().to_string(),
+            token_hash: crate::auth::hash_token(&access),
+            client_id: first.client_id.clone(),
+            subject_kind: crate::auth::PROJECT_SHARE_OAUTH_SUBJECT_KIND.to_string(),
+            subject_id: subject.clone(),
+            user_id: None,
+            scopes: "runtime:read".to_string(),
+            resource: None,
+            shared_key_hash: None,
+            created_at: now,
+            expires_at: now + 3600,
+            revoked_at: None,
+            last_used_at: None,
+        })
+        .unwrap();
+        db.insert_oauth_access_token(&crate::models::OAuthAccessTokenRecord {
+            admin_authority: false,
+            id: uuid::Uuid::new_v4().to_string(),
+            token_hash: crate::auth::hash_token(&revoked),
+            client_id: first.client_id.clone(),
+            subject_kind: crate::auth::PROJECT_SHARE_OAUTH_SUBJECT_KIND.to_string(),
+            subject_id: subject.clone(),
+            user_id: None,
+            scopes: "runtime:read".to_string(),
+            resource: None,
+            shared_key_hash: None,
+            created_at: now,
+            expires_at: now + 3600,
+            revoked_at: Some(now),
+            last_used_at: None,
+        })
+        .unwrap();
+        db.insert_oauth_refresh_token(&crate::models::OAuthRefreshTokenRecord {
+            admin_authority: false,
+            id: uuid::Uuid::new_v4().to_string(),
+            token_hash: crate::auth::hash_token(&refresh),
+            client_id: first.client_id.clone(),
+            subject_kind: crate::auth::PROJECT_SHARE_OAUTH_SUBJECT_KIND.to_string(),
+            subject_id: subject,
+            user_id: None,
+            scopes: "runtime:read".to_string(),
+            resource: None,
+            shared_key_hash: None,
+            created_at: now,
+            expires_at: now + 3600,
+            revoked_at: None,
+            last_used_at: None,
+            rotated_from_id: None,
+        })
+        .unwrap();
+        drop(db);
+
+        // Repeated persisting restarts keep one validated client, one stable
+        // session identity and the still-valid grants.
+        for _ in 0..2 {
+            let restarted = prepare_share_oauth_client(&config, &paths, redirect, true).unwrap();
+            assert_eq!(restarted.client_id, first.client_id);
+            assert_eq!(restarted.client_secret, first.client_secret);
+            assert_eq!(
+                crate::auth::project_share_session_id_for_client(&restarted.client_id).unwrap(),
+                stable
+            );
+        }
+        let db = crate::Database::open(&paths.data.join("webcodex.db")).unwrap();
+        assert_eq!(
+            db.get_oauth_access_token_by_hash(&crate::auth::hash_token(&access))
+                .unwrap()
+                .unwrap()
+                .revoked_at,
+            None
+        );
+        assert_eq!(
+            db.get_oauth_refresh_token_by_hash(&crate::auth::hash_token(&refresh))
+                .unwrap()
+                .unwrap()
+                .revoked_at,
+            None
+        );
+        // A persisting restart never makes a revoked grant usable again; the
+        // store only resolves unrevoked tokens, so the revoked one stays absent.
+        assert!(db
+            .get_oauth_access_token_by_hash(&crate::auth::hash_token(&revoked))
+            .unwrap()
+            .is_none());
+        drop(db);
+
+        // Switching back to the default mode retires the retained grants.
+        prepare_share_oauth_client(&config, &paths, redirect, false).unwrap();
+        let db = crate::Database::open(&paths.data.join("webcodex.db")).unwrap();
+        assert!(db
+            .get_oauth_access_token_by_hash(&crate::auth::hash_token(&access))
+            .unwrap()
+            .is_none());
+        assert!(db
+            .get_oauth_refresh_token_by_hash(&crate::auth::hash_token(&refresh))
+            .unwrap()
+            .is_none());
     }
 
     #[test]

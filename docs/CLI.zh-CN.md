@@ -68,7 +68,7 @@ LaunchAgent 与 Windows 用户计划任务需要该用户保持登录。旧服�
 
 `webcodex share --auth query-token` 是给无法配置 Bearer header 的 MCP client 使用的显式临时 share 兼容模式。它只在 `/mcp?token=...` 接受当前 share 的精确 Project Credential，输出经过 URL 编码的敏感 MCP URL，并让 client 选择 No authentication。普通 Server/runtime 请求不会因此启用 query auth，PAT/OAuth/shared-key/Runner credential 也不能通过这个 query 路径回退认证；`--tunnel openai` 会拒绝该模式。整条 URL 都必须当作 credential，因为 query 可能被 client、proxy、剪贴板或 access log 留存。默认仍是 `--auth bearer`。
 
-`webcodex share --auth oauth --oauth-redirect-uri <精确回调地址>` 使用 OAuth 2.0 Authorization Code + PKCE S256。OAuth client ID/secret 会按“项目 + 回调地址”保存在受保护的 project state 中；临时 OAuth grant 只在当前 `share` 运行期间有效。重启 `share` 会让旧 OAuth grant 失效，但不会改变项目。OAuth access token 永远不能用于 Runner transport。
+`webcodex share --auth oauth --oauth-redirect-uri <精确回调地址>` 使用 OAuth 2.0 Authorization Code + PKCE S256。OAuth client ID/secret 会按“项目 + 回调地址”保存在受保护的 project state 中；临时 OAuth grant 只在当前 `share` 运行期间有效。重启 `share` 会让旧 OAuth grant 失效，但不会改变项目。OAuth access token 永远不能用于 Runner transport。加 `--oauth-persist-on-restart` 后，同一个 share 的普通重启会保留已校验的 OAuth client 及其未过期、未撤销的 grant：session subject 由持久化的 client ID 派生，而不是每次重新随机生成，因此重启不必重新授权。过期、撤销、scope 与 token replay 规则仍然有效，重启不会重放任何副作用；首次带该标志运行时可能需要一次重新授权，因为上一次的 grant 属于不同的 session subject。不加该标志时行为完全不变。
 
 Cloudflare Quick Tunnel 的公网 origin 仍然是临时的。如需稳定 HTTPS origin，可使用 `--tunnel none --public-url https://share.example`，并由 operator 自己把该 origin 反向代理/隧道到 loopback WebCodex Server；`--public-url` 只声明外部 origin/issuer，不会创建代理或 tunnel。
 

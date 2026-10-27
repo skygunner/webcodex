@@ -32,6 +32,22 @@ pub(crate) fn generate_project_share_session_id() -> String {
     format!("{PROJECT_SHARE_SESSION_PREFIX}{random}")
 }
 
+/// Restart-stable session id derived from an already validated, persisted
+/// project-share OAuth client id. An arbitrary caller string is never an
+/// authority input; only the canonical generated client id format is accepted.
+pub(crate) fn project_share_session_id_for_client(client_id: &str) -> Result<String, String> {
+    let suffix = client_id
+        .strip_prefix("wc_client_")
+        .filter(|suffix| {
+            suffix.len() == 64
+                && suffix
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+        .ok_or_else(|| "invalid persisted project-share OAuth client ID".to_string())?;
+    Ok(format!("{PROJECT_SHARE_SESSION_PREFIX}{suffix}"))
+}
+
 pub(crate) fn configured_project_share_subject(
     config: &crate::Config,
 ) -> Result<Option<String>, String> {
@@ -67,4 +83,36 @@ pub(crate) fn project_share_scopes_are_bounded(scopes: &str) -> bool {
     scopes
         .split_ascii_whitespace()
         .all(|scope| PROJECT_SHARE_OAUTH_SCOPES.contains(&scope) || scope == "offline_access")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn persisted_client_session_is_stable_without_weakening_subject_validation() {
+        let client = format!("wc_client_{}", "a".repeat(64));
+        let stable = project_share_session_id_for_client(&client).unwrap();
+        assert_eq!(
+            stable,
+            format!("{PROJECT_SHARE_SESSION_PREFIX}{}", "a".repeat(64))
+        );
+        assert_eq!(
+            project_share_session_id_for_client(&client).unwrap(),
+            stable
+        );
+        assert_ne!(generate_project_share_session_id(), stable);
+        for invalid in [
+            "".to_string(),
+            "wc_client_short".to_string(),
+            format!("wc_client_{}", "g".repeat(64)),
+            format!("wc_client_{}", "A".repeat(64)),
+            format!("wc_csec_{}", "a".repeat(64)),
+        ] {
+            assert!(
+                project_share_session_id_for_client(&invalid).is_err(),
+                "{invalid}"
+            );
+        }
+    }
 }

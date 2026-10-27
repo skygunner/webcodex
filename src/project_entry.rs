@@ -236,7 +236,7 @@ pub(crate) fn parse_options(
 pub(crate) fn usage() -> &'static str {
     "Usage: webcodex share [--root PATH] [--profile NAME] [--state-dir PATH] [--json]\n\
                      [--tunnel cloudflare|openai|none] [--auth bearer|query-token|oauth]\n\
-                     [--oauth-redirect-uri URL] [--public-url URL] [--no-copy-url]\n\
+                     [--oauth-redirect-uri URL] [--oauth-persist-on-restart] [--public-url URL] [--no-copy-url]\n\
                      [--stop-on-stdin-eof]\n\
        webcodex status [--root PATH] [--profile NAME] [--state-dir PATH] [--json]\n\
        webcodex doctor [--root PATH] [--profile NAME] [--state-dir PATH] [--json]\n\
@@ -258,6 +258,8 @@ starting services. `run` is the explicit foreground local runtime step. Its opti
 `--console-assets-dir` enables loopback-only development assets for that run.\n\
 `--auth query-token` is a temporary share-only convenience for MCP clients that\n\
 cannot configure a Bearer header; `--auth oauth` adds project-bound OAuth.\n\
+`--oauth-persist-on-restart` keeps the validated share OAuth client and its\n\
+unexpired, unrevoked grants across ordinary restarts of the same share.\n\
 On Windows, explicit `webcodex share` is supported. Managed Cloudflare acquisition is available on Windows x64; Windows ARM64 requires a trusted explicit/PATH cloudflared because the pinned upstream release has no official ARM64 artifact. Native OpenAI Tunnel supports Windows x64/arm64.\n"
 }
 

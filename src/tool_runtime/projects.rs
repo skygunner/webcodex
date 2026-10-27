@@ -14,6 +14,7 @@
 //! no workspace abstraction.
 
 use serde_json::{json, Value};
+use std::path::Path;
 use std::time::Duration;
 
 use super::tool_result::{RecoveryKind, ToolResult};
@@ -274,6 +275,190 @@ fn project_registry_mutation_denied(
         .then(|| project_registry_scope_denied(operation))
 }
 
+/// Whether an explicitly authorized parent-root grant admits `path`.
+///
+/// The grant lives on the project-share OAuth subject
+/// (`AuthContext::project_root_scopes`), never on Runner filesystem policy, so
+/// Runner cwd authority still cannot become Project-registry authority. The
+/// request path must already exist and is canonicalized before the
+/// component-wise containment check, which rejects `..` climbs, textual-prefix
+/// siblings such as `<root>-extra`, and symlinks that resolve outside every
+/// granted root. A missing directory stays denied: admission never creates
+/// directories, and the Runner-side `allowed_roots` policy remains the real
+/// execution boundary.
+fn authorized_project_root_scope_admits(auth: Option<&AuthContext>, path: &str) -> bool {
+    let Some(auth) = auth else {
+        return false;
+    };
+    if auth.project_root_scopes.is_empty() {
+        return false;
+    }
+    let requested = Path::new(path);
+    if !requested.is_absolute() {
+        return false;
+    }
+    let Ok(canonical) = requested.canonicalize() else {
+        return false;
+    };
+    auth.project_root_scopes
+        .iter()
+        .any(|root| canonical.starts_with(root))
+}
+
+/// Canonical target plus forwarded grant roots for one fence-checked path.
+/// Root-scope credentials send the canonical target the fence authorized and
+/// the grant's canonical roots, so the Runner re-derives the admission
+/// decision against its own resolution before its first side effect; a
+/// symlink or component flipped between the fence and the Runner's own
+/// resolution then fails closed at the Runner instead of committing.
+/// Credentials without parent-root grants get the raw path and no roots, the
+/// exact previous behavior. An unresolvable or no-longer-admitted target
+/// fails closed here: nothing is submitted.
+fn grant_bound_project_path(
+    path: &str,
+    auth: Option<&AuthContext>,
+) -> Result<(String, Option<Vec<String>>), ToolResult> {
+    let Some(auth) = auth.filter(|auth| !auth.project_root_scopes.is_empty()) else {
+        return Ok((path.to_string(), None));
+    };
+    let canonical = match std::path::Path::new(path).canonicalize() {
+        Ok(canonical) => canonical,
+        Err(_) => {
+            return Err(project_registry_scope_denied("project path resolution"));
+        }
+    };
+    let Some(canonical) = canonical.to_str() else {
+        return Err(project_registry_scope_denied("project path resolution"));
+    };
+    if !authorized_project_root_scope_admits(Some(auth), canonical) {
+        return Err(project_registry_scope_denied("project path resolution"));
+    }
+    Ok((
+        canonical.to_string(),
+        Some(
+            auth.project_root_scopes
+                .iter()
+                .map(|root| root.to_string_lossy().into_owned())
+                .collect(),
+        ),
+    ))
+}
+
+/// Build the resolve-or-register project-op payload from the bound path.
+fn resolve_or_register_op_payload(
+    path: &str,
+    auth: Option<&AuthContext>,
+) -> Result<serde_json::Value, ToolResult> {
+    let (path, granted_roots) = grant_bound_project_path(path, auth)?;
+    Ok(match granted_roots {
+        None => json!({"path": path}),
+        Some(granted_roots) => json!({
+            "path": path,
+            "project_root_scopes": granted_roots,
+        }),
+    })
+}
+
+/// Assemble one managed-worktree project-op payload. The Runner validates the
+/// exact field count (4 | 6 ordinary, 5 | 7 with a forwarded share grant), so
+/// this shape is a contract: source identity and grant roots are only ever
+/// added together with their validated values, and the optional grant rides
+/// along unchanged through the indeterminate-retry re-submission.
+fn managed_worktree_op_payload(
+    source_path: String,
+    base_ref: Option<String>,
+    operation_id: String,
+    resume_project_id: Option<String>,
+    expected_source_identity: Option<(String, String)>,
+    granted_roots: Option<Vec<String>>,
+) -> serde_json::Value {
+    let mut payload = json!({
+        "path": source_path,
+        "base_ref": base_ref,
+        "operation_id": operation_id,
+        "resume_project_id": resume_project_id,
+    });
+    if let Some((project_id, root_fingerprint)) = expected_source_identity {
+        payload["expected_source_project_id"] = json!(project_id);
+        payload["expected_source_root_fingerprint"] = json!(root_fingerprint);
+    }
+    if let Some(granted_roots) = granted_roots {
+        payload["project_root_scopes"] = json!(granted_roots);
+    }
+    payload
+}
+
+/// Re-verify the Runner's committed canonical path against the grant. The
+/// Runner-side grant check is the commit-time authority; this catches view
+/// drift between the Runner's resolution and the Server's grant after the
+/// fact and reports the honest effect state. When the response does not carry
+/// usable effect metadata the existing indeterminate contract applies:
+/// the effect may have happened, so it is never reported as no-change.
+fn verify_runner_path_within_granted_roots(
+    result: ToolResult,
+    auth: Option<&AuthContext>,
+) -> ToolResult {
+    let Some(auth) = auth.filter(|auth| !auth.project_root_scopes.is_empty()) else {
+        return result;
+    };
+    if !result.success {
+        return result;
+    }
+    let registered = result
+        .output
+        .get("registered")
+        .and_then(serde_json::Value::as_bool);
+    let Some(returned) = result
+        .output
+        .get("path")
+        .and_then(serde_json::Value::as_str)
+    else {
+        let message = "Runner returned a project resolution without a path; the granted project roots could not be re-verified";
+        return match registered {
+            Some(registered) => ToolResult::err_with_output(
+                message,
+                json!({
+                    "error_kind": "project_registry_scope_denied",
+                    "failure_kind": "authorization_denied",
+                    "state_changed": registered,
+                }),
+            )
+            .with_recovery(RecoveryKind::UserAction),
+            None => indeterminate_grant_verification_result(message),
+        };
+    };
+    if authorized_project_root_scope_admits(Some(auth), returned) {
+        return result;
+    }
+    let message = "Runner returned a project path outside the granted project roots";
+    match registered {
+        Some(registered) => ToolResult::err_with_output(
+            message,
+            json!({
+                "error_kind": "project_registry_scope_denied",
+                "failure_kind": "authorization_denied",
+                "state_changed": registered,
+            }),
+        )
+        .with_recovery(RecoveryKind::UserAction),
+        None => indeterminate_grant_verification_result(message),
+    }
+}
+
+/// The Runner reported success but not whether its write landed: the shared
+/// project-op indeterminate contract, not a claim of no effect.
+fn indeterminate_grant_verification_result(message: &str) -> ToolResult {
+    ToolResult::err_with_output(
+        message,
+        json!({
+            "error_kind": "operation_indeterminate",
+            "failure_kind": "operation_indeterminate",
+            "state_changed": true,
+        }),
+    )
+    .with_recovery(RecoveryKind::Reobserve)
+}
+
 fn existing_project_path_result(client_id: &str, project: &RunnerProjectSummary) -> ToolResult {
     ToolResult::ok(json!({
         "id": runner_project_runtime_id(client_id, &project.id),
@@ -304,9 +489,13 @@ impl ToolRuntime {
 
     /// For project-scoped model/API credentials, path-based coding may only use
     /// an exact path already present in that ProjectGrant's caller-visible
-    /// Runner inventory. This prevents broad Runner filesystem authority (needed
-    /// for canonical managed-worktree siblings) from becoming Project-registry
-    /// authority. Other credential classes keep the ordinary path-registration
+    /// Runner inventory, or — when the share was explicitly started with
+    /// `--project-roots` — an existing directory inside one of those granted
+    /// canonical parent roots, which the caller then admits on demand through
+    /// the ordinary idempotent project-op path. This prevents broad Runner
+    /// filesystem authority (needed for canonical managed-worktree siblings)
+    /// from becoming Project-registry authority without an explicit share-level
+    /// grant. Other credential classes keep the ordinary path-registration
     /// behavior.
     pub(crate) async fn project_scoped_visible_project_for_exact_path(
         &self,
@@ -325,14 +514,22 @@ impl ToolRuntime {
         else {
             return Err(project_registry_scope_denied("project path resolution"));
         };
-        let project = client
+        if let Some(project) = client
             .view
             .projects
             .iter()
             .find(|project| !project.disabled && project.path == path)
             .cloned()
-            .ok_or_else(|| project_registry_scope_denied("project path resolution"))?;
-        Ok(Some(project))
+        {
+            return Ok(Some(project));
+        }
+        if authorized_project_root_scope_admits(auth, path) {
+            // No exact registration yet: let the caller's project-op resolve or
+            // register it under the Runner registry write lock. Repeated calls
+            // keep the same stable project identity.
+            return Ok(None);
+        }
+        Err(project_registry_scope_denied("project path resolution"))
     }
 
     pub(crate) async fn list_projects_with_options(
@@ -686,13 +883,14 @@ impl ToolRuntime {
                 .with_recovery(RecoveryKind::NoAction);
             }
         }
-        self.submit_project_op(
-            "resolve_or_register_project",
-            client_id,
-            json!({"path": path}),
-            auth,
-        )
-        .await
+        let payload = match resolve_or_register_op_payload(&path, auth) {
+            Ok(payload) => payload,
+            Err(denied) => return denied,
+        };
+        let result = self
+            .submit_project_op("resolve_or_register_project", client_id, payload, auth)
+            .await;
+        verify_runner_path_within_granted_roots(result, auth)
     }
 
     /// Ask the exact Runner to prepare or re-observe one managed detached
@@ -720,13 +918,43 @@ impl ToolRuntime {
                 }),
             );
         }
-        match self
+        let exact_path_project = match self
             .project_scoped_visible_project_for_exact_path(&client_id, &path, auth)
             .await
         {
-            Ok(Some(_)) | Ok(None) => {}
+            Ok(exact) => exact,
             Err(result) => return result,
-        }
+        };
+        // The exact-path fence hit is the authorization fact itself; absence of
+        // grant roots is NOT (ordinary credentials also carry none).
+        let exact_path_authorized = exact_path_project.is_some();
+        // Two independent, separately valid authorization sources bind the source
+        // the Runner will actually derive from: an exact-path registered Project
+        // (admitted above by registration, not by roots) or the credential's
+        // parent-root share grant. Exact-path sources keep their registered
+        // project identity and root fingerprint as the replay/retarget anchor and
+        // carry no grant roots; parent-root sources carry the grant. The Runner
+        // re-checks either against its own canonical resolution before any side
+        // effect. Only the source is grant-scoped — the derived sibling worktree
+        // destination is a Runner-owned namespace whose boundary remains
+        // allowed_roots, and the Runner result reports the destination path, so
+        // there is nothing to re-verify here.
+        let (source_path, granted_roots, fence_identity) = match exact_path_project {
+            Some(project) => (
+                path.clone(),
+                None,
+                project
+                    .root_fingerprint
+                    .map(|root_fingerprint| (project.id.clone(), root_fingerprint)),
+            ),
+            None => {
+                let (source_path, granted_roots) = match grant_bound_project_path(&path, auth) {
+                    Ok(bound) => bound,
+                    Err(denied) => return denied,
+                };
+                (source_path, granted_roots, None)
+            }
+        };
         let access = crate::runner_http::runner_access_from_auth(auth);
         if let Some(client) = self
             .runner_registry
@@ -754,30 +982,56 @@ impl ToolRuntime {
             }
         }
         let fresh_managed_bootstrap = resume_project_id.is_none();
-        let mut payload = json!({
-            "path": path,
-            "base_ref": base_ref,
-            "operation_id": operation_id,
-            "resume_project_id": resume_project_id,
-        });
-        match (expected_source_project_id, expected_source_root_fingerprint) {
-            (Some(project_id), Some(root_fingerprint)) => {
-                payload["expected_source_project_id"] = json!(project_id);
-                payload["expected_source_root_fingerprint"] = json!(root_fingerprint);
-            }
-            (None, None) => {}
-            _ => {
-                return ToolResult::err_with_output(
-                    "managed worktree source identity must be complete",
-                    json!({
-                        "error_kind": "managed_worktree_source_identity_unavailable",
-                        "failure_kind": "operation_failed",
-                        "state_changed": false,
-                    }),
-                )
-                .with_recovery(RecoveryKind::Reobserve);
-            }
+        // Caller-supplied identity anchors replay/retarget and wins; the
+        // exact-path fence fills it in when the model did not supply one.
+        let expected_source_identity =
+            match (expected_source_project_id, expected_source_root_fingerprint) {
+                (Some(project_id), Some(root_fingerprint)) => Some((project_id, root_fingerprint)),
+                (None, None) => fence_identity,
+                _ => {
+                    return ToolResult::err_with_output(
+                        "managed worktree source identity must be complete",
+                        json!({
+                            "error_kind": "managed_worktree_source_identity_unavailable",
+                            "failure_kind": "operation_failed",
+                            "state_changed": false,
+                        }),
+                    )
+                    .with_recovery(RecoveryKind::Reobserve);
+                }
+            };
+        // Only sources actually admitted through the exact-path fence must have
+        // a complete, usable expected source identity to anchor the operation.
+        // When the Runner's inventory temporarily lacks a root_fingerprint and
+        // the caller did not supply one, the request must fail closed on the
+        // existing Reobserve contract instead of going out unanchored.
+        // Parent-root and ordinary credentials keep the pre-existing behavior:
+        // their sources are bounded by the forwarded grant or by ordinary
+        // admission, not by a fence identity. Resume requests (resume_project_id
+        // set) are exempt from THIS server-side completeness check only — the
+        // Runner still anchors them to its stored source path and lineage.
+        if exact_path_authorized
+            && expected_source_identity.is_none()
+            && resume_project_id.is_none()
+        {
+            return ToolResult::err_with_output(
+                "managed worktree source identity must be complete",
+                json!({
+                    "error_kind": "managed_worktree_source_identity_unavailable",
+                    "failure_kind": "operation_failed",
+                    "state_changed": false,
+                }),
+            )
+            .with_recovery(RecoveryKind::Reobserve);
         }
+        let payload = managed_worktree_op_payload(
+            source_path,
+            base_ref,
+            operation_id,
+            resume_project_id,
+            expected_source_identity,
+            granted_roots,
+        );
         let first = self
             .submit_project_op(
                 "prepare_managed_worktree",
@@ -1516,5 +1770,291 @@ mod tests {
     fn validate_name_accepts_valid() {
         assert!(validate_project_op_name("My Project").is_ok());
         assert!(validate_project_op_name("A").is_ok());
+    }
+
+    fn root_scoped_auth(roots: &[&std::path::Path]) -> AuthContext {
+        let mut auth = AuthContext::new(crate::auth::AuthKind::OAuth2Token);
+        auth.token_kind = Some(crate::auth::PROJECT_SHARE_OAUTH_TOKEN_KIND.to_string());
+        auth.project_grant_id = Some("wc_pgrant_test".to_string());
+        auth.project_root_scopes = roots.iter().map(|root| root.to_path_buf()).collect();
+        auth
+    }
+
+    #[test]
+    fn project_root_scope_admits_canonical_children_and_root_itself() {
+        let base =
+            std::env::temp_dir().join(format!("wc-root-scope-{}", uuid::Uuid::new_v4().simple()));
+        let inner = base.join("magpie");
+        std::fs::create_dir_all(&inner).expect("fixture directories");
+        // An intermediate directory that really exists, so the `..` spelling
+        // below resolves through it.
+        std::fs::create_dir_all(base.join("nested")).expect("fixture intermediate");
+        let root_canonical = base.canonicalize().expect("canonical fixture root");
+        let auth = root_scoped_auth(&[root_canonical.as_path()]);
+
+        assert!(authorized_project_root_scope_admits(
+            Some(&auth),
+            &inner.to_string_lossy()
+        ));
+        assert!(authorized_project_root_scope_admits(
+            Some(&auth),
+            &root_canonical.to_string_lossy()
+        ));
+        // A `..`-laden spelling resolves to the same canonical directory.
+        assert!(authorized_project_root_scope_admits(
+            Some(&auth),
+            &format!("{}/nested/../magpie", root_canonical.display())
+        ));
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn project_root_scope_rejects_outside_and_prefix_siblings() {
+        let base =
+            std::env::temp_dir().join(format!("wc-root-scope-{}", uuid::Uuid::new_v4().simple()));
+        let inner = base.join("magpie");
+        std::fs::create_dir_all(&inner).expect("fixture directories");
+        let sibling = format!("{}-extra", base.display());
+        std::fs::create_dir_all(&sibling).expect("sibling fixture directory");
+        let root_canonical = base.canonicalize().expect("canonical fixture root");
+        let auth = root_scoped_auth(&[root_canonical.as_path()]);
+
+        // Textual-prefix sibling directory is not inside the root.
+        assert!(!authorized_project_root_scope_admits(Some(&auth), &sibling));
+        // Parent of the root is outside.
+        let parent = root_canonical.parent().unwrap().to_path_buf();
+        assert!(!authorized_project_root_scope_admits(
+            Some(&auth),
+            &parent.to_string_lossy()
+        ));
+        // Missing directory stays denied (admission never creates directories).
+        assert!(!authorized_project_root_scope_admits(
+            Some(&auth),
+            &base.join("not-created-yet").to_string_lossy()
+        ));
+        // Relative paths are rejected outright.
+        assert!(!authorized_project_root_scope_admits(Some(&auth), "magpie"));
+        // A subject without granted roots keeps the fence closed.
+        assert!(!authorized_project_root_scope_admits(
+            Some(&root_scoped_auth(&[] as &[&std::path::Path])),
+            &inner.to_string_lossy()
+        ));
+        // No auth context at all is rejected.
+        assert!(!authorized_project_root_scope_admits(
+            None,
+            &inner.to_string_lossy()
+        ));
+
+        std::fs::remove_dir_all(&base).ok();
+        std::fs::remove_dir_all(&sibling).ok();
+    }
+
+    #[test]
+    fn project_root_scope_rejects_symlink_escape() {
+        let base =
+            std::env::temp_dir().join(format!("wc-root-scope-{}", uuid::Uuid::new_v4().simple()));
+        let outside = std::env::temp_dir().join(format!(
+            "wc-root-scope-outside-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(base.join("real")).expect("fixture root");
+        std::fs::create_dir_all(outside.join("secret")).expect("outside fixture");
+        let root_canonical = base.canonicalize().expect("canonical fixture root");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, base.join("escape-link")).expect("symlink");
+        let auth = root_scoped_auth(&[root_canonical.as_path()]);
+
+        // The link name is inside the root, but it resolves outside: denied.
+        assert!(!authorized_project_root_scope_admits(
+            Some(&auth),
+            &base.join("escape-link").join("secret").to_string_lossy()
+        ));
+
+        std::fs::remove_dir_all(&base).ok();
+        std::fs::remove_dir_all(&outside).ok();
+    }
+
+    #[test]
+    fn managed_worktree_op_payload_field_counts_match_the_runner_contract() {
+        let canonical = "/tmp/granted/repo".to_string();
+        // Ordinary credentials: the exact previous four-field payload.
+        let plain =
+            managed_worktree_op_payload(canonical.clone(), None, "op".into(), None, None, None);
+        assert_eq!(plain.as_object().unwrap().len(), 4);
+        assert_eq!(plain["path"], canonical);
+        assert!(plain.get("project_root_scopes").is_none());
+
+        // Source identity retains its two-field addition.
+        let identities = managed_worktree_op_payload(
+            canonical.clone(),
+            Some("HEAD".into()),
+            "op".into(),
+            Some("wt".into()),
+            Some(("source".into(), "wc_projroot_1".into())),
+            None,
+        );
+        assert_eq!(identities.as_object().unwrap().len(), 6);
+        assert_eq!(identities["expected_source_project_id"], "source");
+
+        // A forwarded share grant adds exactly one field, alone or with the
+        // source identity, so the Runner's 5 | 7 acceptance applies.
+        let granted = managed_worktree_op_payload(
+            canonical.clone(),
+            None,
+            "op".into(),
+            None,
+            None,
+            Some(vec!["/tmp/granted".into()]),
+        );
+        assert_eq!(granted.as_object().unwrap().len(), 5);
+        assert_eq!(
+            granted["project_root_scopes"],
+            serde_json::json!(["/tmp/granted"])
+        );
+        let both = managed_worktree_op_payload(
+            canonical,
+            Some("HEAD".into()),
+            "op".into(),
+            None,
+            Some(("source".into(), "wc_projroot_1".into())),
+            Some(vec!["/tmp/granted".into()]),
+        );
+        assert_eq!(both.as_object().unwrap().len(), 7);
+    }
+
+    #[test]
+    fn resolve_or_register_project_op_payload_binds_canonical_target_and_roots() {
+        let base =
+            std::env::temp_dir().join(format!("wc-root-scope-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(base.join("granted/inner")).expect("fixture");
+        let root_canonical = base.join("granted").canonicalize().unwrap();
+        let auth = root_scoped_auth(&[root_canonical.as_path()]);
+
+        // A non-canonical spelling of an admitted target: the payload carries
+        // the canonical form the fence authorized plus the grant's roots.
+        let payload = resolve_or_register_op_payload(
+            &base.join("granted/inner/.").to_string_lossy(),
+            Some(&auth),
+        )
+        .unwrap();
+        assert_eq!(
+            payload["path"],
+            base.join("granted/inner")
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .as_ref()
+        );
+        assert_eq!(
+            payload["project_root_scopes"],
+            serde_json::json!([root_canonical.to_string_lossy()])
+        );
+
+        // Credentials without parent-root grants keep the exact previous
+        // payload shape.
+        let plain =
+            resolve_or_register_op_payload(&base.join("granted/inner/.").to_string_lossy(), None)
+                .unwrap();
+        assert_eq!(
+            plain,
+            serde_json::json!({"path": base.join("granted/inner/.").to_string_lossy()})
+        );
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn resolve_or_register_project_op_payload_fails_closed_when_target_stops_resolving() {
+        let base =
+            std::env::temp_dir().join(format!("wc-root-scope-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(base.join("granted/inner")).expect("fixture");
+        let root_canonical = base.join("granted").canonicalize().unwrap();
+        std::os::unix::fs::symlink(base.join("granted/inner"), base.join("granted/link"))
+            .expect("symlink");
+        let auth = root_scoped_auth(&[root_canonical.as_path()]);
+
+        // The fence admits the link spelling; then the target disappears, so
+        // nothing resolvable can be submitted: deny with no state change.
+        std::fs::remove_dir_all(base.join("granted/inner")).expect("remove target");
+        let denied = resolve_or_register_op_payload(
+            &base.join("granted/link").to_string_lossy(),
+            Some(&auth),
+        )
+        .unwrap_err();
+        assert!(!denied.success);
+        assert_eq!(denied.output["state_changed"], false);
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn verify_runner_path_rejects_returned_paths_outside_the_grant() {
+        let base =
+            std::env::temp_dir().join(format!("wc-root-scope-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(base.join("granted/inner")).expect("fixture");
+        std::fs::create_dir_all(base.join("outside")).expect("fixture");
+        let root_canonical = base.join("granted").canonicalize().unwrap();
+        let auth = root_scoped_auth(&[root_canonical.as_path()]);
+
+        // The Runner committed a fresh registration outside the grant: deny,
+        // and report the effect honestly (state_changed follows `registered`).
+        let rejected = verify_runner_path_within_granted_roots(
+            ToolResult::ok(json!({
+                "path": base.join("outside").canonicalize().unwrap().to_string_lossy(),
+                "registered": true,
+            })),
+            Some(&auth),
+        );
+        assert!(!rejected.success);
+        assert_eq!(rejected.output["state_changed"], true);
+
+        // An inside target passes through unchanged.
+        let inside_path = base.join("granted/inner").canonicalize().unwrap();
+        let passed = verify_runner_path_within_granted_roots(
+            ToolResult::ok(json!({
+                "path": inside_path.to_string_lossy(),
+                "registered": true,
+            })),
+            Some(&auth),
+        );
+        assert!(passed.success);
+
+        // A success without a resolvable path cannot be verified: deny, but
+        // keep whatever effect state the Runner did report.
+        let denied = verify_runner_path_within_granted_roots(
+            ToolResult::ok(json!({"registered": false})),
+            Some(&auth),
+        );
+        assert!(!denied.success);
+        assert_eq!(denied.output["state_changed"], false);
+        let denied = verify_runner_path_within_granted_roots(
+            ToolResult::ok(json!({"registered": true})),
+            Some(&auth),
+        );
+        assert!(!denied.success);
+        assert_eq!(denied.output["state_changed"], true);
+
+        // Effect metadata missing or malformed uses the shared indeterminate
+        // contract: the write may have landed, so it is never claimed as
+        // no-change.
+        for node in [json!({}), json!({"registered": "yes"})] {
+            let denied = verify_runner_path_within_granted_roots(ToolResult::ok(node), Some(&auth));
+            assert!(!denied.success);
+            assert_eq!(denied.output["error_kind"], "operation_indeterminate");
+            assert_eq!(denied.output["state_changed"], true);
+        }
+
+        // Failing results and credentials without grants pass through.
+        let failed = ToolResult::err("runner unavailable");
+        assert!(!verify_runner_path_within_granted_roots(failed, Some(&auth)).success);
+        let unscoped = verify_runner_path_within_granted_roots(
+            ToolResult::ok(json!({"path": "anything"})),
+            None,
+        );
+        assert!(unscoped.success);
+
+        std::fs::remove_dir_all(&base).ok();
     }
 }

@@ -3997,6 +3997,485 @@ async fn mcp_show_changes_distinguishes_recording_session_id_from_query_session_
 }
 
 #[tokio::test]
+async fn managed_worktree_project_grant_admission_preserves_exact_and_root_authority() {
+    const GRANT: &str = "wc_pgrant_r4aaaaaaaaaaaaaa";
+    const CLIENT: &str = "r4-grant-runner";
+    const INSTANCE: &str = "inst-r4-grant";
+    const PROJECT: &str = "source-a";
+    let fixture = tempfile::tempdir().unwrap();
+    let source = fixture.path().join("source-a");
+    let granted_root = fixture.path().join("granted");
+    let inside = granted_root.join("source-b");
+    let outside = fixture.path().join("outside");
+    for path in [&source, &inside, &outside] {
+        std::fs::create_dir_all(path).unwrap();
+    }
+    let source = source.canonicalize().unwrap();
+    let granted_root = granted_root.canonicalize().unwrap();
+    let inside = inside.canonicalize().unwrap();
+    let outside = outside.canonicalize().unwrap();
+    let fingerprint = format!("wc_projroot_{}", "1".repeat(64));
+    let runtime = test_runtime();
+    let runner_auth = crate::auth::AuthContext {
+        username: Some("local-owner".into()),
+        role: Some("agent".into()),
+        token_kind: Some("agent".into()),
+        allowed_client_id: Some(CLIENT.into()),
+        project_grant_id: Some(GRANT.into()),
+        ..crate::auth::AuthContext::new(crate::auth::AuthKind::AgentToken)
+    };
+    let access = crate::runner_http::runner_access_from_auth(Some(&runner_auth)).unwrap();
+    let mut caps = RunnerCapabilities::default();
+    caps.set(
+        crate::runner_protocol::RunnerCapabilityId::ManagedWorktree,
+        true,
+    );
+    runtime
+        .runner_registry
+        .register_with_auth(
+            crate::test_support::current_runner_registration(RunnerRegisterRequest {
+                computer_session_availability: None,
+                process_started_at: None,
+                build: None,
+                job_concurrency_limit: None,
+                job_inventory: None,
+                coding_agent_providers: None,
+                coding_agent_inventory: None,
+                client_id: CLIENT.into(),
+                runner_instance_id: INSTANCE.into(),
+                runner_protocol_generation: crate::runner_protocol::RUNNER_PROTOCOL_GENERATION_V2,
+                display_name: Some(CLIENT.into()),
+                owner: Some("local-owner".into()),
+                hostname: None,
+                host_context: None,
+                capabilities: caps,
+                policy: None,
+            }),
+            Some(&access),
+        )
+        .await
+        .unwrap();
+    crate::test_support::apply_project_inventory_snapshot(
+        &runtime.runner_registry,
+        CLIENT,
+        INSTANCE,
+        vec![RunnerProjectSummary {
+            id: PROJECT.into(),
+            name: Some(PROJECT.into()),
+            path: source.to_string_lossy().into_owned(),
+            allow_patch: true,
+            kind: Some("repo".into()),
+            registration_source: None,
+            description: None,
+            hooks: Vec::new(),
+            disabled: false,
+            revision: None,
+            root_fingerprint: Some(fingerprint.clone()),
+            lineage: None,
+            git_branch: None,
+            git_head: None,
+            git_dirty: None,
+            updated_at: 1,
+            shell_profile: None,
+        }],
+    )
+    .await;
+    let auth = crate::auth::AuthContext {
+        role: Some("project".into()),
+        scopes: crate::auth::PROJECT_SHARE_OAUTH_SCOPES
+            .iter()
+            .map(|scope| (*scope).into())
+            .collect(),
+        token_kind: Some(crate::auth::PROJECT_SHARE_OAUTH_TOKEN_KIND.into()),
+        allowed_client_id: Some("project-share-oauth-client".into()),
+        project_grant_id: Some(GRANT.into()),
+        project_root_scopes: vec![granted_root.clone()],
+        ..crate::auth::AuthContext::new(crate::auth::AuthKind::OAuth2Token)
+    };
+
+    for (path, expected_roots) in [(&source, false), (&inside, true)] {
+        let call = runtime.prepare_managed_worktree(
+            CLIENT.into(),
+            path.to_string_lossy().into_owned(),
+            None,
+            "r4-operation".into(),
+            None,
+            Some(PROJECT.into()),
+            Some(fingerprint.clone()),
+            Some(&auth),
+        );
+        tokio::pin!(call);
+        let request = tokio::select! {
+            result = &mut call => panic!("authorized path must dispatch to Runner: {result:?}"),
+            request = wait_for_mcp_agent_request(&runtime.runner_registry, CLIENT, INSTANCE, "managed worktree") => request,
+        };
+        assert_eq!(request.kind, "prepare_managed_worktree");
+        let payload: Value = serde_json::from_str(request.stdin.as_deref().unwrap()).unwrap();
+        assert_eq!(payload["path"], path.to_string_lossy().as_ref());
+        assert_eq!(payload["expected_source_project_id"], PROJECT);
+        assert_eq!(payload["expected_source_root_fingerprint"], fingerprint);
+        if expected_roots {
+            assert_eq!(
+                payload["project_root_scopes"],
+                json!([granted_root.to_string_lossy()])
+            );
+        } else {
+            assert!(payload.get("project_root_scopes").is_none(), "{payload}");
+        }
+        runtime
+            .runner_registry
+            .complete(RunnerResultRequest {
+                client_id: CLIENT.into(),
+                runner_instance_id: INSTANCE.into(),
+                request_id: request.request_id,
+                exit_code: Some(0),
+                stdout: Some(
+                    json!({
+                        "outcome": "managed_worktree_created",
+                        "registered": true,
+                        "agent_project_id": "managed-1",
+                        "path": "/tmp/worktree",
+                        "name": "managed-1",
+                        "allow_patch": true,
+                        "disabled": false,
+                        "kind": "repo",
+                        "registration_source": "managed_worktree",
+                        "description": "",
+                    })
+                    .to_string(),
+                ),
+                stderr: Some(String::new()),
+                stdout_truncated: false,
+                stderr_truncated: false,
+                duration_ms: Some(1),
+                error: None,
+            })
+            .await
+            .unwrap();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(10), &mut call)
+            .await
+            .unwrap();
+        assert!(result.success, "{result:?}");
+    }
+    let denied = runtime
+        .prepare_managed_worktree(
+            CLIENT.into(),
+            outside.to_string_lossy().into_owned(),
+            None,
+            "r4-denied".into(),
+            None,
+            None,
+            None,
+            Some(&auth),
+        )
+        .await;
+    assert!(!denied.success);
+    assert_eq!(denied.output["error_kind"], "project_registry_scope_denied");
+    assert!(runtime
+        .runner_registry
+        .poll(RunnerPollRequest {
+            client_id: CLIENT.into(),
+            runner_instance_id: INSTANCE.into(),
+        })
+        .await
+        .unwrap()
+        .is_none());
+
+    // The Runner republishes root_fingerprint=None while its project directory
+    // is temporarily unresolvable. An exact-path authorized source then has
+    // neither grant roots nor a usable identity anchor, so the request must
+    // fail closed on the existing Reobserve contract instead of going out
+    // unanchored.
+    crate::test_support::apply_project_inventory_snapshot(
+        &runtime.runner_registry,
+        CLIENT,
+        INSTANCE,
+        vec![RunnerProjectSummary {
+            id: PROJECT.into(),
+            name: Some(PROJECT.into()),
+            path: source.to_string_lossy().into_owned(),
+            allow_patch: true,
+            kind: Some("repo".into()),
+            registration_source: None,
+            description: None,
+            hooks: Vec::new(),
+            disabled: false,
+            revision: None,
+            root_fingerprint: None,
+            lineage: None,
+            git_branch: None,
+            git_head: None,
+            git_dirty: None,
+            updated_at: 1,
+            shell_profile: None,
+        }],
+    )
+    .await;
+    let unanchored = runtime
+        .prepare_managed_worktree(
+            CLIENT.into(),
+            source.to_string_lossy().into_owned(),
+            None,
+            "r5-unanchored".into(),
+            None,
+            None,
+            None,
+            Some(&auth),
+        )
+        .await;
+    assert!(!unanchored.success, "{unanchored:?}");
+    assert_eq!(
+        unanchored.output["error_kind"],
+        "managed_worktree_source_identity_unavailable"
+    );
+    assert_eq!(unanchored.output["state_changed"], false);
+    assert!(runtime
+        .runner_registry
+        .poll(RunnerPollRequest {
+            client_id: CLIENT.into(),
+            runner_instance_id: INSTANCE.into(),
+        })
+        .await
+        .unwrap()
+        .is_none());
+
+    // An ordinary non-project-scoped credential (the Runner's own AgentToken:
+    // a transport credential, not a model subject) never hits the exact-path
+    // fence and carries no grant roots. Its fresh managed-worktree request
+    // without expected identity keeps the pre-existing dispatch behavior —
+    // the Runner resolves the source identity itself.
+    let ordinary = runtime.prepare_managed_worktree(
+        CLIENT.into(),
+        source.to_string_lossy().into_owned(),
+        None,
+        "r6-ordinary".into(),
+        None,
+        None,
+        None,
+        Some(&runner_auth),
+    );
+    tokio::pin!(ordinary);
+    let request = tokio::select! {
+        result = &mut ordinary => {
+            panic!("ordinary credential must keep dispatching without identity: {result:?}")
+        }
+        request = wait_for_mcp_agent_request(&runtime.runner_registry, CLIENT, INSTANCE, "managed worktree") => request,
+    };
+    let payload: Value = serde_json::from_str(request.stdin.as_deref().unwrap()).unwrap();
+    assert!(
+        payload.get("expected_source_project_id").is_none(),
+        "{payload}"
+    );
+    assert!(
+        payload.get("expected_source_root_fingerprint").is_none(),
+        "{payload}"
+    );
+    assert!(payload.get("project_root_scopes").is_none(), "{payload}");
+    runtime
+        .runner_registry
+        .complete(RunnerResultRequest {
+            client_id: CLIENT.into(),
+            runner_instance_id: INSTANCE.into(),
+            request_id: request.request_id,
+            exit_code: Some(0),
+            stdout: Some(
+                json!({
+                    "outcome": "managed_worktree_created",
+                    "registered": true,
+                    "agent_project_id": "managed-1",
+                    "path": "/tmp/worktree",
+                    "name": "managed-1",
+                    "allow_patch": true,
+                    "disabled": false,
+                    "kind": "repo",
+                    "registration_source": "managed_worktree",
+                    "description": "",
+                })
+                .to_string(),
+            ),
+            stderr: Some(String::new()),
+            stdout_truncated: false,
+            stderr_truncated: false,
+            duration_ms: Some(1),
+            error: None,
+        })
+        .await
+        .unwrap();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), &mut ordinary)
+        .await
+        .unwrap();
+    assert!(result.success, "{result:?}");
+
+    // A caller-supplied complete identity keeps precedence over the missing
+    // inventory fingerprint: the request goes out anchored by that identity
+    // (the Runner revalidates it) and without grant roots.
+    let anchored = runtime.prepare_managed_worktree(
+        CLIENT.into(),
+        source.to_string_lossy().into_owned(),
+        None,
+        "r5-caller-anchored".into(),
+        None,
+        Some(PROJECT.into()),
+        Some(fingerprint.clone()),
+        Some(&auth),
+    );
+    tokio::pin!(anchored);
+    let request = tokio::select! {
+        result = &mut anchored => {
+            panic!("caller-anchored identity must still dispatch to Runner: {result:?}")
+        }
+        request = wait_for_mcp_agent_request(&runtime.runner_registry, CLIENT, INSTANCE, "managed worktree") => request,
+    };
+    let payload: Value = serde_json::from_str(request.stdin.as_deref().unwrap()).unwrap();
+    assert_eq!(payload["expected_source_project_id"], PROJECT);
+    assert_eq!(payload["expected_source_root_fingerprint"], fingerprint);
+    assert!(payload.get("project_root_scopes").is_none(), "{payload}");
+    runtime
+        .runner_registry
+        .complete(RunnerResultRequest {
+            client_id: CLIENT.into(),
+            runner_instance_id: INSTANCE.into(),
+            request_id: request.request_id,
+            exit_code: Some(0),
+            stdout: Some(
+                json!({
+                    "outcome": "managed_worktree_created",
+                    "registered": true,
+                    "agent_project_id": "managed-1",
+                    "path": "/tmp/worktree",
+                    "name": "managed-1",
+                    "allow_patch": true,
+                    "disabled": false,
+                    "kind": "repo",
+                    "registration_source": "managed_worktree",
+                    "description": "",
+                })
+                .to_string(),
+            ),
+            stderr: Some(String::new()),
+            stdout_truncated: false,
+            stderr_truncated: false,
+            duration_ms: Some(1),
+            error: None,
+        })
+        .await
+        .unwrap();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), &mut anchored)
+        .await
+        .unwrap();
+    assert!(result.success, "{result:?}");
+}
+
+#[tokio::test]
+async fn project_share_root_scope_admits_new_directories_without_weakening_other_credentials() {
+    const GRANT_A: &str = "wc_pgrant_rootsaaaaaaaaaaaa";
+    const CLIENT_A: &str = "project-roots-runner";
+    const INSTANCE_A: &str = "inst-project-roots";
+
+    let base =
+        std::env::temp_dir().join(format!("wc-share-roots-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(base.join("fresh-dir")).expect("fixture directories");
+    let sibling = format!("{}-extra", base.display());
+    std::fs::create_dir_all(&sibling).expect("sibling fixture");
+    let root_canonical = base.canonicalize().expect("canonical fixture root");
+
+    let runtime = test_runtime();
+    let runner_auth = crate::auth::AuthContext {
+        username: Some("local-owner".to_string()),
+        role: Some("agent".to_string()),
+        token_kind: Some("agent".to_string()),
+        allowed_client_id: Some(CLIENT_A.to_string()),
+        project_grant_id: Some(GRANT_A.to_string()),
+        ..crate::auth::AuthContext::new(crate::auth::AuthKind::AgentToken)
+    };
+    let access = crate::runner_http::runner_access_from_auth(Some(&runner_auth)).unwrap();
+    runtime
+        .runner_registry
+        .register_with_auth(
+            crate::test_support::current_runner_registration(RunnerRegisterRequest {
+                computer_session_availability: None,
+                process_started_at: None,
+                build: None,
+                job_concurrency_limit: None,
+                job_inventory: None,
+                coding_agent_providers: None,
+                coding_agent_inventory: None,
+                client_id: CLIENT_A.to_string(),
+                runner_instance_id: INSTANCE_A.to_string(),
+                runner_protocol_generation: crate::runner_protocol::RUNNER_PROTOCOL_GENERATION_V2,
+                display_name: Some(CLIENT_A.to_string()),
+                owner: Some("local-owner".to_string()),
+                hostname: None,
+                host_context: None,
+                capabilities: RunnerCapabilities::default(),
+                policy: None,
+            }),
+            Some(&access),
+        )
+        .await
+        .unwrap();
+
+    let share_oauth = crate::auth::AuthContext {
+        role: Some("project".to_string()),
+        scopes: crate::auth::PROJECT_SHARE_OAUTH_SCOPES
+            .iter()
+            .map(|scope| (*scope).to_string())
+            .collect(),
+        token_kind: Some(crate::auth::PROJECT_SHARE_OAUTH_TOKEN_KIND.to_string()),
+        allowed_client_id: Some("project-share-oauth-client".to_string()),
+        project_grant_id: Some(GRANT_A.to_string()),
+        project_root_scopes: vec![root_canonical.clone()],
+        ..crate::auth::AuthContext::new(crate::auth::AuthKind::OAuth2Token)
+    };
+    assert!(share_oauth.is_oauth_project_subject());
+
+    // Inside the granted root, an unregistered directory opens the on-demand
+    // path instead of denying: the fence returns None and the caller proceeds
+    // to the ordinary idempotent project-op.
+    let admitted = runtime
+        .project_scoped_visible_project_for_exact_path(
+            CLIENT_A,
+            &base.join("fresh-dir").to_string_lossy(),
+            Some(&share_oauth),
+        )
+        .await
+        .expect("in-root path must not be scope-denied");
+    assert!(admitted.is_none(), "no registration exists yet");
+
+    // Outside the granted root the fence stays closed.
+    let outside = runtime
+        .project_scoped_visible_project_for_exact_path(CLIENT_A, &sibling, Some(&share_oauth))
+        .await;
+    assert!(outside.is_err(), "prefix sibling must stay denied");
+    let parent = runtime
+        .project_scoped_visible_project_for_exact_path(
+            CLIENT_A,
+            root_canonical.parent().unwrap().to_str().unwrap(),
+            Some(&share_oauth),
+        )
+        .await;
+    assert!(parent.is_err(), "root parent must stay denied");
+
+    // A project credential (non-OAuth share subject) never inherits the grant:
+    // its root scope list is empty by construction, so the same path denies.
+    let project_credential = crate::auth::shared_key::project_credential_context(GRANT_A);
+    let denied = runtime
+        .project_scoped_visible_project_for_exact_path(
+            CLIENT_A,
+            &base.join("fresh-dir").to_string_lossy(),
+            Some(&project_credential),
+        )
+        .await;
+    assert!(
+        denied.is_err(),
+        "project credential must not inherit the parent-root grant"
+    );
+
+    std::fs::remove_dir_all(&base).ok();
+    std::fs::remove_dir_all(&sibling).ok();
+}
+
+#[tokio::test]
 async fn project_grant_authority_is_identical_for_project_credential_and_share_oauth_across_direct_and_gateway(
 ) {
     const GRANT_A: &str = "wc_pgrant_aaaaaaaaaaaaaaaa";

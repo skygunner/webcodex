@@ -168,6 +168,24 @@ class HostTimingReportTests(unittest.TestCase):
                 self.assertNotIn("private-secret", process.stderr)
                 self.assertNotIn(str(base), process.stderr)
 
+    def test_input_json_depth_has_an_explicit_inclusive_limit(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "input.json"
+            for kind in ("array", "object"):
+                for depth in (128, 129):
+                    with self.subTest(kind=kind, depth=depth):
+                        value = "private-marker"
+                        for _ in range(depth - 1):
+                            value = [value] if kind == "array" else {"value": value}
+                        value = {"extra": value}
+                        source.write_text(json.dumps(value), encoding="utf-8")
+                        self.assertLess(source.stat().st_size, report.MAX_INPUT_JSON_BYTES)
+                        if depth == 128:
+                            self.assertEqual(report._read_bounded_json(source), value)
+                        else:
+                            with self.assertRaisesRegex(report.ReportError, "^invalid input JSON$"):
+                                report._read_bounded_json(source)
+
     def test_deeply_nested_json_reports_static_error_under_byte_limit(self):
         # A bounded raw input can still exhaust json.loads parser recursion.
         with tempfile.TemporaryDirectory() as root:

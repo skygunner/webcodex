@@ -25,6 +25,8 @@ MAX_SUMMARY_BYTES = 64 * 1024
 # Operator-supplied cohort and comparison JSON must also be bounded before
 # decoding; a valid but huge input cannot exhaust memory during parsing.
 MAX_INPUT_JSON_BYTES = 64 * 1024
+# Bound nesting independently of the JSON decoder's recursion strategy.
+MAX_INPUT_JSON_DEPTH = 128
 STRUCTURED = frozenset({
     "run_process", "run_script", "run_shell", "run_skill_resource",
     "cargo_check", "cargo_test", "cargo_fmt", "go_test",
@@ -73,10 +75,20 @@ def _read_bounded_json(path: Path) -> object:
     if len(raw) > MAX_INPUT_JSON_BYTES:
         raise ReportError("input JSON exceeds bounded size")
     try:
-        return json.loads(raw.decode("utf-8"))
+        value = json.loads(raw.decode("utf-8"))
     except (UnicodeError, ValueError, RecursionError) as exc:
         # Deeply nested JSON can exhaust the parser stack below the byte cap.
         raise ReportError("invalid input JSON") from exc
+    pending = [(value, 0)]
+    while pending:
+        item, depth = pending.pop()
+        if depth > MAX_INPUT_JSON_DEPTH:
+            raise ReportError("invalid input JSON")
+        if isinstance(item, dict):
+            pending.extend((child, depth + 1) for child in item.values())
+        elif isinstance(item, list):
+            pending.extend((child, depth + 1) for child in item)
+    return value
 
 
 def _load_policy(path: Path) -> dict:

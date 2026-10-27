@@ -724,3 +724,207 @@ fn register_project_overwrite_semantics_are_accurate() {
     assert_eq!(overwritten["created_config"], false);
     assert_eq!(overwritten["overwritten"], true);
 }
+
+#[test]
+fn resolve_or_register_project_rejects_target_outside_granted_roots_before_any_registration() {
+    let tmp = tempfile::tempdir().unwrap();
+    let granted = tmp.path().join("granted");
+    let inner = granted.join("inner");
+    let outside = tmp.path().join("outside");
+    std::fs::create_dir_all(&inner).unwrap();
+    std::fs::create_dir(&outside).unwrap();
+    let project_registry_dir = tmp.path().join("project-registry");
+    std::fs::create_dir(&project_registry_dir).unwrap();
+    let policy = project_policy(tmp.path());
+
+    let err = project_err(handle_resolve_or_register_project(
+        &policy,
+        &project_registry_dir,
+        &project_request(
+            "resolve_or_register_project",
+            serde_json::json!({
+                "path": outside.to_string_lossy(),
+                "project_root_scopes": [granted.to_string_lossy()],
+            }),
+        ),
+    ));
+    assert_eq!(err, "project_path_outside_granted_roots");
+    let records = std::fs::read_dir(&project_registry_dir)
+        .unwrap()
+        .filter(|entry| entry.as_ref().unwrap().path().extension() == Some("toml".as_ref()))
+        .count();
+    assert_eq!(
+        records, 0,
+        "a rejected target must not create any registration"
+    );
+}
+
+#[test]
+fn resolve_or_register_project_grant_gate_covers_existing_registrations() {
+    let tmp = tempfile::tempdir().unwrap();
+    let granted = tmp.path().join("granted");
+    std::fs::create_dir_all(granted.join("inner")).unwrap();
+    let outside = tmp.path().join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    let project_registry_dir = tmp.path().join("project-registry");
+    std::fs::create_dir(&project_registry_dir).unwrap();
+    let policy = project_policy(tmp.path());
+
+    // Pre-existing registration created without any grant: an outside target
+    // that is already registered must not be resolvable through a grant
+    // scoped to a different root either.
+    project_ok(handle_project_op(
+        &policy,
+        &project_registry_dir,
+        &project_request(
+            "register_project",
+            serde_json::json!({
+                "id": "outside-project",
+                "name": "Outside",
+                "path": outside.to_string_lossy(),
+                "allow_patch": false
+            }),
+        ),
+    ));
+
+    let err = project_err(handle_resolve_or_register_project(
+        &policy,
+        &project_registry_dir,
+        &project_request(
+            "resolve_or_register_project",
+            serde_json::json!({
+                "path": outside.to_string_lossy(),
+                "project_root_scopes": [granted.to_string_lossy()],
+            }),
+        ),
+    ));
+    assert_eq!(err, "project_path_outside_granted_roots");
+    let records = std::fs::read_dir(&project_registry_dir)
+        .unwrap()
+        .filter(|entry| entry.as_ref().unwrap().path().extension() == Some("toml".as_ref()))
+        .count();
+    assert_eq!(records, 1, "no second registration may appear");
+}
+
+#[test]
+fn resolve_or_register_project_accepts_target_inside_granted_roots_idempotently() {
+    let tmp = tempfile::tempdir().unwrap();
+    let granted = tmp.path().join("granted");
+    let inner = granted.join("inner");
+    std::fs::create_dir_all(&inner).unwrap();
+    let project_registry_dir = tmp.path().join("project-registry");
+    std::fs::create_dir(&project_registry_dir).unwrap();
+    let policy = project_policy(tmp.path());
+    let payload = serde_json::json!({
+        "path": inner.to_string_lossy(),
+        "project_root_scopes": [granted.to_string_lossy()],
+    });
+
+    let first = project_ok(handle_resolve_or_register_project(
+        &policy,
+        &project_registry_dir,
+        &project_request("resolve_or_register_project", payload.clone()),
+    ));
+    assert_eq!(first["outcome"], "auto_registered");
+    assert_eq!(first["registered"], true);
+    let second = project_ok(handle_resolve_or_register_project(
+        &policy,
+        &project_registry_dir,
+        &project_request("resolve_or_register_project", payload),
+    ));
+    assert_eq!(second["outcome"], "reused_existing_registration");
+    assert_eq!(second["registered"], false);
+    assert_eq!(second["agent_project_id"], first["agent_project_id"]);
+    let records = std::fs::read_dir(&project_registry_dir)
+        .unwrap()
+        .filter(|entry| entry.as_ref().unwrap().path().extension() == Some("toml".as_ref()))
+        .count();
+    assert_eq!(records, 1, "repeated calls keep one stable identity");
+}
+
+#[test]
+fn resolve_or_register_project_rejects_malformed_grant_scopes_fail_closed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let granted = tmp.path().join("granted");
+    std::fs::create_dir_all(granted.join("inner")).unwrap();
+    let project_registry_dir = tmp.path().join("project-registry");
+    std::fs::create_dir(&project_registry_dir).unwrap();
+    let policy = project_policy(tmp.path());
+    let granted = granted.to_string_lossy().to_string();
+
+    for (label, payload) in [
+        (
+            "relative root entry",
+            serde_json::json!({"path": tmp.path().join("granted/inner").to_string_lossy(), "project_root_scopes": ["relative/root"]}),
+        ),
+        (
+            "empty scope set",
+            serde_json::json!({"path": tmp.path().join("granted/inner").to_string_lossy(), "project_root_scopes": []}),
+        ),
+        (
+            "non-array scopes",
+            serde_json::json!({"path": tmp.path().join("granted/inner").to_string_lossy(), "project_root_scopes": granted}),
+        ),
+        (
+            "unknown second field",
+            serde_json::json!({"path": tmp.path().join("granted/inner").to_string_lossy(), "unrelated": true}),
+        ),
+    ] {
+        let err = project_err(handle_resolve_or_register_project(
+            &policy,
+            &project_registry_dir,
+            &project_request("resolve_or_register_project", payload),
+        ));
+        assert_eq!(err, "invalid_request", "{label}");
+        let records = std::fs::read_dir(&project_registry_dir)
+            .unwrap()
+            .filter(|entry| entry.as_ref().unwrap().path().extension() == Some("toml".as_ref()))
+            .count();
+        assert_eq!(records, 0, "{label}: no registration may be created");
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn resolve_or_register_project_rejects_target_flip_after_server_authorization() {
+    // Deterministic boundary test for the server-authorized-then-runner-commits
+    // window: the Server fence authorized this exact canonical target, then the
+    // directory component was replaced by a symlink before the Runner resolved
+    // it. The Runner-side grant check must refuse the commit: no registration,
+    // no reuse.
+    let tmp = tempfile::tempdir().unwrap();
+    let granted = tmp.path().join("granted");
+    let inner = granted.join("inner");
+    std::fs::create_dir_all(&inner).unwrap();
+    let outside = tmp.path().join("outside");
+    std::fs::create_dir_all(outside.join("secret")).unwrap();
+    let project_registry_dir = tmp.path().join("project-registry");
+    std::fs::create_dir(&project_registry_dir).unwrap();
+    let policy = project_policy(tmp.path());
+    let canonical_target = inner.canonicalize().unwrap();
+
+    // The flip: the authorized target becomes a symlink that escapes the grant.
+    std::fs::remove_dir(&inner).unwrap();
+    std::os::unix::fs::symlink(outside.join("secret"), &inner).expect("symlink");
+
+    let err = project_err(handle_resolve_or_register_project(
+        &policy,
+        &project_registry_dir,
+        &project_request(
+            "resolve_or_register_project",
+            serde_json::json!({
+                "path": canonical_target.to_string_lossy(),
+                "project_root_scopes": [granted.canonicalize().unwrap().to_string_lossy()],
+            }),
+        ),
+    ));
+    assert_eq!(err, "project_path_outside_granted_roots");
+    let records = std::fs::read_dir(&project_registry_dir)
+        .unwrap()
+        .filter(|entry| entry.as_ref().unwrap().path().extension() == Some("toml".as_ref()))
+        .count();
+    assert_eq!(
+        records, 0,
+        "a flipped target must not commit a registration"
+    );
+}

@@ -606,7 +606,7 @@ pub(crate) fn handle_resolve_or_register_project_operation(
             )
         }
     };
-    if payload.len() != 1 {
+    if payload.is_empty() || payload.len() > 2 {
         return structured_project_error_cmd(
             start,
             "invalid_request",
@@ -624,6 +624,59 @@ pub(crate) fn handle_resolve_or_register_project_operation(
                 "invalid_project_path",
                 false,
                 serde_json::json!({"field": "path"}),
+            )
+        }
+    };
+    // Optional project-share parent-root grant forwarded by the Server. The
+    // Server owns the grant; the Runner re-derives the admission decision
+    // against its own filesystem view of the committed target before its
+    // first side effect (the registry write below), so a path that resolves
+    // differently here than it did at the Server fence fails closed.
+    // Ordinary credentials omit the field and keep the exact previous
+    // behavior. Empty or non-absolute entries fail closed.
+    let granted_roots = match payload.get("project_root_scopes") {
+        None => {
+            if payload.len() != 1 {
+                return structured_project_error_cmd(
+                    start,
+                    "invalid_request",
+                    false,
+                    serde_json::json!({}),
+                );
+            }
+            None
+        }
+        Some(serde_json::Value::Array(items)) => {
+            if items.is_empty() {
+                return structured_project_error_cmd(
+                    start,
+                    "invalid_request",
+                    false,
+                    serde_json::json!({}),
+                );
+            }
+            let mut roots = Vec::with_capacity(items.len());
+            for item in items {
+                let Some(root) = item.as_str().filter(|root| {
+                    !root.is_empty() && !root.contains('\0') && Path::new(root).is_absolute()
+                }) else {
+                    return structured_project_error_cmd(
+                        start,
+                        "invalid_request",
+                        false,
+                        serde_json::json!({"field": "project_root_scopes"}),
+                    );
+                };
+                roots.push(PathBuf::from(root));
+            }
+            Some(roots)
+        }
+        Some(_) => {
+            return structured_project_error_cmd(
+                start,
+                "invalid_request",
+                false,
+                serde_json::json!({}),
             )
         }
     };
@@ -692,6 +745,26 @@ pub(crate) fn handle_resolve_or_register_project_operation(
             false,
             serde_json::json!({"field": "path"}),
         );
+    }
+    if let Some(granted_roots) = &granted_roots {
+        // Share-grant admission is judged on the Runner's own canonical
+        // resolution of the committed target, component-wise against the
+        // Server-granted canonical roots. This is the last gate before any
+        // resolution outcome below: neither an existing registration nor a
+        // fresh registration may be resolved outside the grant, and the
+        // Runner filesystem allowed_roots above is a coarser boundary that
+        // never substitutes for it.
+        if !granted_roots
+            .iter()
+            .any(|root| canonical_path.starts_with(root))
+        {
+            return structured_project_error_cmd(
+                start,
+                "project_path_outside_granted_roots",
+                false,
+                serde_json::json!({"field": "path"}),
+            );
+        }
     }
 
     let projects = match load_project_files_for_path_resolution(project_registry_dir) {

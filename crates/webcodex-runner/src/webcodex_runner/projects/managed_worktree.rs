@@ -543,7 +543,46 @@ pub(crate) fn handle_prepare_managed_worktree_operation(
     else {
         return managed_worktree_error(start, "invalid_request", false, None, None, None);
     };
-    if !matches!(payload.len(), 4 | 6) {
+    // Optional project-share parent-root grant forwarded by the Server. It
+    // authorizes the *source* the worktree derives from, judged on the
+    // Runner's own canonical resolution before any side effect; the derived
+    // sibling destination is a Runner-owned namespace and is not required to
+    // live inside the grant. Ordinary credentials omit the field and keep the
+    // exact previous payload. Malformed scopes fail closed.
+    let granted_roots = match payload.get("project_root_scopes") {
+        None => None,
+        Some(serde_json::Value::Array(items)) => {
+            if items.is_empty() {
+                return managed_worktree_error(start, "invalid_request", false, None, None, None);
+            }
+            let mut roots = Vec::with_capacity(items.len());
+            for item in items {
+                let Some(root) = item.as_str().filter(|root| {
+                    !root.is_empty() && !root.contains('\0') && Path::new(root).is_absolute()
+                }) else {
+                    return managed_worktree_error(
+                        start,
+                        "invalid_request",
+                        false,
+                        None,
+                        None,
+                        None,
+                    );
+                };
+                roots.push(PathBuf::from(root));
+            }
+            Some(roots)
+        }
+        Some(_) => {
+            return managed_worktree_error(start, "invalid_request", false, None, None, None)
+        }
+    };
+    let expected_field_counts = if granted_roots.is_some() {
+        [5usize, 7]
+    } else {
+        [4usize, 6]
+    };
+    if !expected_field_counts.contains(&payload.len()) {
         return managed_worktree_error(start, "invalid_request", false, None, None, None);
     }
     let Some(path) = payload
@@ -617,16 +656,6 @@ pub(crate) fn handle_prepare_managed_worktree_operation(
             )
         }
     };
-    if resume_project_id.is_some() && expected_source_identity.is_some() {
-        return managed_worktree_error(
-            start,
-            "invalid_request",
-            false,
-            Some(&base_ref),
-            None,
-            None,
-        );
-    }
     if validate_windows_project_root(Path::new(path)).is_err() {
         return managed_worktree_error(
             start,
@@ -667,6 +696,23 @@ pub(crate) fn handle_prepare_managed_worktree_operation(
             None,
         );
     }
+    if let Some(granted_roots) = &granted_roots {
+        // Share-grant admission is judged on the Runner's own canonical
+        // resolution of the source before any git invocation or registry
+        // write: a source that resolved inside the grant at Server-fence time
+        // but elsewhere here fails closed. The derived worktree destination is
+        // not part of this check; allowed_roots above still governs it.
+        if !granted_roots.iter().any(|root| source.starts_with(root)) {
+            return managed_worktree_error(
+                start,
+                "project_path_outside_granted_roots",
+                false,
+                Some(&base_ref),
+                None,
+                None,
+            );
+        }
+    }
     let source_root = match managed_worktree_git_text(&source, &["rev-parse", "--show-toplevel"])
         .ok()
         .and_then(|root| canonicalize_existing(Path::new(&root)).ok())
@@ -696,18 +742,6 @@ pub(crate) fn handle_prepare_managed_worktree_operation(
             )
         }
     };
-    if let Some(resume_project_id) = resume_project_id {
-        return resume_managed_worktree(
-            start,
-            policy,
-            project_registry_dir,
-            client_id,
-            &source_root,
-            source_dirty,
-            requested_base_ref.as_deref(),
-            resume_project_id,
-        );
-    }
     let source_projects = match load_project_files_for_path_resolution(project_registry_dir) {
         Ok(projects) => projects,
         Err(error) => {
@@ -735,6 +769,8 @@ pub(crate) fn handle_prepare_managed_worktree_operation(
                 )
             }
         };
+    // Validated before the resume short-circuit so a resume is anchored to the
+    // registered source identity too, not only to the stored source path.
     if expected_source_identity.is_some_and(|(expected_project_id, expected_root_fingerprint)| {
         expected_project_id != source_project_id
             || expected_root_fingerprint != source_root_fingerprint
@@ -749,6 +785,18 @@ pub(crate) fn handle_prepare_managed_worktree_operation(
                 "source_project_id": source_project_id,
                 "source_root_fingerprint": source_root_fingerprint,
             }),
+        );
+    }
+    if let Some(resume_project_id) = resume_project_id {
+        return resume_managed_worktree(
+            start,
+            policy,
+            project_registry_dir,
+            client_id,
+            &source_root,
+            source_dirty,
+            requested_base_ref.as_deref(),
+            resume_project_id,
         );
     }
     let base_sha = match exact_git_commit(&source_root, &base_ref) {

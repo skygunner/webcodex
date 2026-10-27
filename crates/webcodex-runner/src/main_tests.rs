@@ -1234,10 +1234,14 @@ fn seed_managed_worktree_repo(source: &Path) -> (String, String) {
 }
 
 fn register_managed_source_project(registry: &Path, source: &Path) {
+    register_managed_source_project_as(registry, source, "source");
+}
+
+fn register_managed_source_project_as(registry: &Path, source: &Path, id: &str) {
     std::fs::create_dir_all(registry).unwrap();
     let source = source.canonicalize().unwrap();
     let project = RunnerProjectFile {
-        id: "source".to_string(),
+        id: id.to_string(),
         path: source.to_string_lossy().into_owned(),
         shell_profile: None,
         allow_patch: true,
@@ -1256,7 +1260,7 @@ fn register_managed_source_project(registry: &Path, source: &Path) {
         managed_operation_id: None,
     };
     std::fs::write(
-        registry.join("source.toml"),
+        registry.join(format!("{id}.toml")),
         toml::to_string(&project).unwrap(),
     )
     .unwrap();
@@ -1279,10 +1283,11 @@ fn managed_worktree_request(
     )
 }
 
-fn managed_worktree_request_with_source_identity(
+fn managed_worktree_request_with_expected_identity(
     source: &Path,
     base_ref: serde_json::Value,
     operation_id: &str,
+    resume_project_id: Option<&str>,
     source_project_id: &str,
     source_root_fingerprint: &str,
 ) -> RunnerRequest {
@@ -1292,10 +1297,27 @@ fn managed_worktree_request_with_source_identity(
             "path": source.to_string_lossy(),
             "base_ref": base_ref,
             "operation_id": operation_id,
-            "resume_project_id": null,
+            "resume_project_id": resume_project_id,
             "expected_source_project_id": source_project_id,
             "expected_source_root_fingerprint": source_root_fingerprint,
         }),
+    )
+}
+
+fn managed_worktree_request_with_source_identity(
+    source: &Path,
+    base_ref: serde_json::Value,
+    operation_id: &str,
+    source_project_id: &str,
+    source_root_fingerprint: &str,
+) -> RunnerRequest {
+    managed_worktree_request_with_expected_identity(
+        source,
+        base_ref,
+        operation_id,
+        None,
+        source_project_id,
+        source_root_fingerprint,
     )
 }
 
@@ -1450,6 +1472,171 @@ fn managed_worktree_expected_source_identity_is_revalidated_before_creation() {
     assert_eq!(error["state_changed"], false);
     assert_eq!(error["source_project_id"], "source");
     assert!(!tmp.path().join(".webcodex-worktrees").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn managed_worktree_expected_source_identity_denies_symlink_source_switched_to_other_project() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source");
+    let other = tmp.path().join("other");
+    let registry = tmp.path().join("project-registry");
+    seed_managed_worktree_repo(&source);
+    seed_managed_worktree_repo(&other);
+    register_managed_source_project_as(&registry, &source, "source");
+    register_managed_source_project_as(&registry, &other, "other");
+    // A symlink is exact-path aliasing only: the request path resolves to the
+    // other registered project's canonical root, and the root fingerprint is a
+    // hash of that canonical path (not an inode identity), so id and
+    // fingerprint both stop matching the expected source.
+    let alias = tmp.path().join("alias");
+    std::os::unix::fs::symlink(&other, &alias).unwrap();
+    let policy = project_policy(tmp.path());
+
+    let error = project_error_value(handle_prepare_managed_worktree(
+        &policy,
+        &registry,
+        &managed_worktree_request_with_expected_identity(
+            &alias,
+            serde_json::Value::Null,
+            "22222222-2222-4222-8222-222222222222",
+            None,
+            "source",
+            &project_root_fingerprint(&source.canonicalize().unwrap()),
+        ),
+    ));
+    assert_eq!(
+        error["error_code"],
+        "managed_worktree_source_identity_changed"
+    );
+    assert_eq!(error["state_changed"], false);
+    assert_eq!(
+        error["source_project_id"], "other",
+        "the symlink must resolve to the registered project it points at"
+    );
+    assert!(
+        !tmp.path().join(".webcodex-worktrees").exists(),
+        "an identity mismatch must deny before any worktree side effect"
+    );
+    assert_eq!(
+        load_runner_project_summaries_from_dir(&registry).len(),
+        2,
+        "a denied identity switch must not add Project records"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn managed_worktree_expected_source_identity_resume_denies_symlink_source_switched_to_other_project(
+) {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source");
+    let other = tmp.path().join("other");
+    let registry = tmp.path().join("project-registry");
+    seed_managed_worktree_repo(&source);
+    seed_managed_worktree_repo(&other);
+    register_managed_source_project_as(&registry, &source, "source");
+    register_managed_source_project_as(&registry, &other, "other");
+    let policy = project_policy(tmp.path());
+    let operation = "23232323-2323-4323-8323-232323232323";
+    let created = project_ok(handle_prepare_managed_worktree(
+        &policy,
+        &registry,
+        &managed_worktree_request_with_source_identity(
+            &source,
+            serde_json::Value::Null,
+            operation,
+            "source",
+            &project_root_fingerprint(&source.canonicalize().unwrap()),
+        ),
+    ));
+    let managed_id = created["agent_project_id"].as_str().unwrap();
+    let worktree_path = created["path"].as_str().unwrap().to_string();
+
+    // The caller's source path is now a symlink to a different registered
+    // project; the expected identity still names the original source.
+    let alias = tmp.path().join("alias");
+    std::os::unix::fs::symlink(&other, &alias).unwrap();
+    let resume = managed_worktree_request_with_expected_identity(
+        &alias,
+        serde_json::Value::Null,
+        operation,
+        Some(managed_id),
+        "source",
+        &project_root_fingerprint(&source.canonicalize().unwrap()),
+    );
+    let error = project_error_value(handle_prepare_managed_worktree(&policy, &registry, &resume));
+    assert_eq!(error["state_changed"], false);
+    assert!(
+        error["error_code"] == "managed_worktree_source_identity_changed"
+            || error["error_code"] == "managed_worktree_resume_mismatch",
+        "expected identity must fail closed on resume, got: {error}"
+    );
+    assert!(
+        Path::new(&worktree_path).exists(),
+        "the existing managed worktree must remain untouched"
+    );
+    assert_eq!(
+        std::fs::read_dir(tmp.path().join(".webcodex-worktrees"))
+            .unwrap()
+            .count(),
+        1,
+        "a denied resume must not create additional worktrees"
+    );
+    assert_eq!(
+        load_runner_project_summaries_from_dir(&registry).len(),
+        3,
+        "a denied resume must not add Project records"
+    );
+}
+
+#[test]
+fn managed_worktree_expected_source_identity_allows_resume_without_duplicate() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source");
+    let registry = tmp.path().join("project-registry");
+    seed_managed_worktree_repo(&source);
+    register_managed_source_project(&registry, &source);
+    let policy = project_policy(tmp.path());
+    let operation = "21212121-2121-4121-8121-212121212121";
+    let fingerprint = project_root_fingerprint(&source.canonicalize().unwrap());
+    let created = project_ok(handle_prepare_managed_worktree(
+        &policy,
+        &registry,
+        &managed_worktree_request_with_source_identity(
+            &source,
+            serde_json::Value::Null,
+            operation,
+            "source",
+            &fingerprint,
+        ),
+    ));
+    let resume = managed_worktree_request_with_expected_identity(
+        &source,
+        serde_json::Value::Null,
+        operation,
+        created["agent_project_id"].as_str(),
+        "source",
+        &fingerprint,
+    );
+    let resumed = project_ok(handle_prepare_managed_worktree(&policy, &registry, &resume));
+    assert_eq!(resumed["agent_project_id"], created["agent_project_id"]);
+    assert_eq!(resumed["path"], created["path"]);
+    assert_eq!(resumed["outcome"], "managed_worktree_recovered");
+    assert_eq!(resumed["registered"], false);
+    assert_eq!(resumed["changed"], false);
+    assert_eq!(
+        load_runner_project_summaries_from_dir(&registry).len(),
+        2,
+        "a matching identity resume must reuse the existing managed record"
+    );
+    assert_eq!(
+        std::fs::read_dir(tmp.path().join(".webcodex-worktrees"))
+            .unwrap()
+            .count(),
+        1,
+        "a matching identity resume must not create a second worktree"
+    );
 }
 
 #[test]
@@ -2137,4 +2324,285 @@ async fn websocket_session_accepts_pong_without_error_or_disconnect() {
     );
 
     server_task.await.unwrap();
+}
+
+/// Reachability fixture for the share-grant managed-worktree boundary.
+///
+/// The spelling the Server authorizes lives inside a granted parent; by the
+/// time the Runner resolves it, the link points at an *existing registered*
+/// project outside the grant that is still inside the Runner allowed_roots.
+/// Without a forwarded share grant the Runner has no way to tell the
+/// difference, which is exactly the boundary under test.
+#[cfg(unix)]
+fn seed_managed_source_flip(
+    tmp: &Path,
+) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    let source_root = tmp.join("outside").join("repo");
+    seed_managed_worktree_repo(&source_root);
+    let registry = tmp.join("project-registry");
+    register_managed_source_project(&registry, &source_root);
+    let granted = tmp.join("granted");
+    std::fs::create_dir(&granted).unwrap();
+    std::fs::create_dir(granted.join("placeholder")).unwrap();
+    std::os::unix::fs::symlink(&source_root, granted.join("link")).unwrap();
+    (granted, registry, source_root)
+}
+
+#[test]
+#[cfg(unix)]
+fn managed_worktree_without_share_grant_keeps_pre_fix_behavior() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (granted, registry, source_root) = seed_managed_source_flip(tmp.path());
+    let policy = project_policy(tmp.path());
+    // Ordinary credentials forward no grant: the derived worktree from the
+    // flipped, outside-grant source still succeeds, which proves this branch
+    // had no share-grant enforcement before the fix.
+    let result = project_ok(handle_prepare_managed_worktree(
+        &policy,
+        &registry,
+        &managed_worktree_request(
+            &granted.join("link"),
+            serde_json::Value::Null,
+            "22222222-2222-4222-8222-222222222222",
+            None,
+        ),
+    ));
+    assert_eq!(result["outcome"], "managed_worktree_created");
+    assert_eq!(result["registered"], true);
+    let worktree = std::path::PathBuf::from(result["path"].as_str().unwrap());
+    assert_ne!(
+        worktree.canonicalize().unwrap(),
+        source_root.canonicalize().unwrap()
+    );
+    let records = std::fs::read_dir(&registry)
+        .unwrap()
+        .filter(|entry| entry.as_ref().unwrap().path().extension() == Some("toml".as_ref()))
+        .count();
+    assert_eq!(records, 2, "fixture proof: a second project was registered");
+}
+
+fn managed_worktree_request_with_grant(
+    source: &Path,
+    base_ref: serde_json::Value,
+    operation_id: &str,
+    resume_project_id: Option<&str>,
+    granted_roots: &[&Path],
+) -> RunnerRequest {
+    project_request(
+        "prepare_managed_worktree",
+        serde_json::json!({
+            "path": source.to_string_lossy(),
+            "base_ref": base_ref,
+            "operation_id": operation_id,
+            "resume_project_id": resume_project_id,
+            "project_root_scopes": granted_roots
+                .iter()
+                .map(|root| root.to_string_lossy())
+                .collect::<Vec<_>>(),
+        }),
+    )
+}
+
+fn managed_registry_records(registry: &Path) -> usize {
+    std::fs::read_dir(registry)
+        .unwrap()
+        .filter(|entry| entry.as_ref().unwrap().path().extension() == Some("toml".as_ref()))
+        .count()
+}
+
+#[test]
+fn managed_worktree_share_grant_source_inside_grant_succeeds() {
+    let tmp = tempfile::tempdir().unwrap();
+    let granted = tmp.path().join("granted");
+    let source = granted.join("repo");
+    let registry = tmp.path().join("project-registry");
+    seed_managed_worktree_repo(&source);
+    register_managed_source_project(&registry, &source);
+    let policy = project_policy(tmp.path());
+    let granted_root = granted.canonicalize().unwrap();
+
+    let result = project_ok(handle_prepare_managed_worktree(
+        &policy,
+        &registry,
+        &managed_worktree_request_with_grant(
+            &source,
+            serde_json::Value::Null,
+            "33333333-3333-4333-8333-333333333333",
+            None,
+            &[granted_root.as_path()],
+        ),
+    ));
+    assert_eq!(result["outcome"], "managed_worktree_created");
+    assert_eq!(result["registered"], true);
+    let worktree = std::path::PathBuf::from(result["path"].as_str().unwrap())
+        .canonicalize()
+        .unwrap();
+    // The derived sibling layout is Runner-owned and deliberately outside the
+    // source grant while still inside allowed_roots.
+    assert!(
+        !webcodex_runner_config::paths::path_is_within(&worktree, &granted_root),
+        "{worktree:?}"
+    );
+    assert!(webcodex_runner_config::paths::path_is_within(
+        &worktree,
+        &tmp.path().canonicalize().unwrap()
+    ));
+    assert_eq!(managed_registry_records(&registry), 2);
+}
+
+#[test]
+#[cfg(unix)]
+fn managed_worktree_share_grant_rejects_flipped_source_outside_grant() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (granted, registry, _source_root) = seed_managed_source_flip(tmp.path());
+    let policy = project_policy(tmp.path());
+    let granted_root = granted.canonicalize().unwrap();
+
+    let error = project_error_value(handle_prepare_managed_worktree(
+        &policy,
+        &registry,
+        &managed_worktree_request_with_grant(
+            &granted.join("link"),
+            serde_json::Value::Null,
+            "44444444-4444-4444-8444-444444444444",
+            None,
+            &[granted_root.as_path()],
+        ),
+    ));
+    assert_eq!(error["error_code"], "project_path_outside_granted_roots");
+    assert_eq!(error["state_changed"], false);
+    // No side effects: no extra registration and no managed-worktree namespace.
+    assert_eq!(managed_registry_records(&registry), 1);
+    assert!(!tmp.path().join(".webcodex-worktrees").exists());
+}
+
+#[test]
+fn managed_worktree_share_grant_retry_and_resume_do_not_widen_or_duplicate() {
+    let tmp = tempfile::tempdir().unwrap();
+    let granted = tmp.path().join("granted");
+    let source = granted.join("repo");
+    let registry = tmp.path().join("project-registry");
+    seed_managed_worktree_repo(&source);
+    register_managed_source_project(&registry, &source);
+    let policy = project_policy(tmp.path());
+    let granted_root = granted.canonicalize().unwrap();
+    let operation_id = "55555555-5555-4555-8555-555555555555";
+
+    let first = project_ok(handle_prepare_managed_worktree(
+        &policy,
+        &registry,
+        &managed_worktree_request_with_grant(
+            &source,
+            serde_json::Value::Null,
+            operation_id,
+            None,
+            &[granted_root.as_path()],
+        ),
+    ));
+    assert_eq!(first["outcome"], "managed_worktree_created");
+    let worktree_id = first["agent_project_id"].as_str().unwrap().to_string();
+    assert_eq!(managed_registry_records(&registry), 2);
+
+    // Same operation_id: re-observe the deterministic target, never a second
+    // worktree, never an extra grant.
+    let retry = project_ok(handle_prepare_managed_worktree(
+        &policy,
+        &registry,
+        &managed_worktree_request_with_grant(
+            &source,
+            serde_json::Value::Null,
+            operation_id,
+            None,
+            &[granted_root.as_path()],
+        ),
+    ));
+    assert_eq!(retry["outcome"], "managed_worktree_recovered");
+    assert_eq!(retry["agent_project_id"], worktree_id);
+    assert_eq!(managed_registry_records(&registry), 2);
+
+    // Resume that points at the existing managed project but whose source is
+    // outside the grant is refused before resolution: resuming never widens
+    // the grant.
+    let outside = tmp.path().join("outside").join("repo");
+    seed_managed_worktree_repo(&outside);
+    let error = project_error_value(handle_prepare_managed_worktree(
+        &policy,
+        &registry,
+        &managed_worktree_request_with_grant(
+            &outside,
+            serde_json::Value::Null,
+            operation_id,
+            Some(&worktree_id),
+            &[granted_root.as_path()],
+        ),
+    ));
+    assert_eq!(error["error_code"], "project_path_outside_granted_roots");
+    assert_eq!(managed_registry_records(&registry), 2);
+
+    // The legitimate resume still converges on the same identity.
+    let resumed = project_ok(handle_prepare_managed_worktree(
+        &policy,
+        &registry,
+        &managed_worktree_request_with_grant(
+            &source,
+            serde_json::Value::Null,
+            operation_id,
+            Some(&worktree_id),
+            &[granted_root.as_path()],
+        ),
+    ));
+    assert_eq!(resumed["agent_project_id"], worktree_id);
+    assert_eq!(managed_registry_records(&registry), 2);
+}
+
+#[test]
+fn managed_worktree_rejects_malformed_grant_scopes_fail_closed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let granted = tmp.path().join("granted");
+    let source = granted.join("repo");
+    let registry = tmp.path().join("project-registry");
+    seed_managed_worktree_repo(&source);
+    register_managed_source_project(&registry, &source);
+    let policy = project_policy(tmp.path());
+    let granted_root = granted.canonicalize().unwrap();
+
+    let mut base = |extra: serde_json::Value| {
+        let mut payload = serde_json::json!({
+            "path": source.to_string_lossy(),
+            "base_ref": serde_json::Value::Null,
+            "operation_id": "66666666-6666-4666-8666-666666666666",
+            "resume_project_id": serde_json::Value::Null,
+        });
+        for (key, value) in extra.as_object().unwrap() {
+            payload[key] = value.clone();
+        }
+        project_request("prepare_managed_worktree", payload)
+    };
+
+    for (label, payload) in [
+        (
+            "relative root entry",
+            serde_json::json!({"project_root_scopes": ["relative/root"]}),
+        ),
+        (
+            "empty scope set",
+            serde_json::json!({"project_root_scopes": []}),
+        ),
+        (
+            "non-array scopes",
+            serde_json::json!({"project_root_scopes": granted_root.to_string_lossy()}),
+        ),
+        (
+            "unknown fifth field",
+            serde_json::json!({"unexpected": true}),
+        ),
+    ] {
+        let error = project_error_value(handle_prepare_managed_worktree(
+            &policy,
+            &registry,
+            &base(payload),
+        ));
+        assert_eq!(error["error_code"], "invalid_request", "{label}");
+        assert_eq!(managed_registry_records(&registry), 1, "{label}");
+    }
 }

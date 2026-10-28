@@ -24,9 +24,9 @@ use webcodex_core::coding_agent::{
     CodingAgentStartRequest, CodingAgentTerminal, CODING_AGENT_MAX_CONFIG_KEY_BYTES,
     CODING_AGENT_MAX_CONFIG_LABEL_BYTES, CODING_AGENT_MAX_CONFIG_OPTIONS,
     CODING_AGENT_MAX_CONFIG_SELECT_CHOICES, CODING_AGENT_MAX_ENV_MAPPINGS,
-    CODING_AGENT_MAX_EVENTS_PER_RESPONSE, CODING_AGENT_MAX_INVENTORY_RUNS,
-    CODING_AGENT_OBSERVE_WAIT_MAX_SECS, CODING_AGENT_TIMEOUT_MAX_SECS,
-    CODING_AGENT_TIMEOUT_MIN_SECS,
+    CODING_AGENT_MAX_ENV_NAME_BYTES, CODING_AGENT_MAX_EVENTS_PER_RESPONSE,
+    CODING_AGENT_MAX_INVENTORY_RUNS, CODING_AGENT_OBSERVE_WAIT_MAX_SECS,
+    CODING_AGENT_TIMEOUT_MAX_SECS, CODING_AGENT_TIMEOUT_MIN_SECS,
 };
 
 const IDEMPOTENCY_KEY_MAX_BYTES: usize = 256;
@@ -1399,15 +1399,7 @@ impl ToolRuntime {
                 .await
             {
                 Ok(Ok(response)) => response,
-                Ok(Err(_)) | Err(_) => {
-                    return coding_agent_error(
-                        "coding_agent_diagnose_response_lost",
-                        "Runner did not answer the diagnostic in time; the Runner owns ephemeral probe cleanup on every exit path",
-                        "not_started",
-                        RecoveryKind::Reobserve,
-                        Some(run_id),
-                    )
-                }
+                Ok(Err(_)) | Err(_) => return diagnose_response_lost(include_live_acp, run_id),
             };
         diagnose_result_from_response(
             response,
@@ -1415,6 +1407,7 @@ impl ToolRuntime {
             provider_id,
             provider_instance_id,
             run_id,
+            include_live_acp,
         )
     }
 
@@ -1775,6 +1768,18 @@ fn diagnose_run_id(principal: &str, provider_id: &str, provider_instance_id: &st
     )
 }
 
+/// Once a live request was queued the Runner may have launched its provider,
+/// even if the response channel was lost. Never claim that did not happen.
+pub(crate) fn diagnose_response_lost(include_live_acp: bool, run_id: &str) -> ToolResult {
+    coding_agent_error(
+        "coding_agent_diagnose_response_lost",
+        "Runner did not answer the diagnostic in time; the Runner owns ephemeral probe cleanup on every exit path",
+        if include_live_acp { "outcome_unknown" } else { "not_started" },
+        RecoveryKind::Reobserve,
+        Some(run_id),
+    )
+}
+
 fn recovery_kind_from_wire(recovery: Option<&str>) -> RecoveryKind {
     match recovery {
         Some("fix_input") => RecoveryKind::FixInput,
@@ -1838,6 +1843,33 @@ pub(crate) fn live_acp_bound_violation(live: &CodingAgentLiveAcpDiagnostic) -> O
                 return Some("live diagnostic choice label exceeded its bound".to_string());
             }
         }
+        match option.kind.as_str() {
+            "select" => {
+                if option.current.as_ref().is_some_and(|current| {
+                    !option.choices.iter().any(|choice| &choice.value == current)
+                }) {
+                    return Some(
+                        "live diagnostic current select value was not an advertised choice"
+                            .to_string(),
+                    );
+                }
+            }
+            "boolean" => {
+                if !option.choices.is_empty()
+                    || option.choices_truncated
+                    || option
+                        .current
+                        .as_deref()
+                        .is_some_and(|value| value != "true" && value != "false")
+                {
+                    return Some(
+                        "live diagnostic boolean option contained invalid choices or current value"
+                            .to_string(),
+                    );
+                }
+            }
+            _ => unreachable!("kind was validated above"),
+        }
     }
     None
 }
@@ -1866,6 +1898,7 @@ pub(crate) fn diagnose_result_from_response(
     provider_id: &str,
     provider_instance_id: &str,
     run_id: &str,
+    include_live_acp: bool,
 ) -> ToolResult {
     match response.payload {
         Some(CodingAgentResponsePayload::Diagnose {
@@ -1883,10 +1916,29 @@ pub(crate) fn diagnose_result_from_response(
                     Some(run_id),
                 );
             }
-            if env_presence.len() > CODING_AGENT_MAX_ENV_MAPPINGS {
+            if env_presence.len() > CODING_AGENT_MAX_ENV_MAPPINGS
+                || env_presence.keys().any(|name| {
+                    name.is_empty()
+                        || name.len() > CODING_AGENT_MAX_ENV_NAME_BYTES
+                        || !name.is_ascii()
+                        || name.contains('\0')
+                        || name.contains('=')
+                })
+            {
                 return coding_agent_error(
                     "invalid_runner_response",
-                    "diagnostic environment-presence map exceeded its bound",
+                    "diagnostic environment-presence names or count exceeded their bounds",
+                    "not_started",
+                    RecoveryKind::Reobserve,
+                    Some(run_id),
+                );
+            }
+            // Presence-only callers have no authority to request live option
+            // values; reject a mismatched Runner payload instead of projecting it.
+            if live_acp.is_some() != include_live_acp {
+                return coding_agent_error(
+                    "invalid_runner_response",
+                    "Runner diagnostic live ACP payload did not match the requested mode",
                     "not_started",
                     RecoveryKind::Reobserve,
                     Some(run_id),

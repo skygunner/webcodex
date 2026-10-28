@@ -1,7 +1,9 @@
 use super::support::*;
 use crate::auth::{AuthContext, AuthKind};
 use crate::runner_protocol::{RunnerCapabilities, RunnerRegisterRequest};
-use crate::tool_runtime::coding_agent::{diagnose_result_from_response, live_acp_bound_violation};
+use crate::tool_runtime::coding_agent::{
+    diagnose_response_lost, diagnose_result_from_response, live_acp_bound_violation,
+};
 use crate::tool_runtime::permissions::{AuthorityMode, PermissionEvaluator};
 use crate::tool_runtime::{ToolCall, ToolRuntime};
 use serde_json::{json, Value};
@@ -9,9 +11,9 @@ use webcodex_core::coding_agent::{
     CodingAgentDiagnoseOutcome, CodingAgentDiagnosePhase, CodingAgentDispatchState,
     CodingAgentLiveAcpDiagnostic, CodingAgentLiveConfigChoice, CodingAgentLiveConfigOption,
     CodingAgentProvider, CodingAgentResponse, CodingAgentResponsePayload,
-    CODING_AGENT_MAX_CONFIG_KEY_BYTES,
-    CODING_AGENT_MAX_CONFIG_LABEL_BYTES, CODING_AGENT_MAX_CONFIG_OPTIONS,
-    CODING_AGENT_MAX_CONFIG_SELECT_CHOICES, CODING_AGENT_MAX_ENV_MAPPINGS,
+    CODING_AGENT_MAX_CONFIG_KEY_BYTES, CODING_AGENT_MAX_CONFIG_LABEL_BYTES,
+    CODING_AGENT_MAX_CONFIG_OPTIONS, CODING_AGENT_MAX_CONFIG_SELECT_CHOICES,
+    CODING_AGENT_MAX_ENV_MAPPINGS,
 };
 
 fn oauth(scopes: &[&str]) -> AuthContext {
@@ -326,6 +328,7 @@ fn diagnose_response_with_mismatched_provider_identity_fails_closed() {
         "codex",
         "private-instance-codex",
         "wc_agent_run_x",
+        false,
     );
     assert!(!result.success);
     assert_eq!(result.output["error_kind"], "invalid_runner_response");
@@ -346,6 +349,7 @@ fn diagnose_response_maps_runner_failures_to_closed_reasons() {
         "codex",
         "private-instance-codex",
         "wc_agent_run_x",
+        false,
     );
     assert!(!result.success);
     assert_eq!(result.output["error_kind"], "stale_coding_agent_provider");
@@ -362,6 +366,7 @@ fn diagnose_response_maps_runner_failures_to_closed_reasons() {
         "codex",
         "private-instance-codex",
         "wc_agent_run_x",
+        false,
     );
     assert_eq!(result.output["error_kind"], "invalid_runner_response");
 }
@@ -384,6 +389,7 @@ fn diagnose_success_projection_is_bounded_and_discloses_nothing_sensitive() {
         "codex",
         "private-instance-codex",
         "wc_agent_run_x",
+        true,
     );
     assert!(result.success);
     let serialized = result.output.to_string();
@@ -413,6 +419,7 @@ fn diagnose_success_projection_is_bounded_and_discloses_nothing_sensitive() {
         "codex",
         "private-instance-codex",
         "wc_agent_run_x",
+        false,
     );
     assert_eq!(result.output["live_acp"], Value::Null);
 
@@ -470,6 +477,7 @@ fn diagnose_response_bounds_fail_closed() {
             "codex",
             "private-instance-codex",
             "wc_agent_run_x",
+            true,
         );
         assert!(!result.success, "{label}");
         assert_eq!(result.output["error_kind"], "invalid_runner_response");
@@ -484,6 +492,7 @@ fn diagnose_response_bounds_fail_closed() {
         "codex",
         "private-instance-codex",
         "wc_agent_run_x",
+        true,
     );
     assert_eq!(result.output["error_kind"], "invalid_runner_response");
     // Oversized environment-presence map.
@@ -501,6 +510,7 @@ fn diagnose_response_bounds_fail_closed() {
         "codex",
         "private-instance-codex",
         "wc_agent_run_x",
+        false,
     );
     assert_eq!(result.output["error_kind"], "invalid_runner_response");
 }
@@ -532,6 +542,74 @@ fn live_acp_bound_violation_rejects_unstable_identities() {
         vec!["m1".to_string()]
     )]))
     .is_none());
+}
+
+#[test]
+fn diagnose_response_lost_preserves_possible_live_launch() {
+    let live = diagnose_response_lost(true, "wc_agent_run_x");
+    assert!(!live.success);
+    assert_eq!(
+        live.output["error_kind"],
+        "coding_agent_diagnose_response_lost"
+    );
+    assert_eq!(live.output["execution_state"], "outcome_unknown");
+    let presence = diagnose_response_lost(false, "wc_agent_run_x");
+    assert_eq!(presence.output["execution_state"], "not_started");
+}
+
+#[test]
+fn diagnose_response_rejects_mode_mismatch_and_unbounded_env_names() {
+    let live = live_ok(vec![select_option("model", vec!["m1".to_string()])]);
+    for (response, requested_live) in [
+        (success_response(serde_json::Map::new(), Some(live)), false),
+        (success_response(serde_json::Map::new(), None), true),
+    ] {
+        let result = diagnose_result_from_response(
+            response,
+            "agent:mini:demo",
+            "codex",
+            "private-instance-codex",
+            "wc_agent_run_x",
+            requested_live,
+        );
+        assert_eq!(result.output["error_kind"], "invalid_runner_response");
+    }
+    for invalid in [
+        "X".repeat(webcodex_core::coding_agent::CODING_AGENT_MAX_ENV_NAME_BYTES + 1),
+        "HAS=EQUALS".to_string(),
+        "\u{4e2d}".to_string(),
+    ] {
+        let response = success_response(serde_json::Map::from_iter([(invalid, json!(true))]), None);
+        let result = diagnose_result_from_response(
+            response,
+            "agent:mini:demo",
+            "codex",
+            "private-instance-codex",
+            "wc_agent_run_x",
+            false,
+        );
+        assert_eq!(result.output["error_kind"], "invalid_runner_response");
+    }
+}
+
+#[test]
+fn live_diagnostic_current_must_be_from_advertised_choices() {
+    let mut unknown = select_option("model", vec!["model-a".to_string()]);
+    unknown.current = Some("unadvertised-private-value".into());
+    assert!(live_acp_bound_violation(&live_ok(vec![unknown])).is_some());
+
+    let mut bool_option = select_option("auto", vec![]);
+    bool_option.kind = "boolean".into();
+    bool_option.current = Some("true".into());
+    assert!(live_acp_bound_violation(&live_ok(vec![bool_option.clone()])).is_none());
+    bool_option.current = Some("secret".into());
+    assert!(live_acp_bound_violation(&live_ok(vec![bool_option.clone()])).is_some());
+    bool_option.current = Some("false".into());
+    bool_option.choices.push(CodingAgentLiveConfigChoice {
+        value: "unexpected".into(),
+        label: None,
+    });
+    assert!(live_acp_bound_violation(&live_ok(vec![bool_option])).is_some());
 }
 
 // Full governance path: the router pre-resolves the Project, then the runtime

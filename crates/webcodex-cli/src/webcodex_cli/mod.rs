@@ -76,8 +76,8 @@ pub(crate) use login::{
     LogoutOptions, StatusOptions,
 };
 pub(crate) use ops::{
-    run_ops_command, OpsCommand, OpsCommonOptions, OpsRunnerOptions, OpsSmokePreflightOptions,
-    OpsWindowsOptions,
+    run_ops_command, OpsCommand, OpsCommonOptions, OpsDiagnoseProviderOptions, OpsRunnerOptions,
+    OpsSmokePreflightOptions, OpsWindowsOptions,
 };
 #[cfg(test)]
 pub(crate) use output::RevisionComparison;
@@ -134,13 +134,14 @@ pub(crate) use tokens::{
 };
 pub(crate) use usage::{
     connect_usage, controller_usage, disconnect_usage, login_usage, logout_usage,
-    ops_projects_usage, ops_runner_usage, ops_runners_usage, ops_smoke_preflight_usage,
-    ops_status_usage, ops_usage, ops_windows_usage, pairing_create_usage, pairing_usage,
-    plugin_check_usage, plugin_describe_usage, plugin_init_usage, plugin_list_usage,
-    plugin_reload_usage, plugin_usage, project_activate_usage, project_register_usage,
-    runner_init_usage, runner_install_service_usage, runner_status_usage, runner_usage,
-    server_init_usage, server_install_service_usage, server_status_usage, server_tunnel_usage,
-    server_usage, status_usage, usage,
+    ops_diagnose_provider_usage, ops_projects_usage, ops_runner_usage, ops_runners_usage,
+    ops_smoke_preflight_usage, ops_status_usage, ops_usage, ops_windows_usage,
+    pairing_create_usage, pairing_usage, plugin_check_usage, plugin_describe_usage,
+    plugin_init_usage, plugin_list_usage, plugin_reload_usage, plugin_usage,
+    project_activate_usage, project_register_usage, runner_init_usage,
+    runner_install_service_usage, runner_status_usage, runner_usage, server_init_usage,
+    server_install_service_usage, server_status_usage, server_tunnel_usage, server_usage,
+    status_usage, usage,
 };
 
 #[cfg(test)]

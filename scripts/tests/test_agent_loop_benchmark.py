@@ -490,6 +490,27 @@ class AgentLoopBenchmarkTests(unittest.TestCase):
             with self.assertRaisesRegex(benchmark.BenchmarkError, "status must be"):
                 benchmark._load_driver_receipt(receipt)
 
+    def test_driver_receipt_depth_has_an_explicit_inclusive_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            receipt = Path(tmp) / "receipt.json"
+            for kind in ("array", "object"):
+                for depth in (128, 129):
+                    with self.subTest(kind=kind, depth=depth):
+                        value: object = "private-marker"
+                        for _ in range(depth - 1):
+                            value = [value] if kind == "array" else {"value": value}
+                        document = {"status": "unsupported", "extra": value}
+                        receipt.write_text(json.dumps(document), encoding="utf-8")
+                        self.assertLess(receipt.stat().st_size, benchmark.MAX_DRIVER_RECEIPT_BYTES)
+                        if depth == 128:
+                            self.assertEqual(benchmark._load_driver_receipt(receipt), document)
+                        else:
+                            with self.assertRaisesRegex(
+                                benchmark.BenchmarkError,
+                                "^driver result is not valid bounded JSON$",
+                            ):
+                                benchmark._load_driver_receipt(receipt)
+
     def test_driver_receipt_pathological_json_is_a_contract_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -499,7 +520,9 @@ class AgentLoopBenchmarkTests(unittest.TestCase):
             ):
                 receipt = root / name
                 receipt.write_text(raw, encoding="utf-8")
-                with self.assertRaisesRegex(benchmark.BenchmarkError, "bounded JSON"):
+                # Parser exceptions differ for excessive integers across Python versions.
+                pattern = "bounded JSON" if name == "deep.json" else r"not valid (?:bounded )?JSON"
+                with self.assertRaisesRegex(benchmark.BenchmarkError, pattern):
                     benchmark._load_driver_receipt(receipt)
 
     @unittest.skipIf(os.name == "nt", "FIFO is POSIX-only")

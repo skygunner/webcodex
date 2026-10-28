@@ -55,6 +55,14 @@ impl ToolRuntime {
                     .await
             }
             ToolCall::CodingAgentCancel { run_id } => self.coding_agent_cancel(run_id, auth).await,
+            ToolCall::CodingAgentDiagnose {
+                project,
+                provider_id,
+                include_live_acp,
+            } => {
+                self.coding_agent_diagnose(project, provider_id, include_live_acp, auth)
+                    .await
+            }
 
             call @ (ToolCall::RunProcess { .. }
             | ToolCall::RunDetachedProcess { .. }

@@ -63,6 +63,11 @@ fn tool_specs_annotations_are_canonical_semantic_projections() {
             ToolIdempotency::Keyed,
         ),
         (
+            "diagnose_coding_agent",
+            ToolEffect::Observe,
+            ToolIdempotency::PureRead,
+        ),
+        (
             "complete_session_message",
             ToolEffect::Mutate,
             ToolIdempotency::FencedReplay,

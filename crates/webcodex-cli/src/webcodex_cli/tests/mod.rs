@@ -2,6 +2,7 @@ mod support;
 
 mod connect;
 mod ops;
+mod ops_diagnose;
 mod platform;
 mod plugin;
 mod profiles;

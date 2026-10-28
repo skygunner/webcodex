@@ -1886,12 +1886,44 @@ mod tests {
 
     #[cfg(unix)]
     fn fake_cloudflared(script: &str) -> (tempfile::TempDir, PathBuf) {
-        use std::os::unix::fs::PermissionsExt;
         let temp = crate::test_support::executable_tempdir();
         let path = temp.path().join("cloudflared");
-        fs::write(&path, script).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        // A concurrent fork can inherit a writable handle to an executable inode
+        // even after an atomic rename, so execute an immutable checked-in
+        // entrypoint and keep each test's body in a sibling data file.
+        fs::write(temp.path().join("cloudflared.script"), script).unwrap();
+        std::os::unix::fs::symlink(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/cloudflared.sh"),
+            &path,
+        )
+        .unwrap();
         (temp, path)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fake_cloudflared_executes_with_open_fixture_writers() {
+        let (temp, binary) = fake_cloudflared("#!/bin/sh\nprintf fixture-ready");
+        // Model writable handles inherited by an unrelated concurrent fork.
+        let writers: Vec<_> = fs::read_dir(temp.path())
+            .unwrap()
+            .map(Result::unwrap)
+            .filter(|entry| entry.file_type().unwrap().is_file())
+            .map(|entry| {
+                fs::OpenOptions::new()
+                    .write(true)
+                    .open(entry.path())
+                    .unwrap()
+            })
+            .collect();
+        assert!(!writers.is_empty());
+        let output = std::process::Command::new(binary)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"fixture-ready");
+        drop(writers);
     }
 
     #[cfg(unix)]

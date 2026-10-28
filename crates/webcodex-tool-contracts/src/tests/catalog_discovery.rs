@@ -921,6 +921,7 @@ fn coding_intent_has_independent_ordered_canonical_selection_surface() {
         "start_coding_agent",
         "observe_coding_agent",
         "cancel_coding_agent",
+        "diagnose_coding_agent",
         "get_session_assignment",
         "complete_session_message",
     ] {

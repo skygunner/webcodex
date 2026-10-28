@@ -117,4 +117,36 @@ pub(super) const DEFINITIONS: &[ToolDefinition] = &[
         ),
         PERMISSION_RISK_WRITE,
     ),
+    model_spec(
+        def(
+            "diagnose_coding_agent",
+            super::ToolAuditPolicy::typed_fields(&[
+                super::ToolAuditResultField::value("project"),
+                super::ToolAuditResultField::value("provider_id"),
+                super::ToolAuditResultField::value("env_presence"),
+                super::ToolAuditResultField::value("live_acp"),
+            ]),
+            ModelVisible,
+            TOOL_CATEGORY_CODING_AGENT,
+            Some(CodingAgentRuns),
+            TOOL_PROVIDER_RUNNER,
+            // Presence-only is pure observation. The optional live ACP probe
+            // launches one ephemeral provider process, so the runtime gates
+            // include_live_acp=true on the same explicit authority as
+            // start_coding_agent; this static contract never grants it.
+            super::ToolSemanticContract {
+                effect: super::ToolEffect::Observe,
+                risk: Read,
+                approval: super::ToolApprovalPolicy::None,
+                idempotency: super::ToolIdempotency::PureRead,
+            },
+            Some(CODING_AGENT_RUN),
+            true,
+            NoPath,
+            false,
+            false,
+            super::ToolSessionEvidencePolicy::NONE,
+        ),
+        "Diagnose one explicitly selected ACP provider for one exact authorized Project through its configured Runner. Default (include_live_acp=false): report only the provider's declared env_from_env source names as present/absent booleans read from the running Runner process - never values, unrelated names, paths, or process launches. include_live_acp=true additionally requires the same authority as start_coding_agent and launches one bounded ephemeral provider process exactly like a Run start, performing only initialize then session/new to project the live config-option identities (bounded ids, labels, kinds, and allowlisted choices); it never sends session/prompt, runs provider tools, or writes configuration, and the whole process tree is terminated on every exit path. One probe runs at a time per Runner within a fixed budget; a concurrent probe returns a bounded busy outcome. Results come from the live Runner, never from static configuration; stale Runner, provider-generation, or Project identities fail closed with bounded reason codes. No automatic retry or fallback: re-observe the Runner inventory and fix inputs instead.",
+    ),
 ];

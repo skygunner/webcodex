@@ -915,7 +915,11 @@ mod tests {
                 description: "missing required scope: project:write".to_string(),
             })
         );
-        for tool in ["observe_coding_agent", "cancel_coding_agent"] {
+        for tool in [
+            "observe_coding_agent",
+            "cancel_coding_agent",
+            "diagnose_coding_agent",
+        ] {
             assert_eq!(
                 check_runtime_tool_scope(Some(&run_only), tool),
                 Ok(()),

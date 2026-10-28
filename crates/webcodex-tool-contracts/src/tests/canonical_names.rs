@@ -122,6 +122,7 @@ fn canonical_operation_names_are_unique_verb_first_and_route_independent() {
         "activate_",
         "manage_",
         "work_on_",
+        "diagnose_",
     ];
     // Provider-specific validation and the three documented portable orchestration
     // entries are not noun-first CRUD. Gateways name a distinct callable namespace.

@@ -2350,3 +2350,214 @@ async fn observe_jobs_generic_failed_test_identity_survives_small_model_tail() {
         assert!(snapshot.get("validation_target_id").is_none());
     }
 }
+
+#[tokio::test]
+async fn observe_jobs_metrics_sum_utf8_bytes_of_returned_producer_output() {
+    #[derive(Debug)]
+    struct RecordingMetrics {
+        returned_bytes: std::sync::Mutex<Vec<u64>>,
+    }
+
+    impl crate::tool_runtime::runtime_metrics::RuntimeMetrics for RecordingMetrics {
+        fn observe_tool_call(
+            &self,
+            _record: &crate::tool_runtime::model_ergonomics_telemetry::ModelErgonomicsRecord,
+        ) {
+        }
+
+        fn observe_mcp_call(
+            &self,
+            _observation: crate::tool_runtime::runtime_metrics::McpCallMetricObservation,
+        ) {
+        }
+
+        fn observe_job_observation(
+            &self,
+            observation: crate::tool_runtime::runtime_metrics::JobObservationMetricObservation,
+        ) {
+            self.returned_bytes
+                .lock()
+                .unwrap()
+                .push(observation.returned_bytes);
+        }
+
+        fn observe_skill_source(
+            &self,
+            _observation: crate::tool_runtime::runtime_metrics::SkillSourceMetricObservation,
+        ) {
+        }
+
+        fn observe_instruction_read_after_complete_bootstrap(
+            &self,
+            _target: crate::tool_runtime::model_ergonomics_telemetry::invocation::InstructionReadTarget,
+        ) {
+        }
+
+        fn observe_window_transition(
+            &self,
+            _transition: crate::tool_runtime::window_activity::WindowLoopTransition,
+        ) {
+        }
+
+        #[cfg(feature = "experimental-code-mode")]
+        fn observe_code_mode_composition(
+            &self,
+            _observation: &crate::tool_runtime::code_mode::CodeModeCompositionSummary,
+        ) {
+        }
+    }
+
+    async fn finish_with_chunks(
+        runtime: &ToolRuntime,
+        client_id: &str,
+        request: &crate::runner_protocol::RunnerRequest,
+        stdout_chunk: Option<&str>,
+        stderr_chunk: Option<&str>,
+    ) {
+        runtime
+            .runner_registry
+            .update_job(RunnerJobUpdateRequest {
+                request_id: Some(request.request_id.clone()),
+                stdout_chunk: stdout_chunk.map(str::to_string),
+                stderr_chunk: stderr_chunk.map(str::to_string),
+                exit_code: Some(0),
+                duration_ms: Some(5),
+                ..runner_job_update(
+                    client_id.to_string(),
+                    "inst".to_string(),
+                    request.job_id.clone().expect("Job request id"),
+                    "completed".to_string(),
+                    true,
+                )
+            })
+            .await
+            .unwrap();
+    }
+
+    let mut runtime = test_runtime();
+    let sink = Arc::new(RecordingMetrics {
+        returned_bytes: std::sync::Mutex::new(Vec::new()),
+    });
+    let sink_handle: Arc<dyn crate::tool_runtime::runtime_metrics::RuntimeMetrics> = sink.clone();
+    runtime.metrics = sink_handle;
+
+    let (text_job, text_request, auth) =
+        register_and_start_agent_job(&runtime, "observe-bytes-text").await;
+    finish_with_chunks(
+        &runtime,
+        "observe-bytes-text",
+        &text_request,
+        Some("alpha\n\u{4e2d}\u{6587}-tail\n"),
+        Some("warn\n"),
+    )
+    .await;
+    let (stdout_job, stdout_request, _) =
+        register_and_start_agent_job(&runtime, "observe-bytes-out").await;
+    finish_with_chunks(
+        &runtime,
+        "observe-bytes-out",
+        &stdout_request,
+        Some("plain\n"),
+        None,
+    )
+    .await;
+    let (stderr_job, stderr_request, _) =
+        register_and_start_agent_job(&runtime, "observe-bytes-err").await;
+    finish_with_chunks(
+        &runtime,
+        "observe-bytes-err",
+        &stderr_request,
+        None,
+        Some("err-only\n"),
+    )
+    .await;
+    let (empty_job, empty_request, _) =
+        register_and_start_agent_job(&runtime, "observe-bytes-empty").await;
+    finish_with_chunks(&runtime, "observe-bytes-empty", &empty_request, None, None).await;
+
+    let observed = runtime
+        .observe_jobs_for_auth(
+            vec![
+                item(&text_job, None),
+                item(&stdout_job, None),
+                item(&stderr_job, None),
+                item(&empty_job, None),
+                item("observe-bytes-missing", Some("malformed".to_string())),
+            ],
+            40,
+            None,
+            Default::default(),
+            Some(&auth),
+        )
+        .await;
+    assert!(observed.success, "{observed:?}");
+    assert_eq!(observed.output["succeeded_count"], 4, "{observed:?}");
+    assert_eq!(observed.output["failed_count"], 1, "{observed:?}");
+
+    let expected = [
+        ("alpha\n\u{4e2d}\u{6587}-tail\n", "warn\n"),
+        ("plain\n", ""),
+        ("", "err-only\n"),
+        ("", ""),
+    ];
+    let mut expected_total = 0_u64;
+    for (index, (expected_stdout, expected_stderr)) in expected.iter().enumerate() {
+        let snapshot = &observed.output["items"][index]["output"];
+        assert_eq!(snapshot["stdout_tail"], *expected_stdout, "{snapshot}");
+        assert_eq!(snapshot["stderr_tail"], *expected_stderr, "{snapshot}");
+        assert_eq!(
+            snapshot["stdout_returned_bytes"].as_u64(),
+            Some(expected_stdout.len() as u64),
+            "stdout bytes must count returned UTF-8 bytes, not characters: {snapshot}"
+        );
+        assert_eq!(
+            snapshot["stderr_returned_bytes"].as_u64(),
+            Some(expected_stderr.len() as u64),
+            "stderr bytes must count returned UTF-8 bytes, not characters: {snapshot}"
+        );
+        expected_total += (expected_stdout.len() + expected_stderr.len()) as u64;
+    }
+    assert_ne!(
+        "alpha\n\u{4e2d}\u{6587}-tail\n".len(),
+        "alpha\n\u{4e2d}\u{6587}-tail\n".chars().count(),
+        "fixture must keep multibyte text distinct from character count"
+    );
+    assert_eq!(
+        *sink.returned_bytes.lock().unwrap(),
+        vec![expected_total],
+        "the observation metric must aggregate the successful items' returned bytes"
+    );
+
+    let truncated = runtime
+        .observe_jobs_for_auth(
+            vec![item(&text_job, None)],
+            1,
+            None,
+            Default::default(),
+            Some(&auth),
+        )
+        .await;
+    assert!(truncated.success, "{truncated:?}");
+    let snapshot = &truncated.output["items"][0]["output"];
+    assert_eq!(
+        snapshot["stdout_tail"], "\u{4e2d}\u{6587}-tail\n",
+        "{snapshot}"
+    );
+    assert_eq!(
+        snapshot["stdout_returned_bytes"].as_u64(),
+        Some("\u{4e2d}\u{6587}-tail\n".len() as u64),
+        "a bounded tail must report only the bytes it actually returned: {snapshot}"
+    );
+    let truncated_stdout = "\u{4e2d}\u{6587}-tail\n".len() as u64;
+    let truncated_stderr = "warn\n".len() as u64;
+    assert_eq!(
+        snapshot["stderr_returned_bytes"].as_u64(),
+        Some(truncated_stderr),
+        "{snapshot}"
+    );
+    assert_eq!(
+        sink.returned_bytes.lock().unwrap().last().copied(),
+        Some(truncated_stdout + truncated_stderr),
+        "the metric must aggregate the bounded stdout and stderr bytes"
+    );
+}

@@ -941,6 +941,29 @@ pub enum ToolCall {
         #[schemars(regex(pattern = "^wc_agent_run_[A-Za-z0-9_.-]+$"))]
         run_id: String,
     },
+    #[serde(rename = "diagnose_coding_agent")]
+    CodingAgentDiagnose {
+        /// Exact registered Project id. It selects the authorized Project whose configured Runner
+        /// performs the diagnostic; the Runner re-verifies that this exact Project identity and
+        /// root are still admitted before answering.
+        #[schemars(length(min = 1))]
+        project: String,
+        /// Logical Runner-advertised ACP provider id, for example codex. Executable, argv,
+        /// environment, credentials, and provider instance ids are Runner-owned and cannot be
+        /// supplied here. Choose providers only from the exact Runner inventory.
+        #[schemars(length(min = 1, max = 64))]
+        provider_id: String,
+        /// Authorize one bounded ephemeral live ACP probe: the Runner launches the configured
+        /// provider exactly like a Coding Run start, performs only `initialize` then
+        /// `session/new`, and always terminates the whole process tree. It never sends
+        /// `session/prompt`, runs provider tools, or writes configuration. This launch authority
+        /// is never implied by the presence-only observation authority of this tool: it requires
+        /// the same authority as start_coding_agent, and provider-side initialization effects
+        /// (for example an external login prompt) are possible. The result reports the bounded
+        /// phase where the probe stopped.
+        #[serde(default)]
+        include_live_acp: bool,
+    },
 
     /// Execute bounded script content transported as typed data and written to
     /// a Runner-owned temporary file. The selected language is explicit and

@@ -2478,6 +2478,14 @@ async fn tool_manifest_projects_canonical_semantic_contracts() {
             "desired_state",
             false,
         ),
+        (
+            "diagnose_coding_agent",
+            "observe",
+            "read_only",
+            "none",
+            "pure_read",
+            true,
+        ),
     ] {
         let result = runtime
             .dispatch(ToolCall::ToolManifest {

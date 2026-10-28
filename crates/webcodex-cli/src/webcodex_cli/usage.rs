@@ -199,7 +199,8 @@ pub(crate) fn ops_usage() -> &'static str {
        runner                  Show one exact Runner registration/build identity\n\
        projects                Show compact project inventory and smoke suitability\n\
        windows                 Show observed ChatGPT Window activity for one project\n\
-       smoke-preflight         Check a project before deploy smoke validation\n\n\
+       smoke-preflight         Check a project before deploy smoke validation\n\
+       diagnose-provider       Diagnose one provider's env sources and optional live ACP options\n\n\
      Common flags:\n\
        --server-url URL        WebCodex server URL [default: http://127.0.0.1:8080]\n\
        --proxy http://HOST:PORT Explicit proxy override for Server requests\n\
@@ -243,6 +244,36 @@ pub(crate) fn ops_runners_usage() -> &'static str {
        --json                  Print machine-readable output\n\
        --strict                Exit 2 when the ops report status is FAIL\n\
        -h, --help              Print help and exit\n"
+}
+
+pub(crate) fn ops_diagnose_provider_usage() -> &'static str {
+    "Usage: webcodex ops diagnose-provider --project PROJECT_ID --provider PROVIDER_ID [OPTIONS]\n\n\
+     Diagnose one explicitly selected ACP provider for one exact authorized\n\
+     Project through its configured Runner, via the same authorized Server\n\
+     entry a Desktop Diagnose action would reuse.\n\n\
+     Default (presence-only): report the provider's declared env_from_env\n\
+     source names as present/absent booleans read from the running Runner\n\
+     process. Values, unrelated names, and paths are never printed.\n\n\
+     Options:\n\
+       --project PROJECT_ID    Exact registered Project id (required)\n\
+       --provider PROVIDER_ID  Logical Runner-advertised provider id, e.g. codex (required)\n\
+       --include-live-acp      ALSO launch one bounded ephemeral live ACP probe\n\
+                               (initialize + session/new only; requires the same\n\
+                               authority as start_coding_agent and can trigger\n\
+                               provider-side initialization effects such as a\n\
+                               login prompt; the process tree is always cleaned up)\n\
+       --server-url URL        WebCodex server URL [default: http://127.0.0.1:8080]\n\
+       --proxy http://HOST:PORT Explicit proxy override for Server requests\n\
+       --no-system-proxy       Ignore proxy environment and connect directly\n\
+       --env-file PATH         Read user/API credential from WEBCODEX_TOKEN, then WEBCODEX_PAT\n\
+       --token-file PATH       Read bearer token from file\n\
+       --token TOKEN           Bearer token input; never printed\n\
+       --json                  Print machine-readable output\n\
+       --strict                Exit 2 when the ops report status is FAIL\n\
+       -h, --help              Print help and exit\n\n\
+     No prompt is sent, no provider tool runs, no configuration is written, and\n\
+     there is no automatic retry. Stale Runner/provider/Project identities fail\n\
+     closed with bounded reason codes.\n"
 }
 
 pub(crate) fn ops_runner_usage() -> &'static str {

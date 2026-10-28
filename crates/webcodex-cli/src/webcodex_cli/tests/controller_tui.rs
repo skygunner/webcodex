@@ -431,10 +431,59 @@ fn decoder_rejects_incomplete_inventory_instead_of_showing_empty_success() {
     assert_eq!(error, "runner_offline");
 }
 
+/// POSIX locations of the utilities the fixture scripts use. The fixture already
+/// requires `/bin/sh`, so a POSIX layout is assumed; pinning the lookup keeps a
+/// concurrently mutated process PATH from deciding it.
+const FIXTURE_PATH: &str = "/usr/bin:/bin";
+
 fn fixture(script: &str) -> Command {
     let mut command = Command::new("/bin/sh");
-    command.args(["-c", script]);
+    command.args(["-c", script]).env("PATH", FIXTURE_PATH);
     command
+}
+
+/// Runs in an isolated child process whose inherited PATH contains no shell
+/// utilities. The fixture scripts call external utilities such as `sleep`, so
+/// only the fixture's child-local PATH can resolve them.
+#[test]
+#[ignore = "invoked as a child process by controller_fixture_command_lookup_ignores_polluted_inherited_path"]
+fn controller_fixture_path_probe_runs_with_broken_inherited_path() {
+    assert_eq!(
+        std::env::var("PATH").ok().as_deref(),
+        Some("/nonexistent-webcodex-fixture-path")
+    );
+    let cancel = Arc::new(AtomicBool::new(false));
+    let output = observe(
+        &mut fixture("sleep 0.01 && printf fixture-ok"),
+        Some(Duration::from_secs(5)),
+        None,
+        &cancel,
+    )
+    .unwrap();
+    assert!(
+        output.0.success(),
+        "fixture utility lookup failed: {}",
+        String::from_utf8_lossy(&output.2)
+    );
+    assert_eq!(output.1, b"fixture-ok");
+}
+
+#[test]
+fn controller_fixture_command_lookup_ignores_polluted_inherited_path() {
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "controller_fixture_path_probe_runs_with_broken_inherited_path",
+        ])
+        .env("PATH", "/nonexistent-webcodex-fixture-path")
+        .output()
+        .unwrap();
+    let report = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && report.contains("1 passed"),
+        "isolated fixture PATH probe did not run or failed: {}\n{report}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]

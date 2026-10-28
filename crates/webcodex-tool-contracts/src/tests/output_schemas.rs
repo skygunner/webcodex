@@ -433,6 +433,7 @@ fn observation_schemas_do_not_repeat_static_continuation_semantics() {
     for name in [
         "start_coding_agent",
         "observe_coding_agent",
+        "diagnose_coding_agent",
         "observe_session_messages",
     ] {
         let spec = spec_named(&specs, name);

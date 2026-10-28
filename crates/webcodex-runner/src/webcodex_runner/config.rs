@@ -129,8 +129,10 @@ pub(crate) struct RunnerConfig {
     pub(crate) acp: AcpConfig,
 }
 
-const ACP_MAX_ENV_MAPPINGS: usize = 64;
-const ACP_MAX_ENV_NAME_BYTES: usize = 256;
+// Shared with the CodingAgent Diagnose projection so its output schema can
+// never disagree with what this validation admits.
+const ACP_MAX_ENV_MAPPINGS: usize = webcodex_core::coding_agent::CODING_AGENT_MAX_ENV_MAPPINGS;
+const ACP_MAX_ENV_NAME_BYTES: usize = webcodex_core::coding_agent::CODING_AGENT_MAX_ENV_NAME_BYTES;
 const ACP_MAX_ARGS: usize = 64;
 const ACP_MAX_ARG_BYTES: usize = 4096;
 const ACP_MAX_ARGS_BYTES: usize = 16 * 1024;

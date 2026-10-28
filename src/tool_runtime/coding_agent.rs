@@ -17,11 +17,14 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 use webcodex_core::coding_agent::{
     merge_coding_agent_run_snapshot, validate_coding_agent_run_snapshot, CodingAgentCancelRequest,
-    CodingAgentConfigValue, CodingAgentDispatchState, CodingAgentEvent, CodingAgentExecutionState,
-    CodingAgentObservationMerge, CodingAgentObserveRequest, CodingAgentObserveResult,
-    CodingAgentRequest, CodingAgentResponse, CodingAgentResponsePayload, CodingAgentRunSnapshot,
-    CodingAgentRunState, CodingAgentStartRequest, CodingAgentTerminal,
-    CODING_AGENT_MAX_CONFIG_OPTIONS, CODING_AGENT_MAX_EVENTS_PER_RESPONSE,
+    CodingAgentConfigValue, CodingAgentDiagnoseRequest, CodingAgentDispatchState, CodingAgentEvent,
+    CodingAgentExecutionState, CodingAgentLiveAcpDiagnostic, CodingAgentObservationMerge,
+    CodingAgentObserveRequest, CodingAgentObserveResult, CodingAgentRequest, CodingAgentResponse,
+    CodingAgentResponsePayload, CodingAgentRunSnapshot, CodingAgentRunState,
+    CodingAgentStartRequest, CodingAgentTerminal, CODING_AGENT_MAX_CONFIG_KEY_BYTES,
+    CODING_AGENT_MAX_CONFIG_LABEL_BYTES, CODING_AGENT_MAX_CONFIG_OPTIONS,
+    CODING_AGENT_MAX_CONFIG_SELECT_CHOICES, CODING_AGENT_MAX_ENV_MAPPINGS,
+    CODING_AGENT_MAX_ENV_NAME_BYTES, CODING_AGENT_MAX_EVENTS_PER_RESPONSE,
     CODING_AGENT_MAX_INVENTORY_RUNS, CODING_AGENT_OBSERVE_WAIT_MAX_SECS,
     CODING_AGENT_TIMEOUT_MAX_SECS, CODING_AGENT_TIMEOUT_MIN_SECS,
 };
@@ -29,6 +32,9 @@ use webcodex_core::coding_agent::{
 const IDEMPOTENCY_KEY_MAX_BYTES: usize = 256;
 const START_RESPONSE_WAIT_SECS: u64 = 32;
 const CONTROL_RESPONSE_WAIT_SECS: u64 = 65;
+/// One live Diagnose probe is bounded to 30 s inside the Runner; the Server
+/// wait only has to survive that budget plus transport margin.
+const DIAGNOSE_RESPONSE_WAIT_SECS: u64 = 45;
 const DEFAULT_RUN_TIMEOUT_SECS: u64 = 300;
 const PUBLIC_TOKEN_PREFIX: &str = "wcar3_";
 const PUBLIC_TOKEN_MAX_BYTES: usize = 54;
@@ -1178,6 +1184,233 @@ impl ToolRuntime {
         }
     }
 
+    /// Canonical authorized Diagnose entry for one exact Project/provider.
+    /// Presence-only by default; `include_live_acp` additionally requires the
+    /// same explicit authority as start_coding_agent before any provider
+    /// process is launched. Forwards the typed Runner Diagnose fence and
+    /// never infers provider state from static configuration.
+    pub(crate) async fn coding_agent_diagnose(
+        &self,
+        project: String,
+        provider_id: String,
+        include_live_acp: bool,
+        auth: Option<&AuthContext>,
+    ) -> ToolResult {
+        if let Err(error) = webcodex_core::coding_agent::validate_provider_id(&provider_id) {
+            return coding_agent_error(
+                "invalid_coding_agent_diagnose",
+                error,
+                "not_started",
+                RecoveryKind::FixInput,
+                None,
+            );
+        }
+        let principal = match stable_principal(auth) {
+            Ok(principal) => principal,
+            Err(error) => {
+                return coding_agent_error(
+                    "coding_agent_identity_unavailable",
+                    error,
+                    "not_started",
+                    RecoveryKind::FixInput,
+                    None,
+                )
+            }
+        };
+        let authority = authority_fingerprint(&principal);
+        // The live probe launches one ephemeral provider process, so its
+        // launch authority is checked before anything is resolved or
+        // observed: presence-observation authority never implies it. This is
+        // exactly start_coding_agent's scope policy; the fresh permission
+        // decision for the resolved Project follows below.
+        if include_live_acp {
+            if let Err(error) =
+                crate::tool_runtime::kernel::check_runtime_tool_scope(auth, "start_coding_agent")
+            {
+                let detail = match error {
+                    crate::tool_runtime::kernel::ToolCallErrorStatus::InsufficientScope {
+                        description,
+                        ..
+                    } => description,
+                    crate::tool_runtime::kernel::ToolCallErrorStatus::InvalidArguments {
+                        message,
+                    } => message,
+                };
+                return coding_agent_error(
+                    "coding_agent_live_probe_authority_required",
+                    format!(
+                        "include_live_acp=true requires start_coding_agent authority: {detail}"
+                    ),
+                    "not_started",
+                    RecoveryKind::FixInput,
+                    None,
+                );
+            }
+        }
+        let resolved = match self.resolve_project_input_for_auth(&project, auth).await {
+            Ok(resolved) => resolved,
+            Err(error) => return error.into_tool_result(),
+        };
+        // A diagnostic never requires or implies Project write authority; the
+        // optional live probe is gated on the explicit start authority above,
+        // not on Project mutation.
+        let client_id = resolved.config.client_id.as_str();
+        let client = match self
+            .runner_registry
+            .get_runner_semantic_view_for_auth(
+                client_id,
+                crate::runner_http::runner_access_from_auth(auth).as_ref(),
+            )
+            .await
+        {
+            Some(client) if client.view.connected => client,
+            _ => {
+                return coding_agent_error(
+                    "coding_agent_runner_unavailable",
+                    "exact Project Runner is offline or unauthorized",
+                    "not_started",
+                    RecoveryKind::Wait,
+                    None,
+                )
+            }
+        };
+        if !client.supports(RunnerFeature::CodingAgentRuns) {
+            return coding_agent_error(
+                "coding_agent_unsupported",
+                "exact Project Runner does not advertise CodingAgentRun",
+                "not_started",
+                RecoveryKind::Reobserve,
+                None,
+            );
+        }
+        let client = client.view;
+        let provider_instance_id = match client
+            .coding_agent_providers
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .find(|provider| provider.provider_id == provider_id)
+        {
+            Some(provider) => provider.provider_instance_id.clone(),
+            None => {
+                let mut error = coding_agent_error(
+                    "coding_agent_provider_unavailable",
+                    "Logical ACP provider is not advertised by the exact Project Runner. Re-observe that Runner's coding_agent_providers; choose an advertised provider_id according to the user's instructions, not an executable from PATH.",
+                    "not_started",
+                    RecoveryKind::Reobserve,
+                    None,
+                );
+                error.output["available_providers"] =
+                    json!(webcodex_core::coding_agent::safe_provider_inventory(
+                        client.coding_agent_providers.as_deref()
+                    ));
+                error.output["suggested_call"] = SuggestedToolCall::fallback_recovery(
+                    "get_runtime_status",
+                    json!({"client_id": client.client_id, "compact": true}),
+                )
+                .to_value();
+                return error;
+            }
+        };
+        let mut permission_decision = None;
+        if include_live_acp {
+            let decision = self.permission_evaluator.evaluate_resolved_required(
+                "start_coding_agent",
+                Some(resolved.resolved_id.as_str()),
+                webcodex_tool_contracts::tool_policy::runtime_tool_permission_risk(
+                    "start_coding_agent",
+                ),
+            );
+            if !decision.allows_execution() {
+                let mut result =
+                    crate::tool_runtime::permissions::permission_execution_denied_result(&decision);
+                crate::tool_runtime::permissions::add_permission_to_result(&mut result, &decision);
+                return result;
+            }
+            permission_decision = Some(decision);
+        }
+        let run_id = diagnose_run_id(&principal, &provider_id, &provider_instance_id);
+        let mut result = self
+            .dispatch_coding_agent_diagnose(
+                &client,
+                &resolved.resolved_id,
+                &resolved.config.path,
+                &provider_id,
+                &provider_instance_id,
+                &run_id,
+                &authority,
+                include_live_acp,
+                auth,
+            )
+            .await;
+        if let Some(decision) = permission_decision.as_ref() {
+            crate::tool_runtime::permissions::add_permission_to_result(&mut result, decision);
+        }
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn dispatch_coding_agent_diagnose(
+        &self,
+        client: &crate::runner_protocol::RunnerView,
+        runtime_project_id: &str,
+        project_root: &str,
+        provider_id: &str,
+        provider_instance_id: &str,
+        run_id: &str,
+        authority: &str,
+        include_live_acp: bool,
+        auth: Option<&AuthContext>,
+    ) -> ToolResult {
+        let operation = CodingAgentRequest::Diagnose(CodingAgentDiagnoseRequest {
+            run_id: run_id.to_string(),
+            runtime_project_id: runtime_project_id.to_string(),
+            project_root: project_root.to_string(),
+            provider_id: provider_id.to_string(),
+            provider_instance_id: provider_instance_id.to_string(),
+            include_live_acp,
+        });
+        let (_, receiver) = match self
+            .runner_registry
+            .enqueue_coding_agent(
+                &client.client_id,
+                &client.runner_instance_id,
+                provider_id,
+                provider_instance_id,
+                operation,
+                crate::runner_http::runner_access_from_auth(auth).as_ref(),
+                authority.to_string(),
+            )
+            .await
+        {
+            Ok(value) => value,
+            Err(error) => {
+                return coding_agent_error(
+                    "coding_agent_dispatch_rejected",
+                    error,
+                    "not_started",
+                    RecoveryKind::Reobserve,
+                    Some(run_id),
+                )
+            }
+        };
+        let response =
+            match tokio::time::timeout(Duration::from_secs(DIAGNOSE_RESPONSE_WAIT_SECS), receiver)
+                .await
+            {
+                Ok(Ok(response)) => response,
+                Ok(Err(_)) | Err(_) => return diagnose_response_lost(include_live_acp, run_id),
+            };
+        diagnose_result_from_response(
+            response,
+            runtime_project_id,
+            provider_id,
+            provider_instance_id,
+            run_id,
+            include_live_acp,
+        )
+    }
+
     async fn start_waiter_lost_typed(
         &self,
         request_id: &str,
@@ -1508,6 +1741,242 @@ fn deterministic_run_id(principal: &str, key: &str) -> String {
         "wc_agent_run_{}",
         webcodex_core::compact::encode(hasher.finalize())
     )
+}
+
+/// Ephemeral per-call correlation id for one Diagnose exchange. It is never a
+/// persisted Run: the Runner keeps no Diagnose run state, so uniqueness across
+/// concurrent probes is all this id has to provide.
+fn diagnose_run_id(principal: &str, provider_id: &str, provider_instance_id: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"webcodex-coding-agent-diagnose-v1\0");
+    hasher.update(principal.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(provider_id.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(provider_instance_id.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or_default()
+            .to_le_bytes(),
+    );
+    format!(
+        "wc_agent_run_{}",
+        webcodex_core::compact::encode(hasher.finalize())
+    )
+}
+
+/// Once a live request was queued the Runner may have launched its provider,
+/// even if the response channel was lost. Never claim that did not happen.
+pub(crate) fn diagnose_response_lost(include_live_acp: bool, run_id: &str) -> ToolResult {
+    coding_agent_error(
+        "coding_agent_diagnose_response_lost",
+        "Runner did not answer the diagnostic in time; the Runner owns ephemeral probe cleanup on every exit path",
+        if include_live_acp { "outcome_unknown" } else { "not_started" },
+        RecoveryKind::Reobserve,
+        Some(run_id),
+    )
+}
+
+fn recovery_kind_from_wire(recovery: Option<&str>) -> RecoveryKind {
+    match recovery {
+        Some("fix_input") => RecoveryKind::FixInput,
+        Some("retry_same") => RecoveryKind::RetrySame,
+        Some("reconcile") => RecoveryKind::Reconcile,
+        Some("wait") => RecoveryKind::Wait,
+        Some("user_action") => RecoveryKind::UserAction,
+        Some("none") => RecoveryKind::NoAction,
+        _ => RecoveryKind::Reobserve,
+    }
+}
+
+/// Server-side bound re-verification for a Runner-reported live diagnostic.
+/// The Runner projects within these budgets; a response outside them is a
+/// malformed result, never a projection input. Returns the bounded failure
+/// message when a bound is violated.
+pub(crate) fn live_acp_bound_violation(live: &CodingAgentLiveAcpDiagnostic) -> Option<String> {
+    if live.options.len() > CODING_AGENT_MAX_CONFIG_OPTIONS {
+        return Some("live diagnostic exceeded the option bound".to_string());
+    }
+    if matches!(
+        live.outcome,
+        webcodex_core::coding_agent::CodingAgentDiagnoseOutcome::Ok
+    ) && live.options.is_empty()
+    {
+        return Some("live diagnostic reported success without options".to_string());
+    }
+    if !matches!(
+        live.outcome,
+        webcodex_core::coding_agent::CodingAgentDiagnoseOutcome::Ok
+    ) && !live.options.is_empty()
+    {
+        return Some("live diagnostic carried options for a non-success outcome".to_string());
+    }
+    for option in &live.options {
+        if option.id.is_empty()
+            || option.id.len() > CODING_AGENT_MAX_CONFIG_KEY_BYTES
+            || option.label.as_ref().is_some_and(|label| {
+                label.is_empty() || label.len() > CODING_AGENT_MAX_CONFIG_LABEL_BYTES
+            })
+        {
+            return Some("live diagnostic option identity exceeded its bound".to_string());
+        }
+        if option.kind != "select" && option.kind != "boolean" {
+            return Some(
+                "live diagnostic option kind is outside the stable vocabulary".to_string(),
+            );
+        }
+        if option.choices.len() > CODING_AGENT_MAX_CONFIG_SELECT_CHOICES {
+            return Some("live diagnostic exceeded the choice bound".to_string());
+        }
+        for choice in &option.choices {
+            if choice.value.is_empty() || choice.value.len() > CODING_AGENT_MAX_CONFIG_KEY_BYTES {
+                return Some("live diagnostic choice identity exceeded its bound".to_string());
+            }
+            if choice
+                .label
+                .as_ref()
+                .is_some_and(|label| label.len() > CODING_AGENT_MAX_CONFIG_LABEL_BYTES)
+            {
+                return Some("live diagnostic choice label exceeded its bound".to_string());
+            }
+        }
+        match option.kind.as_str() {
+            "select" => {
+                if option.current.as_ref().is_some_and(|current| {
+                    !option.choices.iter().any(|choice| &choice.value == current)
+                }) {
+                    return Some(
+                        "live diagnostic current select value was not an advertised choice"
+                            .to_string(),
+                    );
+                }
+            }
+            "boolean" => {
+                if !option.choices.is_empty()
+                    || option.choices_truncated
+                    || option
+                        .current
+                        .as_deref()
+                        .is_some_and(|value| value != "true" && value != "false")
+                {
+                    return Some(
+                        "live diagnostic boolean option contained invalid choices or current value"
+                            .to_string(),
+                    );
+                }
+            }
+            _ => unreachable!("kind was validated above"),
+        }
+    }
+    None
+}
+
+pub(crate) fn diagnose_projection(
+    runtime_project_id: &str,
+    provider_id: &str,
+    env_presence: BTreeMap<String, bool>,
+    live_acp: Option<CodingAgentLiveAcpDiagnostic>,
+) -> Value {
+    json!({
+        "project": runtime_project_id,
+        "provider_id": provider_id,
+        "env_presence": env_presence,
+        "live_acp": live_acp,
+    })
+}
+
+/// Map one Runner CodingAgent response onto the bounded Diagnose result.
+/// Identity mismatches, oversized payloads, and Runner-reported failures all
+/// become closed reason codes; a successful payload projects the bounded
+/// diagnostic only (never the provider instance id or any environment value).
+pub(crate) fn diagnose_result_from_response(
+    response: CodingAgentResponse,
+    runtime_project_id: &str,
+    provider_id: &str,
+    provider_instance_id: &str,
+    run_id: &str,
+    include_live_acp: bool,
+) -> ToolResult {
+    match response.payload {
+        Some(CodingAgentResponsePayload::Diagnose {
+            provider_id: response_provider,
+            provider_instance_id: response_instance,
+            env_presence,
+            live_acp,
+        }) => {
+            if response_provider != provider_id || response_instance != provider_instance_id {
+                return coding_agent_error(
+                    "invalid_runner_response",
+                    "Runner returned mismatched coding-agent diagnostic identity",
+                    "not_started",
+                    RecoveryKind::Reobserve,
+                    Some(run_id),
+                );
+            }
+            if env_presence.len() > CODING_AGENT_MAX_ENV_MAPPINGS
+                || env_presence.keys().any(|name| {
+                    name.is_empty()
+                        || name.len() > CODING_AGENT_MAX_ENV_NAME_BYTES
+                        || !name.is_ascii()
+                        || name.contains('\0')
+                        || name.contains('=')
+                })
+            {
+                return coding_agent_error(
+                    "invalid_runner_response",
+                    "diagnostic environment-presence names or count exceeded their bounds",
+                    "not_started",
+                    RecoveryKind::Reobserve,
+                    Some(run_id),
+                );
+            }
+            // Presence-only callers have no authority to request live option
+            // values; reject a mismatched Runner payload instead of projecting it.
+            if live_acp.is_some() != include_live_acp {
+                return coding_agent_error(
+                    "invalid_runner_response",
+                    "Runner diagnostic live ACP payload did not match the requested mode",
+                    "not_started",
+                    RecoveryKind::Reobserve,
+                    Some(run_id),
+                );
+            }
+            if let Some(bound) = live_acp.as_ref().and_then(live_acp_bound_violation) {
+                return coding_agent_error(
+                    "invalid_runner_response",
+                    bound,
+                    "not_started",
+                    RecoveryKind::Reobserve,
+                    Some(run_id),
+                );
+            }
+            ToolResult::ok(diagnose_projection(
+                runtime_project_id,
+                provider_id,
+                env_presence,
+                live_acp,
+            ))
+        }
+        _ => match response.error {
+            Some(error) => coding_agent_error(
+                &error.code,
+                error.message,
+                "not_started",
+                recovery_kind_from_wire(error.recovery_kind.as_deref()),
+                Some(run_id),
+            ),
+            None => coding_agent_error(
+                "invalid_runner_response",
+                "Runner CodingAgentRun response contained no diagnostic result",
+                "not_started",
+                RecoveryKind::Reobserve,
+                Some(run_id),
+            ),
+        },
+    }
 }
 
 fn intent_fingerprint(
@@ -1870,15 +2339,7 @@ fn coding_agent_start_failure_from_response(
             run_id: run_id.to_string(),
         };
     };
-    let recovery = match error.recovery_kind.as_deref() {
-        Some("fix_input") => RecoveryKind::FixInput,
-        Some("retry_same") => RecoveryKind::RetrySame,
-        Some("reconcile") => RecoveryKind::Reconcile,
-        Some("wait") => RecoveryKind::Wait,
-        Some("user_action") => RecoveryKind::UserAction,
-        Some("none") => RecoveryKind::NoAction,
-        _ => RecoveryKind::Reobserve,
-    };
+    let recovery = recovery_kind_from_wire(error.recovery_kind.as_deref());
     CodingAgentStartFailure {
         kind: error.code,
         message: error.message,
@@ -1916,15 +2377,7 @@ fn response_to_tool_error(
             run_id,
         );
     };
-    let recovery = match error.recovery_kind.as_deref() {
-        Some("fix_input") => RecoveryKind::FixInput,
-        Some("retry_same") => RecoveryKind::RetrySame,
-        Some("reconcile") => RecoveryKind::Reconcile,
-        Some("wait") => RecoveryKind::Wait,
-        Some("user_action") => RecoveryKind::UserAction,
-        Some("none") => RecoveryKind::NoAction,
-        _ => RecoveryKind::Reobserve,
-    };
+    let recovery = recovery_kind_from_wire(error.recovery_kind.as_deref());
     coding_agent_error(
         &error.code,
         error.message,

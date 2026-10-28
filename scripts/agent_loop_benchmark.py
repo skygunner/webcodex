@@ -57,6 +57,7 @@ PAIRED_DELTA_METRICS = (
     "repair_turns.total",
 )
 MAX_DRIVER_RECEIPT_BYTES = 64 * 1024
+MAX_DRIVER_RECEIPT_DEPTH = 128
 MAX_FIXTURE_ORACLE_BYTES = 1024 * 1024
 MAX_CASE_MANIFEST_BYTES = 1024 * 1024
 MAX_GIT_PATH_BYTES = 64 * 1024
@@ -444,6 +445,15 @@ def _load_driver_receipt(path: Path) -> dict[str, Any]:
         raise BenchmarkError(f"driver result is not valid JSON: {exc}") from exc
     except (RecursionError, ValueError) as exc:
         raise BenchmarkError("driver result is not valid bounded JSON") from exc
+    pending = [(value, 0)]
+    while pending:
+        item, depth = pending.pop()
+        if depth > MAX_DRIVER_RECEIPT_DEPTH:
+            raise BenchmarkError("driver result is not valid bounded JSON")
+        if isinstance(item, dict):
+            pending.extend((child, depth + 1) for child in item.values())
+        elif isinstance(item, list):
+            pending.extend((child, depth + 1) for child in item)
     if not isinstance(value, dict):
         raise BenchmarkError("driver result must be a JSON object")
     status = value.get("status")

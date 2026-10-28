@@ -1003,6 +1003,7 @@ async fn oauth2_coding_agent_tools_require_independent_scope_in_catalog_and_dire
         "start_coding_agent",
         "observe_coding_agent",
         "cancel_coding_agent",
+        "diagnose_coding_agent",
     ] {
         assert!(!names.contains(name), "insufficient scopes leaked {name}");
     }
@@ -1033,6 +1034,7 @@ async fn oauth2_coding_agent_tools_require_independent_scope_in_catalog_and_dire
         "start_coding_agent",
         "observe_coding_agent",
         "cancel_coding_agent",
+        "diagnose_coding_agent",
     ] {
         assert!(
             !names.contains(name),
@@ -1070,6 +1072,7 @@ async fn oauth2_coding_agent_tools_require_independent_scope_in_catalog_and_dire
         "start_coding_agent",
         "observe_coding_agent",
         "cancel_coding_agent",
+        "diagnose_coding_agent",
     ] {
         assert!(
             !names.contains(name),

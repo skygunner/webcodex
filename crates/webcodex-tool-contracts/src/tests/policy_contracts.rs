@@ -592,6 +592,15 @@ fn tool_definitions_drive_session_and_permission_policy() {
     assert_eq!(cancel.idempotency, ToolIdempotency::DesiredState);
     assert!(!runtime_tool_requires_permission("cancel_coding_agent"));
 
+    let diagnose = lookup_tool_definition("diagnose_coding_agent")
+        .unwrap()
+        .metadata();
+    assert_eq!(diagnose.effect, ToolEffect::Observe);
+    assert_eq!(diagnose.risk, ToolRisk::Read);
+    assert_eq!(diagnose.approval, ToolApprovalPolicy::None);
+    assert_eq!(diagnose.idempotency, ToolIdempotency::PureRead);
+    assert!(!runtime_tool_requires_permission("diagnose_coding_agent"));
+
     assert_eq!(
         runtime_tool_session_risk_class("__unknown__"),
         ToolRisk::Unknown.session_risk_class()

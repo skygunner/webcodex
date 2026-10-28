@@ -118,6 +118,7 @@ fn session_tool_classification_uses_definition_policy() {
         #[cfg(feature = "workspace-checkpoints")]
         ("create_workspace_checkpoint", "checkpoint_manage"),
         ("cancel_coding_agent", "run_control"),
+        ("diagnose_coding_agent", "read_only"),
         ("write_project_file", "project_write"),
         ("apply_unified_diff", "project_write"),
         ("run_process", "job_run"),

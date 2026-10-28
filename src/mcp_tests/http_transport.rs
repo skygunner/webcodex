@@ -441,6 +441,28 @@ async fn stateless_full_trace_correlates_only_hashed_openai_window_body() {
     .await;
     assert_eq!(status, StatusCode::OK, "{listed}");
     assert!(listed["result"]["tools"].is_array(), "{listed}");
+
+    // A later unrelated request in the same Window: trace persistence is
+    // asynchronous, so the tools/list row is not guaranteed to be last.
+    let mut params = mcp_2026_params(json!({"name": "get_runtime_status", "arguments": {}}));
+    params["_meta"]["openai/session"] = json!(raw_window);
+    let (status, body) = stateless_2026_jsonrpc(
+        &service,
+        "secret",
+        Some(MCP_STATELESS_PROTOCOL_VERSION),
+        Some("tools/call"),
+        Some("get_runtime_status"),
+        None,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 54,
+            "method": "tools/call",
+            "params": params,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["result"]["isError"], false, "{body}");
     crate::tool_request_trace::flush_full_trace_writer();
 
     let mut trace_ids = BTreeSet::new();
@@ -494,10 +516,10 @@ async fn stateless_full_trace_correlates_only_hashed_openai_window_body() {
         }
     }
 
-    assert_eq!(traced_requests, 2, "expected one parsed event per request");
+    assert_eq!(traced_requests, 3, "expected one parsed event per request");
     assert_eq!(
         trace_ids.len(),
-        2,
+        3,
         "requests must keep distinct trace identities"
     );
     assert_eq!(
@@ -536,7 +558,7 @@ async fn stateless_full_trace_correlates_only_hashed_openai_window_body() {
         .collect::<Result<Vec<_>, _>>()
         .unwrap()
     };
-    assert_eq!(durable_rows.len(), 3);
+    assert_eq!(durable_rows.len(), 4);
     let durable_debug = format!("{durable_rows:?}");
     assert!(
         !durable_debug.contains(raw_window),
@@ -547,13 +569,24 @@ async fn stateless_full_trace_correlates_only_hashed_openai_window_body() {
         .map(|row| row.2.as_str())
         .collect::<BTreeSet<_>>();
     assert_eq!(durable_keys.len(), 1);
-    assert_eq!(durable_rows.last().unwrap().0, "toolsList");
-    assert_eq!(
-        durable_rows.last().unwrap().1.as_deref(),
-        Some("mcp_tools_list")
+    // Persistence is asynchronous, so the last row is not the tools/list row.
+    // Match the request by identity and require exactly one match, then keep
+    // every invariant the positional assertion used to cover.
+    let list_rows = durable_rows
+        .iter()
+        .filter(|row| row.0 == "toolsList")
+        .collect::<Vec<_>>();
+    assert_eq!(list_rows.len(), 1, "{durable_rows:?}");
+    assert_eq!(list_rows[0].1.as_deref(), Some("mcp_tools_list"));
+    assert_eq!(list_rows[0].8, 0);
+    assert!(list_rows[0].9.is_none());
+    assert!(
+        list_rows[0]
+            .4
+            .as_deref()
+            .is_some_and(|trace_id| !trace_ids.contains(trace_id)),
+        "the tools/list row must not belong to a tools/call trace: {durable_rows:?}"
     );
-    assert_eq!(durable_rows.last().unwrap().8, 0);
-    assert!(durable_rows.last().unwrap().9.is_none());
 }
 
 #[tokio::test]

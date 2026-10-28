@@ -819,6 +819,10 @@ async fn run_ops_with_routes(
             opts.common.server_url = server_url;
             OpsCommand::SmokePreflight(opts)
         }
+        OpsCommand::DiagnoseProvider(mut opts) => {
+            opts.common.server_url = server_url;
+            OpsCommand::DiagnoseProvider(opts)
+        }
     };
     let output = run_ops_command(command).await.unwrap().stdout;
     stop_tx.send(()).unwrap();

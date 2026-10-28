@@ -2566,7 +2566,7 @@ fn managed_worktree_rejects_malformed_grant_scopes_fail_closed() {
     let policy = project_policy(tmp.path());
     let granted_root = granted.canonicalize().unwrap();
 
-    let mut base = |extra: serde_json::Value| {
+    let base = |extra: serde_json::Value| {
         let mut payload = serde_json::json!({
             "path": source.to_string_lossy(),
             "base_ref": serde_json::Value::Null,

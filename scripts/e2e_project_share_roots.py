@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Loopback-only project-share parent-root acceptance with real Server/Runner.
 
-Build the fork binaries first:
+Build the binaries first:
   cargo build --locked --profile dogfood -p webcodex -p webcodex-cli -p webcodex-runner
   python3 scripts/e2e_project_share_roots.py --bin-dir target/dogfood
 

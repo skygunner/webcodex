@@ -72,40 +72,49 @@ class Share:
         self.port: int | None = None
         self.process: subprocess.Popen | None = None
         self.log_path = root / "share.log"
+        self.state_dir = root / "state"
         self.rpc_id = 0
 
-    def launch(self, project_dir: Path, persist: bool, tag: str) -> None:
+    def launch(self, project_dir: Path, persist: bool, tag: str, auth: str = "oauth",
+               state_dir: Path | None = None, public_url: bool = True) -> None:
         log_path = self.root / f"share-{self.public_port}-{tag}.log"
         log_path.write_bytes(b"")
         self.log_path = log_path
+        self.state_dir = state_dir or self.root / "state"
         command = [
             str(self.bin_dir / "webcodex"), "share",
             "--tunnel", "none",
-            "--public-url", self.origin,
-            "--auth", "oauth",
-            "--oauth-redirect-uri", f"{self.origin}/callback",
             "--no-copy-url",
-            "--state-dir", str(self.root / "state"),
+            "--state-dir", str(self.state_dir),
         ]
-        if persist:
-            command.append("--oauth-persist-on-restart")
+        if public_url:
+            command += ["--public-url", self.origin]
+        command += ["--auth", auth]
+        if auth == "oauth":
+            command += ["--oauth-redirect-uri", f"{self.origin}/callback"]
+            if persist:
+                command.append("--oauth-persist-on-restart")
         log = open(log_path, "ab")
         self.process = subprocess.Popen(
             command, cwd=project_dir, stdout=log, stderr=log, start_new_session=True
         )
 
     def discover_server_port(self) -> None:
-        configs = list((self.root / "state").glob("**/runner.toml"))
+        configs = list(self.state_dir.glob("**/runner.toml"))
         check(bool(configs), "generated Runner config not found under state dir")
         match = re.search(r'server_url\s*=\s*"http://127\.0\.0\.1:(\d+)"', configs[0].read_text())
         check(bool(match), f"server_url missing from {configs[0]}")
         self.port = int(match.group(1))
 
-    def wait_ready(self, deadline_secs: float = 90.0) -> dict:
+    def wait_ready(self, deadline_secs: float = 90.0, oauth: bool = True) -> dict:
         deadline = time.monotonic() + deadline_secs
         ready_re = re.compile(
-            r"4\. Client ID: (?P<client>\S+)\n.*?5\. Client secret: (?P<secret>\S+)\n"
-            r".*?Project share credential \(this share only\): (?P<credential>\S+)",
+            (
+                r"4\. Client ID: (?P<client>\S+)\n.*?5\. Client secret: (?P<secret>\S+)\n"
+                r".*?Project share credential \(this share only\): (?P<credential>\S+)"
+            )
+            if oauth
+            else r"Credential \(this share only\): (?P<credential>\S+)",
             re.S,
         )
         while time.monotonic() < deadline:
@@ -116,6 +125,8 @@ class Share:
             match = ready_re.search(self.log_path.read_text(errors="replace"))
             if match:
                 self.discover_server_port()
+                if not oauth:
+                    return {"credential": match.group("credential")}
                 return {
                     "client_id": match.group("client"),
                     "client_secret": match.group("secret"),
@@ -212,6 +223,25 @@ class Share:
         except json.JSONDecodeError:
             return status, {"raw": raw.decode(errors="replace")}
 
+    def revoke(self, client: dict, token: str, hint: str) -> int:
+        status, _, _ = self.request("/oauth/revoke", "POST", urllib.parse.urlencode({
+            "token": token,
+            "token_type_hint": hint,
+            "client_id": client["client_id"],
+            "client_secret": client["client_secret"],
+        }).encode())
+        return status
+
+    def runner_transport_status(self, token: str) -> int:
+        status, _, _ = self.request(
+            "/api/shell/agent/poll", "POST", b"{}",
+            headers={
+                "Authorization": "Bearer " + token,
+                "Content-Type": "application/json",
+            },
+        )
+        return status
+
     def mcp_status(self, token: str) -> int:
         self.rpc_id += 1
         headers = {
@@ -260,12 +290,31 @@ def main() -> int:
               "restart changed the persisted client secret")
         check(share.mcp_status(tokens["access_token"]) == 200,
               "access token stopped working after a persisting restart")
+        check(share.runner_transport_status(tokens["access_token"]) in (401, 403),
+              "Runner transport accepted a Server OAuth access token")
         status, refreshed = share.refresh(first, tokens["refresh_token"])
         check(status == 200, f"refresh grant denied after restart: {status} {refreshed}")
         check(isinstance(refreshed.get("access_token"), str),
               "refresh response missing access token")
+        check(isinstance(refreshed.get("refresh_token"), str),
+              "refresh response missing rotated refresh token")
         check(share.mcp_status(refreshed["access_token"]) == 200,
               "refreshed access token was rejected after restart")
+        status, replayed = share.refresh(first, tokens["refresh_token"])
+        check(status != 200,
+              f"rotated refresh token was accepted twice after restart: {replayed}")
+        check(share.revoke(first, refreshed["access_token"], "access_token") == 200,
+              "revocation of the refreshed access token was not acknowledged")
+        check(share.mcp_status(refreshed["access_token"]) == 401,
+              "revoked access token still worked")
+        share.stop()
+
+        share.launch(project, persist=True, tag="persist-c")
+        share.wait_ready()
+        check(share.mcp_status(refreshed["access_token"]) == 401,
+              "a persisting restart resurrected a revoked access token")
+        check(share.mcp_status(tokens["access_token"]) == 200,
+              "unrevoked access token did not survive a persisting restart")
         share.stop()
 
         share.launch(project, persist=False, tag="default-c")
@@ -274,13 +323,31 @@ def main() -> int:
               "default-mode restart changed the persisted client id")
         check(share.mcp_status(tokens["access_token"]) == 401,
               "default-mode restart kept a pre-restart access token alive")
-        status, refused = share.refresh(first, tokens["refresh_token"])
+        status, refused = share.refresh(first, refreshed["refresh_token"])
         check(status != 200,
               f"default-mode restart kept a pre-restart refresh token alive: {refused}")
         share.stop()
 
+        # A non-OAuth share keeps working, and the persist flag stays OAuth-only.
+        share.launch(project, persist=False, tag="bearer", auth="bearer", public_url=False,
+                     state_dir=root / "state-bearer")
+        bearer = share.wait_ready(oauth=False)
+        check(share.mcp_status(bearer["credential"]) == 200,
+              "non-OAuth share rejected its own project credential")
+        share.stop()
+        rejected = subprocess.run(
+            [str(bin_dir / "webcodex"), "share", "--tunnel", "none", "--no-copy-url",
+             "--oauth-persist-on-restart", "--state-dir", str(root / "state-flag")],
+            cwd=project, capture_output=True, text=True, timeout=60,
+        )
+        check(rejected.returncode != 0
+              and "requires --auth oauth" in (rejected.stdout + rejected.stderr),
+              "persist flag without --auth oauth was not rejected: "
+              + rejected.stdout + rejected.stderr)
+
         print("PASS oauth restart persistence: client continuity, grant continuity, "
-              "refresh rotation, default-mode revocation")
+              "refresh rotation one-shot, revocation not resurrected, default-mode "
+              "revocation, non-OAuth share unaffected, Runner transport rejects OAuth")
         shutil.rmtree(root, ignore_errors=True)
         return 0
     finally:

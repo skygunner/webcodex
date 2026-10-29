@@ -281,6 +281,8 @@ fn computer_register_request_announces_platform_capabilities_and_generation() {
         "computer key input is independently advertised only by native macOS/Windows implementations"
     );
     assert_eq!(caps.computer_letter_shortcuts, cfg!(windows));
+    assert_eq!(caps.computer_selection, cfg!(windows));
+    assert_eq!(caps.computer_key_chords, cfg!(windows));
     assert_eq!(
         caps.computer_window_activate,
         cfg!(any(target_os = "macos", windows)),

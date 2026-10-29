@@ -214,15 +214,24 @@ On macOS the Runner keeps the existing exact surface/element correlation and pro
 
 No lower-level wheel fallback is added in this slice. If a concrete product need emerges later, it must remain separately bounded and tied to an exactly revalidated active/focused surface rather than widening this semantic contract.
 
-### CU-10 — closed key input
+### CU-10 — bounded key chords
 
-The original navigation vocabulary uses the exact lowercase keys: `enter`, `escape`, `tab`, `arrow_up`, `arrow_down`, `arrow_left`, `arrow_right`, `page_up`, `page_down`, `home`, `end`. The optional `modifiers` array accepts only unique `shift`, `control`, `option`, and `command` values (at most four); omission or an empty array means no modifiers. The schema and Server/Computer validators share `webcodex_core::computer_input_contract`; the Server normalizes modifier order to that canonical order. These are vocabulary limits, not a promise that every chord is supported on every platform.
+Each call sends one main key with an optional set of unique modifiers. The schema and Server/Computer validators share `webcodex_core::computer_input_contract`; the Server normalizes modifiers to `shift`, `control`, `option`, `command` order. Omission, null, or an empty array means no modifiers. Windows supports Shift, Control and Alt (`option`); `command` has no Windows mapping. macOS retains the original eleven navigation keys with its existing modifier mappings. The shared vocabulary has 102 exact lowercase names:
 
-For example, Shift+Tab uses `{"action":"key","client_id":"<observed client>","surface_id":"<observed exact surface>","key":"tab","modifiers":["shift"]}`. Windows additionally supports only `Ctrl+J` and `Ctrl+P`: use `key: "j"` or `key: "p"` with exactly `modifiers: ["control"]`. Standalone letters, additional modifiers, shortcut strings such as `"Ctrl+P"`, and aliases such as `ctrl`/`alt` are rejected. Schema, Server, admission and native validation enforce the complete chord. On Windows, `option` means Alt, `command` is unsupported, and any chord containing Alt+Tab, Alt+Escape, or Ctrl+Escape is rejected before native input. Windows also rejects interfering held keys. The exact window must already be foreground/focused; key input never activates or focuses it implicitly. Capability and native preflight checks remain authoritative, and an uncertain effect still requires re-observation before retry.
+| Group | Key names |
+| --- | --- |
+| Navigation | `enter`, `escape`, `tab`, `arrow_up`, `arrow_down`, `arrow_left`, `arrow_right`, `page_up`, `page_down`, `home`, `end` |
+| Letters and digits | `a`–`z`, `0`–`9` |
+| Function | `f1`–`f24` |
+| Editing | `space`, `backspace`, `delete`, `insert` |
+| Punctuation | `semicolon`, `equal`, `comma`, `minus`, `period`, `slash`, `backquote`, `left_bracket`, `backslash`, `right_bracket`, `quote` |
+| Keypad | `numpad_0`–`numpad_9`, `numpad_add`, `numpad_subtract`, `numpad_multiply`, `numpad_divide`, `numpad_decimal`, `numpad_enter` |
 
-Expose key input as `control_computer(action=key, client_id, surface_id, key, modifiers?)` while retaining the additive `computer_key_input` Runner capability and wire kind. An older Runner that only advertises the semantic `control_computer` capability still fails closed. The navigation vocabulary remains Enter, Escape, Tab, arrows, PageUp/PageDown, Home/End with the bounded `shift`, `control`, `option`, and `command` modifier set. The Windows letter extension additionally requires `computer_letter_shortcuts`, advertised only by supporting Windows Runners; older Runners and other platforms are rejected before dispatch. Letter requests pin the accepted Runner instance and recheck access and both capabilities at queue admission and dequeue. Ordinary text continues through `control_computer(action=input_text)`; callers cannot supply characters, virtual keycodes, repeat counts, held-key state, or modifier key-down/up sequences.
+For example, Ctrl+Shift+P uses `{"action":"key","client_id":"<observed client>","surface_id":"<observed exact surface>","key":"p","modifiers":["control","shift"]}`. Bare keys and other supported modifier combinations use the same shape. Shortcut strings such as `"Ctrl+P"`, aliases such as `ctrl`/`alt`, duplicate modifiers, and caller-defined keycodes are rejected. Windows rejects any chord containing Alt+Tab, Alt+Escape, Ctrl+Escape, or Ctrl+Alt+Delete before native input, as well as interfering held keys. The exact window must already be foreground/focused; key input never activates or focuses it implicitly. An uncertain effect requires re-observation before considering a retry.
 
-Windows letter shortcuts use the existing bounded `SendInput` path with virtual keys `VK_J`/`VK_P` and Control. The key names denote those virtual keys, not Unicode text or a physical scan-code position. The complete down/up sequence is prepared before injection; existing foreground/focus, protected-content, held-key and partial-delivery checks remain. Windows uses the shared interactive input stream: application bindings, keyboard layout/input-method state, global hotkeys and hooks can affect the resulting behavior. Foreground preflight is not desktop isolation or proof that an application command completed. Observe the resulting UI; a newly opened dialog needs a fresh observed identity. A failed or missing response must not cause automatic replay or a guessed key-release sequence.
+Key input retains `control_computer(action=key, client_id, surface_id, key, modifiers?)`, the `computer_key_input` wire kind, and the independent `computer_key_input` base capability. Extra keys require the additive Windows-only `computer_key_chords` capability. The earlier F02 Server/Runner wire consumer remains supported through `computer_letter_shortcuts` for exactly Ctrl+J and Ctrl+P; this bit does not grant other letter/modifier combinations. A general-chord Runner needs no legacy letter bit. `observe_computer(action=targets)` reports all three actual capability bits so independently upgraded Servers and Runners can be distinguished. All key requests pin the accepted Runner instance and recheck access and the required capabilities at queue admission and dequeue. An older Runner advertising only semantic `computer_control` is not key-input capable. Ordinary text continues through `control_computer(action=input_text)`; callers cannot supply Unicode characters, virtual keycodes, repeat counts, held-key state, or modifier key-down/up sequences.
+
+Windows chords use the existing bounded `SendInput` path with logical virtual keys. Punctuation names map to the corresponding `VK_OEM_*` keys; they do not promise a particular character under another keyboard layout. Keypad names preserve their native virtual-key and extended-key distinctions; NumLock and input-method state can affect application behavior and are not changed by this tool. The complete down/up sequence is prepared before injection, with at most eight events on Windows; foreground/focus, protected-content, held-key and partial-delivery checks remain. Application bindings, global hotkeys and hooks also affect behavior. A successful receipt proves the complete sequence entered the shared input stream, not that an application command completed. Observe the resulting UI; a newly opened dialog needs a fresh observed identity. A failed or missing response must not cause automatic replay or a guessed key-release sequence.
 
 On macOS the Runner revalidates the exact surface through the existing native window identity path, then requires its application to already be frontmost and `AXFocusedWindow` to equal that exact window. It never activates or focuses the surface implicitly. When an `AXFocusedUIElement` is available, explicitly protected or secure content fails closed. Accessibility and event-posting permission checks are preflight-only and do not request permission UI. Both key-down and key-up events are constructed and flagged before the first effect, then posted only to the exact surface PID. Quartz exposes no atomic/batch post for the pair, so the two posts are adjacent with no fallible work between them; if the Runner process terminates in that narrow interval, the result is a partial `outcome_unknown`, not a supported held-key state.
 
@@ -235,6 +244,47 @@ The first Windows parity slice extends the corresponding `observe_computer` acti
 The Windows Runner revalidates the exact xcap-observed HWND/PID before obtaining the UIA root, walks the UIA Control View with the same depth/node bounds, and registers the same ephemeral `element_id` plus observation-generation lineage used by macOS. The native client uses `CUIAutomation8` / `IUIAutomation2` with bounded connection/transaction timeouts plus a top-level observation deadline, so a stalled provider does not turn node bounds into an unbounded call. UIA control types are projected into the existing semantic role vocabulary where a stable equivalent exists. Password/protected elements suppress value observation.
 
 `observe_computer(action=find_elements)` remains a Control-side adapter over the canonical bounded tree, so Windows support adds no finder-specific Runner protocol. `observe_computer(action=element_state)` re-resolves the exact UIA lineage before returning normalized state. W1 deliberately reports all mutation `can_*` affordances false because the corresponding Windows effect capabilities remain independently unavailable until later parity slices.
+
+### Windows native replacement selection
+
+`control_computer(action=select, client_id, surface_id, element_id)` selects one
+exact observed UIA ListItem or TabItem using `SelectionItemPattern.Select`.
+It **clears other selections in that container**, including when the target is
+already one of several selected items. `press` continues to require InvokePattern.
+There is no add/remove/toggle mode, implicit focus/activation, coordinate fallback,
+or `observe_after` on select. After success, observe the business state separately.
+
+The action requires both `computer_control` and additive `computer_selection`,
+advertised only by supporting Windows Runners. The accepted Runner instance,
+access and capabilities are checked at admission and dequeue. Old Runners and
+unsupported platforms cannot receive the new effect through general control alone.
+The Server requests selection state with the internal `include_selection=true`
+field only after observing that capability. A legacy element-state request retains
+its original response shape and does not query selection patterns, so a new Runner
+remains compatible with an old Server's closed response validator. This negotiation
+adds no model-facing argument.
+
+Windows `element_state` adds `can_select` and `selected`. Missing fields from an
+older Runner mean unknown, not false; protected targets suppress selected state.
+These observations grant no authority. Execution re-resolves complete target
+lineage and verifies that the native selection container is an unprotected,
+observed ancestor in the same exact window. A same-process match is insufficient.
+A container may omit SelectionPattern (as observed on Word's Account navigation);
+this does not prove that it is single-select and does not prevent an explicit
+replacement selection. Only a selected target in a proven single-select container
+skips the native call; all other supported cases call Select once.
+
+Bounded read-back confirms the same target and container. Native errors after the
+attempt, target changes, read failures or confirmation timeout produce
+`outcome_unknown`, without repeating the effect. Target selection does not prove
+that the entire application settled or independently verify all siblings when
+the provider omits container selection facts.
+
+Manual Windows native regression (launches only an owned WPF fixture):
+
+```powershell
+cargo test --locked -p webcodex-computer --lib computer_windows_selection_live -- --ignored --exact windows_uia_tests::selection::computer_windows_selection_live
+```
 
 Windows tree observation reads ComboBox current values independently of text-input eligibility. It prefers the native `ValuePattern`; when unavailable, a single native `SelectionPattern` selection supplies its bounded display name. Missing or ambiguous selection remains unknown. Unavailable or unsupported properties on the selected item also leave its value unknown; an unavailable password/protection property prevents reading its name. Native deadlines and unexpected provider failures remain errors. Protected controls suppress values. This read-only observation does not admit ComboBox focus, text input, selection or pointer effects.
 
@@ -270,11 +320,11 @@ Windows uses `control_computer(action=scroll_to_element, surface_id, element_id)
 
 Missing `ScrollItemPattern` and other pre-effect validation failures are deterministic. Once `ScrollIntoView` has been invoked, any HRESULT failure or deadline loss is `outcome_unknown`; callers must make a fresh semantic observation before deciding whether another scroll is safe. The result remains closed metadata containing only platform, surface/element identity, and success.
 
-### Windows UIA parity W6 — closed key input
+### Windows UIA parity W6 — bounded key chords
 
 Windows uses `control_computer(action=key, surface_id, key, modifiers?)` while retaining the independent `computer_key_input` Runner capability. Immediately before input the Runner revalidates the exact xcap surface, HWND/PID UIA root, requires `GetForegroundWindow()` to equal that HWND, obtains the current focused UIA element, and walks a bounded Control View ancestry chain until it proves that focus belongs to the exact window root. Password/protected focused content or ancestry fails closed. The Runner performs this exact foreground/root/focus preflight again immediately before native input and never activates or focuses a window implicitly.
 
-The existing closed key vocabulary is mapped to native Windows virtual keys internally. `shift` maps to Shift, `control` to Control, and model-facing `option` to Alt. `command` deliberately has no Windows mapping and fails before any native input. Windows also rejects `option+Tab`, `option+Escape`, and any `control+Escape` chord before native input because those combinations invoke OS-level switching or shell UI outside the exact surface. The full bounded `INPUT` sequence is constructed before the first effect: modifier downs, one key down/up pair, then modifier ups in reverse order. Navigation keys that require it use the internally selected extended-key flag. The entire sequence is sent with one `SendInput` call and the returned inserted-event count must exactly equal the prepared sequence length. Immediately before that call, the Runner also fails closed if Shift, Control, Alt, either Windows key, or the requested target key is already physically down, because existing keyboard state can otherwise change the effective chord.
+The shared key vocabulary maps to native Windows virtual keys internally. `shift` maps to Shift, `control` to Control, and model-facing `option` to Alt. `command` deliberately has no Windows mapping and fails before any native input. Windows also rejects `option+Tab`, `option+Escape`, `control+Escape`, and `control+option+Delete` chords, including supersets, before native input. The full bounded `INPUT` sequence is constructed before the first effect: modifier downs, one key down/up pair, then modifier ups in reverse order. Navigation, Delete/Insert, keypad Divide and keypad Enter use their required extended-key flags. The entire sequence is sent with one `SendInput` call and the returned inserted-event count must exactly equal the prepared sequence length. Immediately before that call, the Runner also fails closed if Shift, Control, Alt, either Windows key, or the requested target key is already physically down, because existing keyboard state can otherwise change the effective chord.
 
 Windows `SendInput` uses the shared interactive-desktop input stream; the exact surface/focus checks and held-key guard bound the action but do not make it a concurrent-user isolation primitive. Do not assume Windows key input can run independently while a person is simultaneously changing focus or keyboard state on the same desktop. Before `SendInput`, deterministic foreground/focus/mapping/held-key failures are pre-effect. A zero inserted-event return is also deterministic because no keyboard event entered the input stream. Partial insertion, deadline loss after insertion, interruption, lost response, or inconsistent success metadata is `outcome_unknown`; callers must re-observe before considering a retry. There is no PostMessage/SendMessage, `keybd_event`, caller virtual-key/scan-code control, clipboard/paste, script/shell, coordinate/pointer fallback, implicit activation, or cross-call held-key state. Successful output remains closed metadata containing only platform, surface identity, key, modifiers, and success.
 

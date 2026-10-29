@@ -1,6 +1,9 @@
 use super::*;
 
 #[cfg(windows)]
+mod selection;
+
+#[cfg(windows)]
 const UIA_CONNECTION_TIMEOUT_MS: u32 = 2_000;
 #[cfg(windows)]
 const UIA_TRANSACTION_TIMEOUT_MS: u32 = 2_000;
@@ -866,6 +869,7 @@ pub(crate) fn element_state(
     observation_generation: u32,
     surface: &SurfaceRecord,
     element: &ElementRecord,
+    include_selection: bool,
 ) -> Result<Value, String> {
     let target = element.target_fingerprint().ok_or_else(|| {
         "stale_element: UIA element correlation lineage is incomplete".to_string()
@@ -904,6 +908,16 @@ pub(crate) fn element_state(
         optional_uia_pattern::<IUIAutomationInvokePattern>(&context, &current, UIA_InvokePatternId)?
             .is_some()
     };
+    let selection = if protected || !include_selection {
+        None
+    } else {
+        selection::target(&context, &current, surface, element)?
+    };
+    let selected = selection
+        .as_ref()
+        .map(|target| target.selected(&context))
+        .transpose()?;
+    let can_select = enabled && selection.is_some();
     let can_focus =
         if protected || !enabled || !surface_foreground || !uia_semantic_focus_role(&target.role) {
             false
@@ -923,7 +937,7 @@ pub(crate) fn element_state(
         && value_writable
         && value_empty == Some(true);
 
-    Ok(json!({
+    let mut output = json!({
         "platform": "windows",
         "surface_id": surface_id,
         "element_id": element_id,
@@ -935,7 +949,12 @@ pub(crate) fn element_state(
         "can_press": can_press,
         "can_focus": can_focus,
         "can_input_text": can_input_text,
-    }))
+    });
+    if include_selection {
+        output["can_select"] = json!(can_select);
+        output["selected"] = json!(selected);
+    }
+    Ok(output)
 }
 
 #[cfg(windows)]
@@ -1171,6 +1190,7 @@ pub(crate) fn control(
     }
 
     match action {
+        ComputerAction::Select => selection::select(&context, &current, surface, element)?,
         ComputerAction::Press => {
             let pattern = optional_uia_pattern::<IUIAutomationInvokePattern>(
                 &context,

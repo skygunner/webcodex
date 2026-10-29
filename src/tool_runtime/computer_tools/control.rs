@@ -60,7 +60,8 @@ impl ToolRuntime {
             }
 
             call @ (ComputerControlToolCall::Press { .. }
-            | ComputerControlToolCall::Focus { .. }) => {
+            | ComputerControlToolCall::Focus { .. }
+            | ComputerControlToolCall::Select { .. }) => {
                 let (client_id, surface_id, element_id, action) = match call {
                     ComputerControlToolCall::Press {
                         client_id,
@@ -68,6 +69,11 @@ impl ToolRuntime {
                         element_id,
                         ..
                     } => (client_id, surface_id, element_id, "press"),
+                    ComputerControlToolCall::Select {
+                        client_id,
+                        surface_id,
+                        element_id,
+                    } => (client_id, surface_id, element_id, "select"),
                     ComputerControlToolCall::Focus {
                         client_id,
                         surface_id,

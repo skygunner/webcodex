@@ -1296,7 +1296,7 @@ pub enum ComputerObserveToolCall {
         #[serde(default)]
         limit: Option<usize>,
     },
-    /// Re-resolve a current element without replacing its observation_generation. When action support is unclear, inspect can_press/can_focus/can_input_text before choosing press/focus/input_text. Advisory native state grants no permission or capability and cannot refresh a stale element_id.
+    /// Re-resolve a current element without replacing its observation_generation. When action support is unclear, inspect can_press/can_focus/can_input_text/can_select before choosing press/focus/input_text/select. Windows selected reports target selection; missing selection fields on older Runners mean unknown. Advisory native state grants no permission or capability and cannot refresh a stale element_id.
     ElementState {
         #[schemars(length(min = 1, max = 128))]
         client_id: String,
@@ -1384,6 +1384,22 @@ pub enum ComputerControlToolCall {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         observe_after: Option<ComputerPostObservation>,
     },
+    /// Windows native replacement selection of one exact observed ListItem or TabItem.
+    /// SelectionItemPattern.Select clears other selections in the container. Requires
+    /// computer_selection and computer_control; missing capabilities reject before dispatch.
+    /// No add/remove/toggle, focus, activation or observe_after. Target and container must
+    /// remain correlated to the same unprotected window. A selected multi-select item
+    /// still clears its siblings; only proven single selection permits a no-op.
+    /// Use element_state selected after success; success does not imply UI stability.
+    /// After an uncertain attempt observe current state; never blindly replay select.
+    Select {
+        #[schemars(length(min = 1, max = 128))]
+        client_id: String,
+        #[schemars(length(min = 1, max = 128))]
+        surface_id: String,
+        #[schemars(length(min = 1, max = 128))]
+        element_id: String,
+    },
     Focus {
         #[schemars(length(min = 1, max = 128))]
         client_id: String,
@@ -1400,18 +1416,17 @@ pub enum ComputerControlToolCall {
         #[schemars(length(min = 1, max = 128))]
         element_id: String,
     },
-    #[schemars(extend("allOf" = webcodex_core::computer_input_contract::computer_key_chord_constraints()))]
     Key {
         #[schemars(length(min = 1, max = 128))]
         client_id: String,
         #[schemars(length(min = 1, max = 128))]
         surface_id: String,
-        /// Exact lowercase navigation key, or Windows-only j/p with exactly modifiers=[control].
+        /// Exact canonical key name; Windows supports general single-key chords.
         /// Shortcut strings such as Ctrl+P are unsupported. The exact surface must already be foreground/focused.
         #[schemars(schema_with = "webcodex_core::computer_input_contract::computer_key_schema")]
         key: String,
         /// Unique canonical modifiers; omission/null means none. Windows maps option to Alt, rejects
-        /// command, option+Tab, option+Escape, and any control+Escape chord. macOS uses the named
+        /// command, option+Tab, option+Escape, control+Escape and control+option+Delete. macOS uses the named
         /// Shift/Control/Option/Command flags. Held/interfering keys can fail native preflight.
         #[schemars(schema_with = "webcodex_core::computer_input_contract::computer_key_modifiers_schema")]
         #[serde(default)]
@@ -1476,6 +1491,7 @@ impl ComputerControlToolCall {
             Self::LaunchApplication { .. } => "launch_application",
             Self::ActivateWindow { .. } => "activate_window",
             Self::Press { .. } => "press",
+            Self::Select { .. } => "select",
             Self::Focus { .. } => "focus",
             Self::ScrollToElement { .. } => "scroll_to_element",
             Self::Key { .. } => "key",

@@ -180,6 +180,7 @@ struct SurfaceRecord {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ComputerAction {
+    Select,
     Press,
     Focus,
 }
@@ -187,15 +188,20 @@ pub enum ComputerAction {
 impl ComputerAction {
     pub fn parse(value: &str) -> Result<Self, String> {
         match value {
+            "select" => Ok(Self::Select),
             "press" => Ok(Self::Press),
             "focus" => Ok(Self::Focus),
-            _ => Err("invalid_request: computer control action must be press or focus".to_string()),
+            _ => Err(
+                "invalid_request: computer control action must be press, focus or select"
+                    .to_string(),
+            ),
         }
     }
 
     #[cfg(any(target_os = "macos", windows))]
     fn as_str(self) -> &'static str {
         match self {
+            Self::Select => "select",
             Self::Press => "press",
             Self::Focus => "focus",
         }
@@ -1528,7 +1534,12 @@ impl ComputerRuntime {
         Ok(output)
     }
 
-    pub fn element_state(&self, surface_id: &str, element_id: &str) -> Result<Value, String> {
+    pub fn element_state(
+        &self,
+        surface_id: &str,
+        element_id: &str,
+        include_selection: bool,
+    ) -> Result<Value, String> {
         if surface_id.is_empty() || surface_id.len() > MAX_SURFACE_ID_BYTES {
             return Err("invalid_request: surface_id is invalid".to_string());
         }
@@ -1564,6 +1575,7 @@ impl ComputerRuntime {
             observation_generation,
             &record,
             &element,
+            include_selection,
         )
     }
 
@@ -2512,7 +2524,7 @@ mod element_registry_tests {
     }
 
     #[test]
-    fn computer_control_actions_are_closed_to_press_and_focus() {
+    fn computer_control_actions_are_closed_to_press_focus_and_select() {
         assert_eq!(
             ComputerAction::parse("press").unwrap(),
             ComputerAction::Press
@@ -2521,7 +2533,11 @@ mod element_registry_tests {
             ComputerAction::parse("focus").unwrap(),
             ComputerAction::Focus
         );
-        for action in ["type", "scroll", "click", "", "PRESS"] {
+        assert_eq!(
+            ComputerAction::parse("select").unwrap(),
+            ComputerAction::Select
+        );
+        for action in ["type", "scroll", "click", "", "PRESS", "add_to_selection"] {
             assert!(ComputerAction::parse(action).is_err(), "{action}");
         }
     }
@@ -2996,12 +3012,12 @@ mod key_input_runtime_tests {
             .iter()
             .map(|modifier| modifier.to_string())
             .collect::<Vec<_>>();
-        for key in COMPUTER_KEY_INPUT_KEYS {
+        for key in webcodex_core::computer_input_contract::computer_key_input_keys() {
             assert!(validate_key_input(key, &[]).is_ok());
             assert!(validate_key_input(key, &modifiers).is_ok());
         }
         assert!(validate_key_input("tab", &["shift".to_string()]).is_ok());
-        assert!(validate_key_input("a", &[]).is_err());
+        assert!(validate_key_input("unknown", &[]).is_err());
         assert!(validate_key_input("enter", &["shift".to_string(), "shift".to_string()]).is_err());
     }
 }
@@ -3425,6 +3441,7 @@ mod platform {
         _observation_generation: u32,
         _surface: &SurfaceRecord,
         _element: &ElementRecord,
+        _include_selection: bool,
     ) -> Result<serde_json::Value, String> {
         Err(
             "unsupported_platform: computer element state is unavailable on this platform"

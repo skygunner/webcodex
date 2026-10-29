@@ -47,9 +47,12 @@ fn target_schema() -> Value {
                     "computer_clipboard_read": {"type": "boolean"},
                     "computer_clipboard_write": {"type": "boolean"},
                     "computer_snapshot_region": {"type": "boolean"},
-                    "computer_accessibility_observe": {"type": "boolean"}
+                    "computer_accessibility_observe": {"type": "boolean"},
+                    "computer_key_input": {"type": "boolean"},
+                    "computer_letter_shortcuts": {"type": "boolean"},
+                    "computer_key_chords": {"type": "boolean"}
                 },
-                "required": ["computer_observe", "computer_application_discovery", "computer_application_launch", "computer_display_observe", "computer_pointer_control", "computer_clipboard_read", "computer_clipboard_write", "computer_snapshot_region", "computer_accessibility_observe"]
+                "required": ["computer_observe", "computer_application_discovery", "computer_application_launch", "computer_display_observe", "computer_pointer_control", "computer_clipboard_read", "computer_clipboard_write", "computer_snapshot_region", "computer_accessibility_observe", "computer_key_input", "computer_letter_shortcuts", "computer_key_chords"]
             }
         },
         "required": ["client_id", "display_name", "connected", "capabilities"]

@@ -29,6 +29,7 @@ mod collaboration;
 mod computer_budgets;
 mod computer_lifecycle;
 mod computer_post_observation;
+mod computer_selection;
 mod context_projection;
 mod continuation_feedback;
 mod control_sidecars;

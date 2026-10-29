@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - 'release/**'
+      - 'feat/computer-key-chords'
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
   merge_group:

@@ -289,6 +289,9 @@ impl ToolRuntime {
             let computer_snapshot_region = client.supports(RunnerFeature::ComputerSnapshotRegion);
             let computer_accessibility_observe =
                 client.supports(RunnerFeature::ComputerAccessibilityObserve);
+            let computer_key_input = client.supports(RunnerFeature::ComputerKeyInput);
+            let computer_letter_shortcuts = client.supports(RunnerFeature::ComputerLetterShortcuts);
+            let computer_key_chords = client.supports(RunnerFeature::ComputerKeyChords);
             let view = client.view;
             if !computer_observe
                 && !computer_accessibility_observe
@@ -298,6 +301,7 @@ impl ToolRuntime {
                 && !computer_pointer_control
                 && !computer_clipboard_read
                 && !computer_clipboard_write
+                && !computer_key_input
             {
                 continue;
             }
@@ -319,6 +323,9 @@ impl ToolRuntime {
                     "computer_clipboard_write": computer_clipboard_write,
                     "computer_snapshot_region": computer_snapshot_region,
                     "computer_accessibility_observe": computer_accessibility_observe,
+                    "computer_key_input": computer_key_input,
+                    "computer_letter_shortcuts": computer_letter_shortcuts,
+                    "computer_key_chords": computer_key_chords,
                 },
             }));
         }

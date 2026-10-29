@@ -1057,6 +1057,12 @@ runner_capabilities! {
         #[serde(default, skip_serializing_if = "is_false")]
         pub computer_control: bool = false;
     }
+    /// Native Windows replacement selection; never inferred from general control.
+    ComputerSelection => RUNNER_CAPABILITY_COMPUTER_SELECTION("computer_selection"),
+    v2_baseline = false {
+        #[serde(default, skip_serializing_if = "is_false")]
+        pub computer_selection: bool = false;
+    }
     /// Native semantic scroll-to-visible on one exact observed Accessibility element.
     /// Missing on older Runners is false and is never inferred from computer_control.
     ComputerScrollToElement => RUNNER_CAPABILITY_COMPUTER_SCROLL_TO_ELEMENT("computer_scroll_to_element"),
@@ -1081,6 +1087,13 @@ runner_capabilities! {
     v2_baseline = false {
         #[serde(default, skip_serializing_if = "is_false")]
         pub computer_letter_shortcuts: bool = false;
+    }
+    /// General Windows single-key chords; neither navigation nor the legacy
+    /// Ctrl+J/Ctrl+P capability implies this larger vocabulary or chord set.
+    ComputerKeyChords => RUNNER_CAPABILITY_COMPUTER_KEY_CHORDS("computer_key_chords"),
+    v2_baseline = false {
+        #[serde(default, skip_serializing_if = "is_false")]
+        pub computer_key_chords: bool = false;
     }
     /// Native exact-window activation/raise. Missing on older Runners is false and
     /// is never inferred from accessibility control, observation, or platform.
@@ -2986,7 +2999,9 @@ mod envelope_tests {
                 computer_control: false,
                 computer_scroll_to_element: false,
                 computer_key_input: false,
+                computer_selection: false,
                 computer_letter_shortcuts: false,
+                computer_key_chords: false,
                 computer_window_activate: false,
                 computer_text_input: false,
                 job_state_reconciliation: false,
@@ -3345,6 +3360,24 @@ mod envelope_tests {
         assert_eq!(
             RunnerCapabilityId::from_wire_name("computer_letter_shortcuts"),
             Some(RunnerCapabilityId::ComputerLetterShortcuts)
+        );
+    }
+
+    #[test]
+    fn computer_key_chords_capability_is_not_implied_by_legacy_keys() {
+        let legacy: RunnerCapabilities =
+            serde_json::from_str(r#"{"computer_key_input":true,"computer_letter_shortcuts":true}"#)
+                .unwrap();
+        assert!(!legacy.computer_key_chords);
+        let chords: RunnerCapabilities =
+            serde_json::from_str(r#"{"computer_key_chords":true}"#).unwrap();
+        assert!(chords.supports(RunnerCapabilityId::ComputerKeyChords));
+        assert!(!chords.computer_key_input);
+        assert!(!chords.computer_letter_shortcuts);
+        assert!(!RunnerCapabilities::default().computer_key_chords);
+        assert_eq!(
+            RunnerCapabilityId::from_wire_name("computer_key_chords"),
+            Some(RunnerCapabilityId::ComputerKeyChords)
         );
     }
 

@@ -170,6 +170,56 @@ fn computer_element_state_payload_is_exact_surface_and_element_only() {
 }
 
 #[test]
+fn computer_selection_uses_existing_control_wire_and_rejects_extra_effects() {
+    let runtime = ComputerRuntime::new(ComputerConfig {
+        max_encoded_image_bytes: 1024,
+    });
+    for extra in [None, Some("toggle"), Some("observe_after"), Some("index")] {
+        let mut payload = serde_json::json!({"surface_id":"surface_missing", "element_id":"element_missing", "action":"select"});
+        if let Some(extra) = extra {
+            payload[extra] = serde_json::json!(true);
+        }
+        let result = handle_computer_operation_with_runtime(
+            &runtime,
+            &RunnerComputerOperation {
+                kind: RunnerComputerOperationKind::Control,
+                payload: payload.to_string(),
+                timeout_secs: 5,
+            },
+        );
+        let error = result.error.unwrap();
+        assert!(
+            error.starts_with(if extra.is_none() {
+                "stale_surface:"
+            } else {
+                "invalid_request:"
+            }),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn computer_selection_state_extension_is_explicit_and_legacy_requests_stay_legacy() {
+    let legacy = serde_json::json!({"surface_id":"surface_test", "element_id":"element_test"});
+    assert!(!element_state_selection_requested(&legacy).unwrap());
+    for value in [
+        serde_json::json!(true),
+        serde_json::json!(false),
+        serde_json::json!(null),
+        serde_json::json!("true"),
+    ] {
+        let mut payload = legacy.clone();
+        payload["include_selection"] = value.clone();
+        let result = element_state_selection_requested(&payload);
+        match value.as_bool() {
+            Some(expected) => assert_eq!(result.unwrap(), expected),
+            None => assert!(result.is_err()),
+        }
+    }
+}
+
+#[test]
 fn computer_activate_window_payload_is_exact_surface_only() {
     let exact = serde_json::json!({"surface_id": "surface_test"});
     assert!(ensure_exact_payload_fields(&exact, &["surface_id"]).is_ok());

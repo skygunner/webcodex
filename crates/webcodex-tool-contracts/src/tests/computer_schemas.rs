@@ -222,6 +222,7 @@ fn computer_control_schema_is_closed_action_union() {
         "launch_application",
         "activate_window",
         "press",
+        "select",
         "focus",
         "scroll_to_element",
         "key",
@@ -287,10 +288,7 @@ fn computer_key_schema_discloses_closed_vocabulary_and_modifier_constraints() {
     let specs = registered_tool_specs();
     let spec = spec_named(&specs, "control_computer");
     let key = action_properties(&spec.input_schema, "key");
-    let keys: Vec<_> = COMPUTER_KEY_INPUT_KEYS
-        .iter()
-        .chain(webcodex_core::computer_input_contract::COMPUTER_LETTER_SHORTCUT_KEYS)
-        .collect();
+    let keys: Vec<_> = webcodex_core::computer_input_contract::computer_key_input_keys().collect();
     assert_eq!(key["key"]["enum"], json!(keys));
     let modifiers = key["modifiers"]["anyOf"]
         .as_array()
@@ -320,7 +318,7 @@ fn computer_key_schema_discloses_closed_vocabulary_and_modifier_constraints() {
         }
     }
     for (name, modifiers) in [
-        ("p", json!([])),
+        ("unknown", json!([])),
         ("Ctrl+P", json!([])),
         ("Enter", json!([])),
         ("tab", json!(["ctrl"])),
@@ -360,23 +358,31 @@ fn computer_key_schema_discloses_closed_vocabulary_and_modifier_constraints() {
 }
 
 #[test]
-fn computer_key_letter_shortcuts_require_the_exact_control_chord() {
+fn computer_key_chords_accept_canonical_keys_and_reject_malformed_modifiers() {
     let schema = crate::input_schema_for_tool("control_computer");
-    for key in ["j", "p"] {
-        let input = json!({"action":"key", "client_id":"client", "surface_id":"surface_test", "key":key, "modifiers":["control"]});
-        test_support::validate_schema_instance(&input, &schema).unwrap();
-        ToolCall::from_tool_name("control_computer", input.clone()).unwrap();
+    for key in ["a", "j", "p", "0", "f24", "delete", "slash", "numpad_enter"] {
+        let input =
+            json!({"action":"key", "client_id":"client", "surface_id":"surface_test", "key":key});
         for modifiers in [
             None,
             Some(Value::Null),
             Some(json!([])),
             Some(json!(["shift"])),
-            Some(json!(["option"])),
-            Some(json!(["command"])),
+            Some(json!(["control"])),
+            Some(json!(["control", "shift", "option"])),
+        ] {
+            let mut valid = input.clone();
+            if let Some(modifiers) = modifiers {
+                valid["modifiers"] = modifiers;
+            }
+            test_support::validate_schema_instance(&valid, &schema).unwrap();
+            ToolCall::from_tool_name("control_computer", valid).unwrap();
+        }
+        for modifiers in [
             Some(json!(["ctrl"])),
-            Some(json!(["control", "shift"])),
-            Some(json!(["control", "option"])),
             Some(json!(["control", "control"])),
+            Some(json!(["shift", "control", "option", "command", "shift"])),
+            Some(json!("control")),
         ] {
             let mut invalid = input.clone();
             invalid.as_object_mut().unwrap().remove("modifiers");
@@ -401,11 +407,7 @@ fn computer_key_success_receipts_fit_primitive_and_gateway_output_schemas() {
         ("control_computer", &control.output_schema),
     ];
     let mut failures = Vec::new();
-    for key in webcodex_core::computer_input_contract::COMPUTER_KEY_INPUT_KEYS
-        .iter()
-        .copied()
-        .chain(["j", "p"])
-    {
+    for key in webcodex_core::computer_input_contract::computer_key_input_keys() {
         let modifiers = if matches!(key, "j" | "p") {
             json!(["control"])
         } else {
@@ -423,7 +425,7 @@ fn computer_key_success_receipts_fit_primitive_and_gateway_output_schemas() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
-    for key in ["a", "Ctrl+P", "P"] {
+    for key in ["unknown", "Ctrl+P", "P"] {
         let receipt = json!({"success":true, "output":{"platform":"windows",
             "surface_id":"surface_test", "key":key, "modifiers":["control"], "success":true}});
         for (name, schema) in output_schemas {
@@ -561,4 +563,29 @@ fn computer_save_snapshot_remains_separate_create_only_project_write() {
         present: ["project", "path", "client_id", "surface_id", "source_width", "source_height", "region", "width", "height", "mime_type", "file_bytes", "sha256", "saved"],
         absent: ["content_base64", "captured_at_unix_ms"]
     );
+}
+
+#[test]
+fn computer_selection_has_one_exact_target_and_no_implicit_effects() {
+    let specs = registered_tool_specs();
+    let spec = spec_named(&specs, "control_computer");
+    let args = json!({"action":"select","client_id":"runner","surface_id":"surface_test","element_id":"element_test"});
+    test_support::validate_schema_instance(&args, &spec.input_schema).unwrap();
+    let call = ToolCall::from_tool_name("control_computer", args.clone()).unwrap();
+    let ToolCall::ComputerControl(control) = call else {
+        panic!("selection control")
+    };
+    assert_eq!(control.action_name(), "select");
+    assert_eq!(serde_json::to_value(control).unwrap(), args);
+    for field in ["observe_after", "index", "label", "add", "toggle"] {
+        let mut extra = args.clone();
+        extra[field] = json!(true);
+        assert!(ToolCall::from_tool_name("control_computer", extra.clone()).is_err());
+        assert!(test_support::validate_schema_instance(&extra, &spec.input_schema).is_err());
+    }
+    for field in ["client_id", "surface_id", "element_id"] {
+        let mut missing = args.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        assert!(ToolCall::from_tool_name("control_computer", missing).is_err());
+    }
 }

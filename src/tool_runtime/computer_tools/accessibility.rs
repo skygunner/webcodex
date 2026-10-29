@@ -368,13 +368,27 @@ pub(super) fn validate_computer_element_state(
         "can_press",
         "can_focus",
         "can_input_text",
+        "can_select",
+        "selected",
     ];
     let bool_or_null = |field: &str| {
         output
             .get(field)
             .is_some_and(|value| value.is_boolean() || value.is_null())
     };
-    if object.len() != allowed.len()
+    let has_selection = object.contains_key("can_select") || object.contains_key("selected");
+    let selection_valid = !has_selection
+        || (output.get("can_select").is_some_and(Value::is_boolean)
+            && bool_or_null("selected")
+            && (output.get("can_select") != Some(&Value::Bool(true))
+                || (output.get("enabled") == Some(&Value::Bool(true))
+                    && output.get("protected") == Some(&Value::Bool(false))
+                    && output.get("selected").is_some_and(Value::is_boolean)
+                    && output.get("platform").and_then(Value::as_str) == Some("windows")))
+            && (output.get("protected") != Some(&Value::Bool(true))
+                || output.get("selected") == Some(&Value::Null)));
+    if !selection_valid
+        || object.len() != allowed.len() - if has_selection { 0 } else { 2 }
         || object.keys().any(|key| !allowed.contains(&key.as_str()))
         || !is_native_accessibility_platform(output.get("platform").and_then(Value::as_str))
         || output.get("surface_id").and_then(Value::as_str) != Some(expected_surface_id)

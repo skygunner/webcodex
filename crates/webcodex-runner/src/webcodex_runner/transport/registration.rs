@@ -456,6 +456,8 @@ pub(crate) fn runner_register_capabilities(cfg: &RunnerConfig) -> RunnerCapabili
         cfg!(any(target_os = "macos", windows)),
     );
     capabilities.set(RunnerCapabilityId::ComputerLetterShortcuts, cfg!(windows));
+    capabilities.set(RunnerCapabilityId::ComputerSelection, cfg!(windows));
+    capabilities.set(RunnerCapabilityId::ComputerKeyChords, cfg!(windows));
     // Exact window activation is a separate effect/wire capability. It is
     // independently advertised by native macOS and Windows implementations.
     capabilities.set(

@@ -41,6 +41,20 @@ fn ensure_exact_payload_fields(payload: &Value, expected: &[&str]) -> Result<(),
     Ok(())
 }
 
+fn element_state_selection_requested(payload: &Value) -> Result<bool, String> {
+    let fields: &[&str] = if payload.get("include_selection").is_some() {
+        &["surface_id", "element_id", "include_selection"]
+    } else {
+        &["surface_id", "element_id"]
+    };
+    ensure_exact_payload_fields(payload, fields)?;
+    match payload.get("include_selection") {
+        None => Ok(false),
+        Some(Value::Bool(value)) => Ok(*value),
+        _ => Err("invalid_request: include_selection must be boolean".into()),
+    }
+}
+
 fn optional_snapshot_region(payload: &Value) -> Result<Option<SnapshotRegion>, String> {
     match payload.get("region") {
         None | Some(Value::Null) => Ok(None),
@@ -152,8 +166,8 @@ pub(crate) fn handle_computer_operation_with_runtime(
                 runtime.accessibility_tree_scoped(surface_id, root, max_depth, max_nodes)
             })
         }
-        RunnerComputerOperationKind::ElementState => {
-            ensure_exact_payload_fields(&payload, &["surface_id", "element_id"]).and_then(|()| {
+        RunnerComputerOperationKind::ElementState => element_state_selection_requested(&payload)
+            .and_then(|include_selection| {
                 let surface_id = payload
                     .get("surface_id")
                     .and_then(Value::as_str)
@@ -162,9 +176,8 @@ pub(crate) fn handle_computer_operation_with_runtime(
                     .get("element_id")
                     .and_then(Value::as_str)
                     .ok_or_else(|| "invalid_request: element_id is required".to_string())?;
-                runtime.element_state(surface_id, element_id)
-            })
-        }
+                runtime.element_state(surface_id, element_id, include_selection)
+            }),
         RunnerComputerOperationKind::ActivateWindow => {
             ensure_exact_payload_fields(&payload, &["surface_id"])
                 .and_then(|()| {

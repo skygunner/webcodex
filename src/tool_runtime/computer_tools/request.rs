@@ -62,18 +62,28 @@ impl ToolRuntime {
         &self,
         client_id: &str,
         kind: &'static str,
-        payload: Value,
+        mut payload: Value,
         auth: Option<&AuthContext>,
         list_limit: Option<usize>,
         expected_surface_id: Option<&str>,
         accessibility_bounds: Option<(usize, usize)>,
         expected_instance: Option<&str>,
     ) -> ToolResult {
-        let is_letter_shortcut = kind == "computer_key_input"
-            && payload
-                .get("key")
-                .and_then(Value::as_str)
-                .is_some_and(webcodex_core::computer_input_contract::is_computer_letter_shortcut);
+        let is_selection = kind == "computer_control"
+            && payload.get("action").and_then(Value::as_str) == Some("select");
+        let key_input = if kind == "computer_key_input" {
+            let Ok(input) = serde_json::from_value::<
+                webcodex_core::computer_input_contract::ComputerKeyInputPayload,
+            >(payload.clone()) else {
+                return computer_error("invalid_request", "invalid computer key input payload");
+            };
+            if let Err(error) = input.validate() {
+                return computer_error("invalid_request", error);
+            }
+            Some(input)
+        } else {
+            None
+        };
         let expected_root_element_id = payload
             .get("root_element_id")
             .and_then(Value::as_str)
@@ -156,16 +166,16 @@ impl ToolRuntime {
                 &[RunnerFeature::ComputerAccessibilityObserve]
             }
             "computer_element_state" => &[RunnerFeature::ComputerElementState],
-            "computer_control" => &[RunnerFeature::ComputerControl],
-            "computer_scroll_to_element" => &[RunnerFeature::ComputerScrollToElement],
-            "computer_key_input" => {
-                webcodex_core::computer_input_contract::computer_key_input_capabilities(
+            "computer_control" => {
+                webcodex_core::computer_input_contract::computer_control_capabilities(
                     payload
-                        .get("key")
+                        .get("action")
                         .and_then(Value::as_str)
                         .unwrap_or_default(),
                 )
             }
+            "computer_scroll_to_element" => &[RunnerFeature::ComputerScrollToElement],
+            "computer_key_input" => &[RunnerFeature::ComputerKeyInput],
             "computer_activate_window" => &[RunnerFeature::ComputerWindowActivate],
             "computer_input_text" => &[RunnerFeature::ComputerTextInput],
             _ => return computer_error("invalid_request", "unsupported computer request kind"),
@@ -204,17 +214,25 @@ impl ToolRuntime {
                 );
             }
             Err(error)
-                if (expected_instance.is_some() || is_letter_shortcut)
+                if (expected_instance.is_some() || key_input.is_some() || is_selection)
                     && computer_request_is_effect(kind) =>
             {
                 return computer_effect_not_started(&error);
             }
             Err(error) => return computer_error("client_access_denied", &error),
         };
-        // Pin new letter chords to the registration whose capability was observed.
+        // Pin additive effects to the registration whose capability was observed.
         // The same fence is checked under the queue lock and again at dequeue.
-        let expected_instance = expected_instance
-            .or_else(|| is_letter_shortcut.then_some(client.view.runner_instance_id.as_str()));
+        let expected_instance = expected_instance.or_else(|| {
+            (key_input.is_some() || is_selection).then_some(client.view.runner_instance_id.as_str())
+        });
+        let required_features = key_input.as_ref().map_or(required_features, |input| {
+            webcodex_core::computer_input_contract::computer_key_input_capabilities(
+                &input.key,
+                &input.modifiers,
+                client.supports(RunnerFeature::ComputerKeyChords),
+            )
+        });
         for required_feature in required_features {
             if client.supports(*required_feature) {
                 continue;
@@ -251,6 +269,10 @@ impl ToolRuntime {
                 "capability_unavailable",
                 &format!("target Runner does not support {required_capability}"),
             );
+        }
+        // Preserve the exact legacy response shape for old Servers and Runners.
+        if kind == "computer_element_state" && client.supports(RunnerFeature::ComputerSelection) {
+            payload["include_selection"] = json!(true);
         }
         let expected_element_id = payload
             .get("element_id")

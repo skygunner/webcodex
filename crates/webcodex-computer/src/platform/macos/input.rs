@@ -1350,9 +1350,9 @@ pub(crate) fn key_input(
     modifiers: &[String],
 ) -> Result<Value, String> {
     validate_key_input(key, modifiers)?;
-    if webcodex_core::computer_input_contract::is_computer_letter_shortcut(key) {
+    if !webcodex_core::computer_input_contract::COMPUTER_KEY_INPUT_KEYS.contains(&key) {
         return Err(
-            "invalid_request: computer letter shortcuts are supported only on Windows".into(),
+            "invalid_request: extended computer key chords are supported only on Windows".into(),
         );
     }
     if !unsafe { AXIsProcessTrusted() } {

@@ -722,6 +722,7 @@ pub(crate) fn element_state(
     observation_generation: u32,
     surface: &SurfaceRecord,
     element: &ElementRecord,
+    _include_selection: bool,
 ) -> Result<Value, String> {
     if !unsafe { AXIsProcessTrusted() } {
         return Err("permission_denied: macOS Accessibility permission is not granted".to_string());
@@ -870,6 +871,9 @@ pub(crate) fn control(
 
     prepare_ax_call(&deadline, &current)?;
     let error = match action {
+        ComputerAction::Select => {
+            return Err("unsupported_platform: native selection is Windows-only".into())
+        }
         ComputerAction::Press => unsafe {
             current.perform_action(&CFString::from_static_str("AXPress"))
         },
@@ -883,6 +887,7 @@ pub(crate) fn control(
     if error != AXError::Success {
         return Err(control_attempt_error(
             match action {
+                ComputerAction::Select => unreachable!("selection rejected before native effect"),
                 ComputerAction::Press => "AXUIElementPerformAction(AXPress)",
                 ComputerAction::Focus => "AXUIElementSetAttributeValue(AXFocused)",
             },

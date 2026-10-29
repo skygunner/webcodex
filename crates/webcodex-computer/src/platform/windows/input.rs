@@ -333,8 +333,51 @@ fn windows_key_mapping(key: &str) -> Result<(VIRTUAL_KEY, bool), String> {
         "page_down" => Ok((VK_NEXT, true)),
         "home" => Ok((VK_HOME, true)),
         "end" => Ok((VK_END, true)),
-        "j" => Ok((VIRTUAL_KEY(0x4A), false)),
-        "p" => Ok((VIRTUAL_KEY(0x50), false)),
+        "space" => Ok((VK_SPACE, false)),
+        "backspace" => Ok((VK_BACK, false)),
+        "delete" => Ok((VK_DELETE, true)),
+        "insert" => Ok((VK_INSERT, true)),
+        "semicolon" => Ok((VK_OEM_1, false)),
+        "equal" => Ok((VK_OEM_PLUS, false)),
+        "comma" => Ok((VK_OEM_COMMA, false)),
+        "minus" => Ok((VK_OEM_MINUS, false)),
+        "period" => Ok((VK_OEM_PERIOD, false)),
+        "slash" => Ok((VK_OEM_2, false)),
+        "backquote" => Ok((VK_OEM_3, false)),
+        "left_bracket" => Ok((VK_OEM_4, false)),
+        "backslash" => Ok((VK_OEM_5, false)),
+        "right_bracket" => Ok((VK_OEM_6, false)),
+        "quote" => Ok((VK_OEM_7, false)),
+        "numpad_add" => Ok((VK_ADD, false)),
+        "numpad_subtract" => Ok((VK_SUBTRACT, false)),
+        "numpad_multiply" => Ok((VK_MULTIPLY, false)),
+        "numpad_divide" => Ok((VK_DIVIDE, true)),
+        "numpad_decimal" => Ok((VK_DECIMAL, false)),
+        "numpad_enter" => Ok((VK_RETURN, true)),
+        _ if key.len() == 1 && key.as_bytes()[0].is_ascii_lowercase() => Ok((
+            VIRTUAL_KEY(u16::from(key.as_bytes()[0].to_ascii_uppercase())),
+            false,
+        )),
+        _ if key.len() == 1 && key.as_bytes()[0].is_ascii_digit() => {
+            Ok((VIRTUAL_KEY(u16::from(key.as_bytes()[0])), false))
+        }
+        _ if key
+            .strip_prefix('f')
+            .and_then(|n| n.parse::<u16>().ok())
+            .is_some_and(|n| (1..=24).contains(&n)) =>
+        {
+            let number = key[1..].parse::<u16>().expect("function key range checked");
+            Ok((VIRTUAL_KEY(VK_F1.0 + number - 1), false))
+        }
+        _ if key
+            .strip_prefix("numpad_")
+            .is_some_and(|n| n.len() == 1 && n.as_bytes()[0].is_ascii_digit()) =>
+        {
+            Ok((
+                VIRTUAL_KEY(VK_NUMPAD0.0 + u16::from(key.as_bytes()[7] - b'0')),
+                false,
+            ))
+        }
         _ => Err("invalid_request: computer key is outside the closed vocabulary".to_string()),
     }
 }
@@ -357,8 +400,9 @@ fn windows_modifier_key(modifier: &str) -> Result<VIRTUAL_KEY, String> {
 fn validate_windows_key_input_chord(key: &str, modifiers: &[String]) -> Result<(), String> {
     let has_option = modifiers.iter().any(|modifier| modifier == "option");
     let has_control = modifiers.iter().any(|modifier| modifier == "control");
-    let escapes_exact_surface =
-        (has_option && matches!(key, "tab" | "escape")) || (has_control && key == "escape");
+    let escapes_exact_surface = (has_option && matches!(key, "tab" | "escape"))
+        || (has_control && key == "escape")
+        || (has_control && has_option && key == "delete");
     if escapes_exact_surface {
         return Err(
             "key_input_failed: Windows system-level key chord is outside the exact-surface input contract"

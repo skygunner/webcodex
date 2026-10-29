@@ -18,7 +18,7 @@ fn assert_computer_key_manifest_contract(schema: &Value) {
         assert!(crate::tool_runtime::ToolCall::from_tool_name("control_computer", input).is_ok());
     }
     for (key, modifiers) in [
-        ("p", json!([])),
+        ("unknown", json!([])),
         ("Ctrl+P", json!([])),
         ("Enter", json!([])),
         ("tab", json!(["ctrl"])),

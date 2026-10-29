@@ -74,6 +74,7 @@ pub(super) fn computer_control_policy(
         ),
         ActivateWindow { .. }
         | Press { .. }
+        | Select { .. }
         | Focus { .. }
         | ScrollToElement { .. }
         | Key { .. }

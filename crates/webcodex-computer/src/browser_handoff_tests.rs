@@ -99,7 +99,7 @@ fn browser_handoff_blocks_every_native_effect_without_native_dispatch() {
     }
     // Read paths still reach their normal validation/platform boundary.
     assert!(!runtime
-        .element_state("surface_test", "element_missing")
+        .element_state("surface_test", "element_missing", false)
         .unwrap_err()
         .starts_with("browser_user_handoff_active:"));
 }

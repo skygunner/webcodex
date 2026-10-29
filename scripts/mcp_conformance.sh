@@ -203,6 +203,7 @@ prepare_harness_build() {
 prepare_harness_source
 prepare_report_root
 prepare_harness_build
+WEBCODEX_MCP_CONFORMANCE_HARNESS_BUILD="$harness_build_dir" node scripts/tests/test_mcp_conformance_auth.cjs
 python3 scripts/tests/test_mcp_conformance_report.py
 
 # Compile before starting the bounded readiness clock. A cold WebCodex test build
@@ -367,6 +368,7 @@ for profile in "${PROFILES[@]}"; do
   mkdir -p "$raw"
   log="$profile_root/harness.log"
   set +e
+  WEBCODEX_MCP_CONFORMANCE_HARNESS_BUILD="$harness_build_dir" \
   node --require "$REPO_ROOT/scripts/mcp_conformance_auth.cjs" "$harness_build_dir/dist/index.js" server \
     --url "$fixture_url" \
     --requirements "$profile" \

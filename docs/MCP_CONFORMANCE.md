@@ -51,9 +51,11 @@ the gate fails so the raw evidence remains inspectable.
 
 The script starts one ignored, test-only Rust fixture on `127.0.0.1:0`. The
 fixture composes the same Salvo `AuthMiddleware` and `/mcp` handlers used by the
-production HTTP surface, with temporary database/runtime state and authentication
-disabled in the isolated test config. The referee therefore reaches real WebCodex parsing, dispatch and
-rendering without production credentials or an external deployment.
+production HTTP surface, with temporary database/runtime state and a randomly generated
+fixture token. The capability probe sends that token directly; a Node preload adds
+it to fetch and undici requests only for the fixture port and path on loopback
+addresses because the pinned referee has no authorization-header option. Requests
+retain their Host header and still pass through production authentication.
 
 No conformance-only tool is added to the production registry. Some upstream
 scenarios intentionally expect named reference-fixture tools. When WebCodex does
@@ -75,9 +77,7 @@ and reproduced with the same pinned referee. Subscriptions remain unimplemented
 and explicitly advertised as `subscribe: false`. Focused MCP/resource tests cover
 actual WebCodex resource reads, current content, and authorization.
 
-Authenticated runtime behavior, including project-scoped ProjectGrant access, remains covered by focused synthetic-credential integration tests. The upstream server CLI does not provide a generic
-way to inject WebCodex authorization headers, so an authentication-blocked
-scenario is inconclusive rather than a pass.
+Project-scoped ProjectGrant access remains covered by focused synthetic-credential integration tests. An authentication-blocked scenario is inconclusive rather than a pass.
 
 ## Coverage-aware report gate
 

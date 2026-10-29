@@ -969,6 +969,7 @@ async fn authority_probe(
     forwarded_host: Option<&str>,
 ) -> StatusCode {
     let mut request = TestClient::post("http://localhost/mcp")
+        .bearer_auth("secret")
         .add_header("host", host, true)
         .json(&json!({
             "jsonrpc": "2.0",
@@ -990,7 +991,7 @@ async fn authority_probe(
 
 #[tokio::test]
 async fn http_mcp_rejects_dns_rebinding_authority_before_jsonrpc_dispatch() {
-    let config = test_config(None);
+    let config = test_config(Some("secret"));
     let (_tmp, db) = test_db();
     let runtime = Arc::new(test_runtime());
     let service = Service::new(build_test_router(config, db, runtime));
@@ -1020,7 +1021,7 @@ async fn http_mcp_rejects_dns_rebinding_authority_before_jsonrpc_dispatch() {
 
 #[tokio::test]
 async fn http_mcp_accepts_loopback_authorities_without_requiring_origin() {
-    let config = test_config(None);
+    let config = test_config(Some("secret"));
     let (_tmp, db) = test_db();
     let runtime = Arc::new(test_runtime());
     let service = Service::new(build_test_router(config, db, runtime));
@@ -1038,7 +1039,7 @@ async fn http_mcp_accepts_loopback_authorities_without_requiring_origin() {
 async fn http_mcp_accepts_configured_public_authority_and_matching_origin() {
     let mut env = crate::test_support::TestEnvGuard::new();
     env.set("WEBCODEX_PUBLIC_URL", "https://mcp.example.test");
-    let config = test_config(None);
+    let config = test_config(Some("secret"));
     let (_tmp, db) = test_db();
     let runtime = Arc::new(test_runtime());
     let service = Service::new(build_test_router(config, db, runtime));
@@ -1078,7 +1079,7 @@ async fn http_mcp_accepts_configured_public_authority_and_matching_origin() {
 
 #[tokio::test]
 async fn http_mcp_rejects_malformed_host_and_origin() {
-    let config = test_config(None);
+    let config = test_config(Some("secret"));
     let (_tmp, db) = test_db();
     let runtime = Arc::new(test_runtime());
     let service = Service::new(build_test_router(config, db, runtime));

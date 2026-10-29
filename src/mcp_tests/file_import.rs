@@ -77,7 +77,7 @@ fn mcp_import_config_from_startup_env(
         "explicit env file must not override already-present OAuth trust settings"
     );
 
-    let config = Arc::new(crate::Config::from_env());
+    let config = Arc::new(crate::Config::from_env().unwrap());
     assert!(config.oauth2.enabled);
     assert_eq!(
         config.oauth2.trusted_mcp_file_client_ids,

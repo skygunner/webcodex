@@ -68,8 +68,9 @@ pub(crate) use project_credential::{
 pub(crate) use project_share::{
     configured_project_share_subject, generate_project_share_session_id,
     parse_project_share_subject_id, project_share_root_scopes_from_config,
-    project_share_scopes_are_bounded, validate_project_share_grant_subject,
-    PROJECT_SHARE_OAUTH_SCOPES, PROJECT_SHARE_OAUTH_SUBJECT_KIND, PROJECT_SHARE_OAUTH_TOKEN_KIND,
+    project_share_scopes_are_bounded, project_share_session_id_for_client,
+    validate_project_share_grant_subject, PROJECT_SHARE_OAUTH_SCOPES,
+    PROJECT_SHARE_OAUTH_SUBJECT_KIND, PROJECT_SHARE_OAUTH_TOKEN_KIND,
 };
 
 pub use scopes::{
@@ -288,11 +289,8 @@ pub(crate) async fn authenticate_bearer(
     db: Option<&Arc<Database>>,
     token: Option<&str>,
 ) -> Option<AuthContext> {
-    // Auth disabled in development -> bootstrap (full access), identical to
-    // AuthMiddleware's behavior. This lets local QUIC integration tests run
-    // without a configured token.
     if !config.is_auth_enabled() {
-        return Some(bootstrap_context());
+        return None;
     }
     // No token: only allowed when the server is explicitly --open.
     let token = match token {

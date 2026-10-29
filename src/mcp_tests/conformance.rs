@@ -24,7 +24,9 @@ async fn mcp_conformance_fixture_server() {
             .expect("conformance fixture requires WEBCODEX_MCP_CONFORMANCE_STOP_FILE"),
     );
 
-    let config = test_config(None);
+    let token = std::env::var("WEBCODEX_MCP_CONFORMANCE_TOKEN")
+        .expect("conformance fixture requires WEBCODEX_MCP_CONFORMANCE_TOKEN");
+    let config = test_config(Some(&token));
     let (_db_tmp, db) = test_db();
     let runtime = Arc::new(test_runtime());
     let router = build_test_router(config, db, runtime);

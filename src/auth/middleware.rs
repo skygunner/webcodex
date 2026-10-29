@@ -6,12 +6,12 @@ use crate::{Config, Database};
 use salvo::prelude::*;
 
 use super::context::{AuthContext, AuthError};
+use super::scopes;
 use super::shared_key::{
     allow_anonymous_enabled, direct_shared_key_enabled, is_managed_token_prefix,
     open_anonymous_context, shared_key_context,
 };
 use super::tokens::{authenticate, is_oauth2_access_token};
-use super::{bootstrap_context, scopes};
 
 // ---------------------------------------------------------------------------
 // Token extraction helpers
@@ -332,20 +332,17 @@ impl Handler for AuthMiddleware {
         let project_share_query_token_used = project_share_query_token.is_some();
         let token = project_share_query_token.or_else(|| bearer_token(req));
 
-        // When no token is present and auth is enabled, reject immediately
-        // unless the server was explicitly started with `--open`
-        // (WEBCODEX_ALLOW_ANONYMOUS=true), in which case the anonymous caller
-        // is granted a non-admin open-group context.
-        // When auth is disabled, the verifier chain handles the bootstrap
-        // fallback — we still call authenticate with a dummy token so the
-        // code path stays uniform.
+        // Explicit --open grants a non-admin open-group context.
         let token = match token {
             Some(t) => t,
             None => {
                 if !config.is_auth_enabled() {
-                    // Auth disabled, no token: inject bootstrap and continue.
-                    depot.inject(bootstrap_context());
-                    ctrl.call_next(req, depot, res).await;
+                    reject(
+                        res,
+                        ctrl,
+                        StatusCode::UNAUTHORIZED,
+                        "authentication is required",
+                    );
                     return;
                 }
                 if allow_anonymous_enabled() {

@@ -271,7 +271,7 @@ pub async fn run_server_with_shutdown(
             load.loaded_count,
         );
     }
-    let config = Config::from_env();
+    let config = Config::from_env().map_err(std::io::Error::other)?;
     let mcp_tool_exposure =
         mcp::tool_exposure::ToolExposureConfig::from_env().map_err(std::io::Error::other)?;
     let mcp_host_timing =
@@ -288,14 +288,6 @@ pub async fn run_server_with_shutdown(
     let console_asset_source = Arc::new(
         console_web::ConsoleAssetSource::from_env(&config.addr).map_err(std::io::Error::other)?,
     );
-    if !config.is_auth_enabled() {
-        tracing::warn!(
-            "WEBCODEX_TOKEN is not set! Running in development mode without authentication. \
-Use `webcodex server init` to generate a bootstrap/admin key, or set WEBCODEX_ALLOW_ANONYMOUS=true \
-only for local/trusted-network demos."
-        );
-        tracing::warn!("Anonymous API access is rejected by default in production mode.");
-    }
     if auth::shared_key_enabled() && auth::shared_key_requires_remote_opt_in(&config) {
         if auth::shared_key_remote_enabled() {
             tracing::warn!(
@@ -954,13 +946,12 @@ mod tests {
         // Clear env vars to test defaults; Drop restores the process environment.
         env.remove("WEBCODEX_ADDR");
         env.remove("WEBCODEX_DATA");
-        env.remove("WEBCODEX_TOKEN");
+        env.set("WEBCODEX_TOKEN", "test-bootstrap");
 
-        let config = Config::from_env();
-        assert_eq!(config.addr, "0.0.0.0:8080");
+        let config = Config::from_env().unwrap();
+        assert_eq!(config.addr, "127.0.0.1:8080");
         assert_eq!(config.data_dir, PathBuf::from("./data"));
-        assert_eq!(config.token, None);
-        assert!(!config.is_auth_enabled());
+        assert!(config.is_auth_enabled());
         assert_eq!(config.max_text_size, 2 * 1024 * 1024);
     }
 

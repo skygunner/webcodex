@@ -203,6 +203,7 @@ prepare_harness_build() {
 prepare_harness_source
 prepare_report_root
 prepare_harness_build
+WEBCODEX_MCP_CONFORMANCE_HARNESS_BUILD="$harness_build_dir" node scripts/tests/test_mcp_conformance_auth.cjs
 python3 scripts/tests/test_mcp_conformance_report.py
 
 # Compile before starting the bounded readiness clock. A cold WebCodex test build
@@ -211,6 +212,7 @@ python3 scripts/tests/test_mcp_conformance_report.py
 cargo test --locked -p webcodex --lib mcp_conformance_fixture_server --no-run
 
 fixture_dir="$(mktemp -d "${TMPDIR:-/tmp}/webcodex-mcp-conformance.XXXXXX")"
+export WEBCODEX_MCP_CONFORMANCE_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
 url_file="$fixture_dir/url"
 stop_file="$fixture_dir/stop"
 fixture_log="$REPORT_ROOT/fixture.log"
@@ -243,9 +245,11 @@ case "$fixture_url" in
   *) echo "fixture published unexpected URL: $fixture_url" >&2; exit 1 ;;
 esac
 
+export WEBCODEX_MCP_CONFORMANCE_FIXTURE_URL="$fixture_url"
 capabilities_file="$REPORT_ROOT/server-capabilities.json"
 python3 - "$fixture_url" "$capabilities_file" <<'PY'
 import json
+import os
 import pathlib
 import sys
 import urllib.error
@@ -258,6 +262,7 @@ def rpc_request(payload, headers=None):
     request_headers = {
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
+        "Authorization": "Bearer " + os.environ["WEBCODEX_MCP_CONFORMANCE_TOKEN"],
     }
     if headers:
         request_headers.update(headers)
@@ -363,7 +368,8 @@ for profile in "${PROFILES[@]}"; do
   mkdir -p "$raw"
   log="$profile_root/harness.log"
   set +e
-  node "$harness_build_dir/dist/index.js" server \
+  WEBCODEX_MCP_CONFORMANCE_HARNESS_BUILD="$harness_build_dir" \
+  node --require "$REPO_ROOT/scripts/mcp_conformance_auth.cjs" "$harness_build_dir/dist/index.js" server \
     --url "$fixture_url" \
     --requirements "$profile" \
     --output-dir "$raw" \

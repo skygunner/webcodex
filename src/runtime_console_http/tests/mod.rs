@@ -328,7 +328,7 @@ fn start_authorized_session(
 }
 
 fn hosted_service(runtime: Arc<ToolRuntime>) -> (tempfile::TempDir, Service) {
-    let config = crate::test_support::test_config(None);
+    let config = crate::test_support::test_config(Some("console-bootstrap-test"));
     let (tmp, db) = crate::test_support::test_db();
     let router = Router::new()
         .hoop(affix_state::inject(config))

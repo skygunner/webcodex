@@ -587,7 +587,7 @@ async fn gate_unauthorized_response_is_json_not_html() {
 // -----------------------------------------------------------------------
 
 #[tokio::test]
-async fn pat_verifier_bootstrap_when_auth_disabled() {
+async fn pat_verifier_rejects_when_bootstrap_token_is_missing() {
     let config = crate::Config {
         addr: "127.0.0.1:0".to_string(),
         data_dir: PathBuf::from("./data"),
@@ -597,9 +597,10 @@ async fn pat_verifier_bootstrap_when_auth_disabled() {
     };
     let verifier = PatVerifier;
     let result = verifier.verify(&config, None, "anything").await.unwrap();
-    let ctx = result.expect("should return bootstrap context");
-    assert!(ctx.is_bootstrap);
-    assert_eq!(ctx.kind, AuthKind::Bootstrap);
+    assert!(
+        result.is_none(),
+        "missing credential must not grant bootstrap"
+    );
 }
 
 #[tokio::test]
@@ -1730,9 +1731,24 @@ async fn authenticate_oauth2_stub_does_not_break_pat_fallback() {
 // -----------------------------------------------------------------------
 
 #[tokio::test]
+async fn tokenless_http_rejects_bootstrap_on_all_listener_addresses() {
+    let _env = AuthEnvGuard::auth_required();
+    for address in ["127.0.0.1:8080", "[::1]:8080", "0.0.0.0:8080", "[::]:8080"] {
+        let (_tmp, db) = gate_test_db();
+        let mut config = (*gate_test_config(None)).clone();
+        config.addr = address.to_string();
+        let service = salvo::Service::new(gate_router(Arc::new(config), db));
+        for token in [None, Some("untrusted")] {
+            let (status, _) = gate_send(&service, "/api/runtime/status", token).await;
+            assert_eq!(status, salvo::http::StatusCode::UNAUTHORIZED, "{address}");
+        }
+    }
+}
+
+#[tokio::test]
 async fn authenticate_bearer_bootstrap_and_no_token() {
     let _env = AuthEnvGuard::auth_required();
-    // Auth disabled → bootstrap.
+    // Missing bootstrap credentials must not grant authority.
     let config = crate::Config {
         addr: "127.0.0.1:0".to_string(),
         data_dir: PathBuf::from("./data"),
@@ -1740,10 +1756,10 @@ async fn authenticate_bearer_bootstrap_and_no_token() {
         max_text_size: 2 * 1024 * 1024,
         oauth2: crate::OAuth2Config::default(),
     };
-    let ctx = authenticate_bearer(&config, None, Some("anything"))
+    assert!(authenticate_bearer(&config, None, Some("anything"))
         .await
-        .expect("auth disabled should return bootstrap");
-    assert!(ctx.is_bootstrap);
+        .is_none());
+    assert!(authenticate_bearer(&config, None, None).await.is_none());
 
     // Valid bootstrap token → bootstrap.
     let config = crate::Config {

@@ -191,7 +191,7 @@ impl RuntimeInfo {
     /// production startup, plus the public URL and QUIC runtime configuration.
     #[cfg(test)]
     pub fn from_env() -> Self {
-        let config = crate::config::Config::from_env();
+        let config = crate::config::Config::from_env().unwrap();
         Self::from_config_with_quic_config(&config, &crate::config::QuicServerConfig::from_env())
     }
 

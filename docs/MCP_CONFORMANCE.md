@@ -53,8 +53,9 @@ The script starts one ignored, test-only Rust fixture on `127.0.0.1:0`. The
 fixture composes the same Salvo `AuthMiddleware` and `/mcp` handlers used by the
 production HTTP surface, with temporary database/runtime state and a randomly generated
 fixture token. The capability probe sends that token directly; a Node preload adds
-it to fetch and undici requests only for the fixture URL because the pinned referee
-has no authorization-header option. Requests still pass through production authentication.
+it to fetch and undici requests only for the fixture port and path on loopback
+addresses because the pinned referee has no authorization-header option. Requests
+retain their Host header and still pass through production authentication.
 
 No conformance-only tool is added to the production registry. Some upstream
 scenarios intentionally expect named reference-fixture tools. When WebCodex does

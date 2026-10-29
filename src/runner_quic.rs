@@ -488,6 +488,7 @@ mod tests {
 
     /// ALPN used by the QUIC integration tests.
     const TEST_ALPN: &str = RUNNER_QUIC_ALPN_V1;
+    const TEST_BOOTSTRAP_TOKEN: &str = "quic-test-bootstrap-secret";
 
     async fn wait_for_quic_client_connected(
         registry: &RunnerRegistry,
@@ -568,7 +569,12 @@ mod tests {
     }
 
     fn register_envelope(client_id: &str, instance: &str) -> QuicRegisterFrame {
-        register_envelope_with_generation(client_id, instance, RUNNER_PROTOCOL_GENERATION_V2, None)
+        register_envelope_with_generation(
+            client_id,
+            instance,
+            RUNNER_PROTOCOL_GENERATION_V2,
+            Some(TEST_BOOTSTRAP_TOKEN.to_string()),
+        )
     }
 
     fn register_envelope_with_generation(
@@ -653,7 +659,7 @@ mod tests {
         let server_crypto = server_crypto(cert_der.clone(), key_der);
         let (endpoint, addr) = bind_server(server_crypto);
         let registry = Arc::new(RunnerRegistry::default());
-        let config = test_config(None);
+        let config = test_config(Some(TEST_BOOTSTRAP_TOKEN));
 
         let server_task = tokio::spawn(async move {
             let incoming = endpoint.accept().await.expect("accept incoming quic");
@@ -697,7 +703,7 @@ mod tests {
         let registry = Arc::new(RunnerRegistry::default());
         let addr = start_quic_server(
             registry.clone(),
-            test_config(None),
+            test_config(Some(TEST_BOOTSTRAP_TOKEN)),
             cert_der.clone(),
             key_der,
         )
@@ -741,7 +747,7 @@ mod tests {
         let registry = Arc::new(RunnerRegistry::default());
         let addr = start_quic_server(
             registry.clone(),
-            test_config(None),
+            test_config(Some(TEST_BOOTSTRAP_TOKEN)),
             cert_der.clone(),
             key_der,
         )
@@ -752,7 +758,7 @@ mod tests {
             "quic-unsupported-generation",
             "inst-unsupported",
             RunnerProtocolGenerationNumber::new(3),
-            None,
+            Some(TEST_BOOTSTRAP_TOKEN.to_string()),
         );
         write_quic_register_frame(&mut send, &register)
             .await
@@ -783,12 +789,10 @@ mod tests {
         let server_crypto = server_crypto(cert_der.clone(), key_der);
         let (endpoint, addr) = bind_server(server_crypto);
 
-        // Auth disabled -> bootstrap, so no token is required. This mirrors
-        // the WebSocket integration tests which run without AuthMiddleware.
         let config = Arc::new(Config {
             addr: "0.0.0.0:8080".to_string(),
             data_dir: std::path::PathBuf::from("./data"),
-            token: None,
+            token: Some(TEST_BOOTSTRAP_TOKEN.to_string()),
             max_text_size: 2 * 1024 * 1024,
             oauth2: crate::OAuth2Config::default(),
         });
@@ -898,7 +902,13 @@ mod tests {
         use crate::runner_protocol::{RunnerJobCapacity, RunnerPolicySummary, ToolProvidersStatus};
         let (cert, key) = self_signed_cert();
         let registry = Arc::new(RunnerRegistry::default());
-        let addr = start_quic_server(registry.clone(), test_config(None), cert.clone(), key).await;
+        let addr = start_quic_server(
+            registry.clone(),
+            test_config(Some(TEST_BOOTSTRAP_TOKEN)),
+            cert.clone(),
+            key,
+        )
+        .await;
         let status = |generation| {
             let mut status = ToolProvidersStatus {
                 strategy: "native".into(),
@@ -995,7 +1005,7 @@ mod tests {
         let registry = Arc::new(RunnerRegistry::default());
         let addr = start_quic_server(
             registry.clone(),
-            test_config(None),
+            test_config(Some(TEST_BOOTSTRAP_TOKEN)),
             cert_der.clone(),
             key_der,
         )
@@ -1009,7 +1019,7 @@ mod tests {
                 "quic-gen2-rt",
                 "inst-v2",
                 RUNNER_PROTOCOL_GENERATION_V2,
-                None,
+                Some(TEST_BOOTSTRAP_TOKEN.to_string()),
             ),
         )
         .await
@@ -1118,7 +1128,7 @@ mod tests {
         let registry = Arc::new(RunnerRegistry::default());
         let addr = start_quic_server(
             registry.clone(),
-            test_config(None),
+            test_config(Some(TEST_BOOTSTRAP_TOKEN)),
             cert_der.clone(),
             key_der,
         )
@@ -1132,7 +1142,7 @@ mod tests {
                 "quic-job",
                 "inst-job",
                 RUNNER_PROTOCOL_GENERATION_V2,
-                None,
+                Some(TEST_BOOTSTRAP_TOKEN.to_string()),
             ),
         )
         .await
@@ -1216,7 +1226,7 @@ mod tests {
         let registry = Arc::new(RunnerRegistry::default());
         let addr = start_quic_server(
             registry.clone(),
-            test_config(None),
+            test_config(Some(TEST_BOOTSTRAP_TOKEN)),
             cert_der.clone(),
             key_der,
         )
@@ -1230,7 +1240,7 @@ mod tests {
                 "quic-disc",
                 "inst-disc",
                 RUNNER_PROTOCOL_GENERATION_V2,
-                None,
+                Some(TEST_BOOTSTRAP_TOKEN.to_string()),
             ),
         )
         .await
@@ -1319,7 +1329,7 @@ mod tests {
         let registry = Arc::new(RunnerRegistry::default());
         let addr = start_quic_server(
             registry.clone(),
-            test_config(None),
+            test_config(Some(TEST_BOOTSTRAP_TOKEN)),
             cert_der.clone(),
             key_der,
         )
@@ -1333,7 +1343,7 @@ mod tests {
                 "quic-goodbye",
                 "inst-a",
                 RUNNER_PROTOCOL_GENERATION_V2,
-                None,
+                Some(TEST_BOOTSTRAP_TOKEN.to_string()),
             ),
         )
         .await
@@ -1375,7 +1385,7 @@ mod tests {
                 "quic-goodbye",
                 "inst-b",
                 RUNNER_PROTOCOL_GENERATION_V2,
-                None,
+                Some(TEST_BOOTSTRAP_TOKEN.to_string()),
             ),
         )
         .await
@@ -1560,7 +1570,7 @@ mod tests {
         let config = Arc::new(Config {
             addr: "0.0.0.0:8080".to_string(),
             data_dir: std::path::PathBuf::from("./data"),
-            token: None,
+            token: Some(TEST_BOOTSTRAP_TOKEN.to_string()),
             max_text_size: 2 * 1024 * 1024,
             oauth2: crate::OAuth2Config::default(),
         });
@@ -1621,7 +1631,7 @@ mod tests {
         let registry = Arc::new(RunnerRegistry::default());
         let addr = start_quic_server(
             registry.clone(),
-            test_config(None),
+            test_config(Some(TEST_BOOTSTRAP_TOKEN)),
             cert_der.clone(),
             key_der,
         )

@@ -288,11 +288,8 @@ pub(crate) async fn authenticate_bearer(
     db: Option<&Arc<Database>>,
     token: Option<&str>,
 ) -> Option<AuthContext> {
-    // Auth disabled in development -> bootstrap (full access), identical to
-    // AuthMiddleware's behavior. This lets local QUIC integration tests run
-    // without a configured token.
     if !config.is_auth_enabled() {
-        return Some(bootstrap_context());
+        return None;
     }
     // No token: only allowed when the server is explicitly --open.
     let token = match token {

@@ -4,6 +4,7 @@ use super::*;
 async fn runtime_console_preserves_browser_same_origin_and_json_errors() {
     let (_tmp, service) = hosted_service(test_runtime());
     let cross_origin = TestClient::post("http://localhost/api/runtime-console/projects")
+        .bearer_auth("console-bootstrap-test")
         .add_header("host", "localhost", true)
         .add_header("origin", "http://attacker.example", true)
         .json(&serde_json::json!({}))
@@ -12,6 +13,7 @@ async fn runtime_console_preserves_browser_same_origin_and_json_errors() {
     assert_eq!(cross_origin.status_code, Some(StatusCode::FORBIDDEN));
 
     let unsupported = TestClient::post("http://localhost/api/runtime-console/projects")
+        .bearer_auth("console-bootstrap-test")
         .add_header("host", "localhost", true)
         .body("{}")
         .send(&service)

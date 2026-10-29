@@ -50,6 +50,7 @@ async fn hosted_runtime_console_uses_ordinary_runtime_and_projects_are_safe() {
     .await;
     let (_tmp, service) = hosted_service(runtime);
     let mut response = TestClient::post("http://localhost/api/runtime-console/projects")
+        .bearer_auth("console-bootstrap-test")
         .json(&serde_json::json!({}))
         .send(&service)
         .await;
@@ -78,6 +79,7 @@ async fn hosted_runtime_console_uses_ordinary_runtime_and_projects_are_safe() {
     }
 
     let mut filtered = TestClient::post("http://localhost/api/runtime-console/projects")
+        .bearer_auth("console-bootstrap-test")
         .json(&serde_json::json!({
             "client_id": "special",
             "query": "webcodex",
@@ -92,6 +94,7 @@ async fn hosted_runtime_console_uses_ordinary_runtime_and_projects_are_safe() {
     assert_eq!(filtered_body["projects"][0]["id"], "agent:special:webcodex");
 
     let invalid_query = TestClient::post("http://localhost/api/runtime-console/projects")
+        .bearer_auth("console-bootstrap-test")
         .json(&serde_json::json!({"query": "   "}))
         .send(&service)
         .await;
@@ -103,21 +106,25 @@ async fn product_routes_reject_unknown_effect_selectors_and_invisible_projects()
     let (_tmp, service) = hosted_service(test_runtime());
     for route in ["extensions", "project-git"] {
         let invalid = TestClient::post(format!("http://localhost/api/runtime-console/{route}"))
+            .bearer_auth("console-bootstrap-test")
             .json(&serde_json::json!({"project":"agent:missing:project","tool":"run_shell"}))
             .send(&service)
             .await;
         assert_eq!(invalid.status_code, Some(StatusCode::BAD_REQUEST));
         let hidden = TestClient::post(format!("http://localhost/api/runtime-console/{route}"))
+            .bearer_auth("console-bootstrap-test")
             .json(&serde_json::json!({"project":"agent:missing:project"}))
             .send(&service)
             .await;
         assert_eq!(hidden.status_code, Some(StatusCode::NOT_FOUND));
     }
     let instruction = TestClient::post("http://localhost/api/runtime-console/instruction")
+            .bearer_auth("console-bootstrap-test")
             .json(&serde_json::json!({"project":"agent:missing:project","source_scope":"runner","path":"/private/secret","fingerprint":"old"}))
             .send(&service).await;
     assert_eq!(instruction.status_code, Some(StatusCode::NOT_FOUND));
     let retarget = TestClient::post("http://localhost/api/runtime-console/plugin-reload")
+            .bearer_auth("console-bootstrap-test")
             .json(&serde_json::json!({"project":"agent:missing:project","plugin":"provider","runner":"other-runner"}))
             .send(&service).await;
     assert_eq!(retarget.status_code, Some(StatusCode::BAD_REQUEST));

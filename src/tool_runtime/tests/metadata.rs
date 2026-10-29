@@ -2532,11 +2532,13 @@ async fn runtime_status_reports_effective_mcp_compact_schema_policy() {
     let runtime_false = {
         let mut env = crate::test_support::TestEnvGuard::new();
         env.set("WEBCODEX_MCP_COMPACT_SCHEMAS", "false");
+        env.set("WEBCODEX_TOKEN", "test-bootstrap");
         runtime_with_info(RuntimeInfo::from_env())
     };
     let runtime_true = {
         let mut env = crate::test_support::TestEnvGuard::new();
         env.set("WEBCODEX_MCP_COMPACT_SCHEMAS", "true");
+        env.set("WEBCODEX_TOKEN", "test-bootstrap");
         runtime_with_info(RuntimeInfo::from_env())
     };
     // Both guards are dropped now; the snapshots outlive the env mutations.

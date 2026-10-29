@@ -58,12 +58,6 @@ impl TokenVerifier for PatVerifier {
         db: Option<&Arc<Database>>,
         token: &str,
     ) -> Result<Option<AuthContext>, String> {
-        // Auth disabled in development -> bootstrap (full access), identical to
-        // AuthMiddleware's `!config.is_auth_enabled()` branch.
-        if !config.is_auth_enabled() {
-            return Ok(Some(bootstrap_context()));
-        }
-
         // Bootstrap token check (constant-time comparison).
         if config.validate_token(token) {
             return Ok(Some(bootstrap_context()));

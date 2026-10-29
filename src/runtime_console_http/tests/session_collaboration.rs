@@ -568,6 +568,7 @@ async fn browser_message_mutation_json_and_uncertain_errors_are_distinct() {
     let (_tmp, service) = hosted_service(test_runtime());
     let unknown_field =
         TestClient::post("http://localhost/api/runtime-console/workflow-session-withdraw-message")
+            .bearer_auth("console-bootstrap-test")
             .json(&serde_json::json!({
                 "project": "agent:missing:project",
                 "session_id": "wc_sess_missing000000000",

@@ -230,18 +230,25 @@ fn validate_share_project_root(value: &str) -> Result<PathBuf, String> {
 const SHARE_PROJECT_ROOTS_FILE: &str = "project-roots";
 
 /// Read the persisted parent-root grant from the share OAuth state directory.
-/// One canonical absolute path per line; unreadable or malformed entries are
-/// skipped, and an absent file means no grant (the exact-path fence stays).
+/// A JSON array of canonical absolute paths; unreadable or malformed state
+/// fails closed, and an absent file means no grant (the exact-path fence stays).
 fn read_persisted_share_project_roots(directory: &Path) -> Vec<PathBuf> {
     let Ok(content) = std::fs::read_to_string(directory.join(SHARE_PROJECT_ROOTS_FILE)) else {
         return Vec::new();
     };
-    content
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .filter_map(|line| validate_share_project_root(line).ok())
-        .take(crate::config::MAX_PROJECT_SHARE_ROOTS)
+    // A line-delimited path list is unsafe: on Unix a legitimate directory
+    // name may contain a newline, so a path like /tmp/grant\n/etc would
+    // restore as an unrelated grant to /etc. Persist one unambiguous JSON
+    // array instead and reject obsolete/malformed encodings fail closed.
+    let Ok(roots) = serde_json::from_str::<Vec<String>>(&content) else {
+        return Vec::new();
+    };
+    if roots.len() > crate::config::MAX_PROJECT_SHARE_ROOTS {
+        return Vec::new();
+    }
+    roots
+        .iter()
+        .filter_map(|path| validate_share_project_root(path).ok())
         .collect()
 }
 
@@ -284,16 +291,21 @@ fn persist_share_project_roots(directory: &Path, roots: &[PathBuf]) -> Result<()
     if roots.is_empty() {
         return remove_private_state_file(&path);
     }
-    let mut content = String::new();
-    for root in roots {
-        content.push_str(&root.to_string_lossy());
-        content.push('\n');
-    }
-    let bytes = content.as_bytes();
-    if stored_roots_is_owner_only_file_with(&path, bytes) {
+    // JSON escapes embedded newlines and path delimiters. Never reinterpret
+    // one canonical user-approved root as multiple grants after a restart.
+    let encoded_roots = roots
+        .iter()
+        .map(|root| {
+            root.to_str()
+                .ok_or_else(|| share_oauth_state_error("project share root is not valid UTF-8"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let bytes = serde_json::to_vec(&encoded_roots)
+        .map_err(|_| share_oauth_state_error("could not encode project share root grants"))?;
+    if stored_roots_is_owner_only_file_with(&path, &bytes) {
         return Ok(());
     }
-    replace_private_file(&path, bytes)
+    replace_private_file(&path, &bytes)
 }
 
 fn mcp_query_token_url(public_url: &str, credential: &str) -> String {
@@ -2195,6 +2207,40 @@ mod tests {
             leftovers.is_empty(),
             "temp segments left behind: {leftovers:?}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn share_project_roots_with_embedded_newline_do_not_widen_on_restart() {
+        let temp = share_root_fixture();
+        let nested = temp.path().join("granted\n").join("etc");
+        std::fs::create_dir_all(&nested).unwrap();
+        let original = nested.canonicalize().unwrap();
+        let directory = temp.path().join("share-oauth");
+
+        // A previously accepted directory path containing '\n' must never
+        // become a grant to the unrelated system /etc on the next launch.
+        persist_share_project_roots(&directory, &[original.clone()]).unwrap();
+        let persisted = std::fs::read_to_string(directory.join(SHARE_PROJECT_ROOTS_FILE)).unwrap();
+        assert!(persisted.contains(r"\n"), "newline must be escaped in JSON");
+        assert!(!persisted.contains("granted\n"));
+
+        let restored = read_persisted_share_project_roots(&directory);
+        assert_eq!(restored, vec![original]);
+        assert!(!restored.iter().any(|root| root == Path::new("/etc")));
+    }
+
+    #[test]
+    fn share_project_roots_rejects_ambiguous_legacy_line_format() {
+        let temp = share_root_fixture();
+        let directory = temp.path().join("share-oauth");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join(SHARE_PROJECT_ROOTS_FILE),
+            b"/tmp/granted\n/etc\n",
+        )
+        .unwrap();
+        assert!(read_persisted_share_project_roots(&directory).is_empty());
     }
 
     #[test]

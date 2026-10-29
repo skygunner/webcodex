@@ -2593,11 +2593,10 @@ mod tests {
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join(SHARE_PROJECT_ROOTS_FILE);
         let roots = vec![root_a.canonicalize().unwrap()];
-        let mut content = String::new();
-        for root in &roots {
-            content.push_str(&root.to_string_lossy());
-            content.push('\n');
-        }
+        // The pre-existing state must be byte-identical to the current JSON
+        // representation, so this exercises permission/target repair rather
+        // than accidentally migrating a legacy line-delimited fixture.
+        let content = serde_json::to_vec(&roots).unwrap();
 
         // Plant a symlink at the target pointing OUTSIDE the state directory,
         // holding exactly the bytes that would be stored.
@@ -2623,10 +2622,10 @@ mod tests {
             mode, 0o600,
             "repaired target is not owner-private: {mode:o}"
         );
-        assert_eq!(std::fs::read(&path).unwrap(), content.as_bytes());
+        assert_eq!(std::fs::read(&path).unwrap(), content.as_slice());
         // The external target was never written through: it still holds the
         // planted bytes and remains a plain file outside the state directory.
-        assert_eq!(std::fs::read(&outside).unwrap(), content.as_bytes());
+        assert_eq!(std::fs::read(&outside).unwrap(), content.as_slice());
         assert!(std::fs::symlink_metadata(&outside).unwrap().is_file());
     }
 
@@ -2641,11 +2640,10 @@ mod tests {
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join(SHARE_PROJECT_ROOTS_FILE);
         let roots = vec![root_a.canonicalize().unwrap()];
-        let mut content = String::new();
-        for root in &roots {
-            content.push_str(&root.to_string_lossy());
-            content.push('\n');
-        }
+        // The pre-existing state must be byte-identical to the current JSON
+        // representation, so this exercises permission/target repair rather
+        // than accidentally migrating a legacy line-delimited fixture.
+        let content = serde_json::to_vec(&roots).unwrap();
 
         // A same-content file with group/other read bits must not qualify for
         // the no-op fast path: the update repairs it to owner-only.
@@ -2663,7 +2661,7 @@ mod tests {
             mode, 0o600,
             "wide permissions survived a same-value update: {mode:o}"
         );
-        assert_eq!(std::fs::read(&path).unwrap(), content.as_bytes());
+        assert_eq!(std::fs::read(&path).unwrap(), content.as_slice());
         // A second same-value update now takes the no-op path and stays
         // owner-only (idempotence preserved after the repair).
         persist_share_project_roots(&directory, &roots).unwrap();
@@ -2713,16 +2711,16 @@ mod tests {
         // An absent state directory means no grant.
         assert!(read_persisted_share_project_roots(&temp.path().join("absent")).is_empty());
 
-        // A malformed line is skipped instead of poisoning the whole grant.
-        let mut broken = root_a
-            .canonicalize()
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
-        broken.push('\n');
-        broken.push_str("not-a-directory\n../escape\n");
-        std::fs::create_dir_all(&directory).unwrap();
-        std::fs::write(directory.join(SHARE_PROJECT_ROOTS_FILE), broken).unwrap();
+        // Invalid entries in an otherwise well-formed JSON array are
+        // skipped, without changing the valid grant. Invalid encodings and
+        // the retired newline format are tested separately as fail-closed.
+        let mixed = serde_json::to_vec(&[
+            root_a.canonicalize().unwrap().to_str().unwrap(),
+            "not-a-directory",
+            "../escape",
+        ])
+        .unwrap();
+        std::fs::write(directory.join(SHARE_PROJECT_ROOTS_FILE), mixed).unwrap();
         assert_eq!(
             read_persisted_share_project_roots(&directory),
             vec![root_a.canonicalize().unwrap()],
